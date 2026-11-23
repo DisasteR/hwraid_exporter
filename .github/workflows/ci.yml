@@ -32,7 +32,7 @@ jobs:
       - name: Tests root (privilèges, nœuds)
         run: |
           mkdir -p dist/roottests
-          for p in ./internal/privilege; do
+          for p in ./internal/privilege ./internal/nodes; do
             CGO_ENABLED=0 go test -c -o "dist/roottests/$(basename "$p").test" "$p"
           done
           for t in dist/roottests/*.test; do

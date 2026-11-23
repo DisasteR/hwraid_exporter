@@ -54,8 +54,20 @@ func TestDropPrivilegesForReal(t *testing.T) {
 		}
 		t.Skip("exige root")
 	}
-	dir := t.TempDir()
+	// Répertoire directement sous /tmp (1777) et en 0777 : l'enfant, une fois
+	// en UID 65534, doit pouvoir le traverser. Sinon chaque refus viendrait
+	// du chemin (EACCES) et non de l'absence de privilège qu'on veut prouver.
+	dir, err := os.MkdirTemp("/tmp", "hwraid-priv-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
 	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	// Témoin positif : un fichier lisible par tous doit rester lisible
+	// après l'abandon, ce qui prouve que le refus du secret vient de son mode.
+	if err := os.WriteFile(filepath.Join(dir, "public"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	secret := filepath.Join(dir, "secret")
@@ -110,6 +122,10 @@ func TestDropChild(t *testing.T) {
 	err := syscall.Mknod(filepath.Join(dir, "null"), syscall.S_IFCHR|0o600, 1<<8|3)
 	if !errors.Is(err, syscall.EPERM) {
 		t.Fatalf("mknod : EPERM attendu, obtenu %v", err)
+	}
+	// Témoin : un fichier lisible par tous reste lisible.
+	if _, err := os.ReadFile(filepath.Join(dir, "public")); err != nil {
+		t.Fatalf("lecture du témoin public : %v (le répertoire n'est pas traversable)", err)
 	}
 	// Lire un fichier root en 0600 : refusé, plus de contournement des droits.
 	if _, err := os.ReadFile(secret); !errors.Is(err, os.ErrPermission) {
