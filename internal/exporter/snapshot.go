@@ -138,7 +138,7 @@ func Render(s Snapshot) string {
 	gauge("hwraid_volume_info", "Inventaire des volumes (conteneurs) de la carte.")
 	for _, c := range s.Controllers {
 		for _, v := range c.Volumes {
-			fmt.Fprintf(&b, "hwraid_volume_info{%s} 1\n", labels("controller", c.Label, "volume", v.ID, "name", v.Name, "raid_level", v.RaidLevel, "parent", v.Parent))
+			fmt.Fprintf(&b, "hwraid_volume_info{%s} 1\n", labels("controller", c.Label, "volume", v.ID, "name", v.Name, "raid_level", v.RaidLevel, "vendor_level", v.VendorLevel, "parent", v.Parent))
 		}
 	}
 	gauge("hwraid_volume_state", "État calculé du volume, valeur 1.")
@@ -170,13 +170,13 @@ func Render(s Snapshot) string {
 	gauge("hwraid_cache_protection_present", "1 si un module de protection du cache est installé.")
 	for _, c := range s.Controllers {
 		if cp := c.CacheProtection; cp != nil {
-			fmt.Fprintf(&b, "hwraid_cache_protection_present{%s} %d\n", labels("controller", c.Label, "type", cp.Type), b2i(cp.Present))
+			fmt.Fprintf(&b, "hwraid_cache_protection_present{%s} %d\n", labels("controller", c.Label, "type", cp.Type, "vendor_type", cp.Vendor), b2i(cp.Present))
 		}
 	}
 	gauge("hwraid_cache_protection_state", "État observé du module de protection du cache, valeur 1.")
 	for _, c := range s.Controllers {
 		if cp := c.CacheProtection; cp != nil && cp.Present {
-			fmt.Fprintf(&b, "hwraid_cache_protection_state{%s} 1\n", labels("controller", c.Label, "type", cp.Type, "state", cp.State))
+			fmt.Fprintf(&b, "hwraid_cache_protection_state{%s} 1\n", labels("controller", c.Label, "state", cp.State))
 		}
 	}
 	gauge("hwraid_collection_success", "Résultat de la dernière lecture du collecteur.")

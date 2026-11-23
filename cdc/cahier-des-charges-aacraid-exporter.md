@@ -115,7 +115,7 @@ Pour `megaraid_sas`, la capacité `CAP_SYS_ADMIN` n’est exigée qu’à l’ou
 
 ## 5. Contrat Prometheus
 
-Les noms ci-dessous sont proposés pour la première version. Le label `controller` identifie la carte sur toutes ses métriques. Employer `serial:<série>` lorsque le numéro de série matériel du contrôleur est valide et unique sur l’hôte. Conserver les zéros initiaux. Ignorer les valeurs vides et les sentinelles constructeur. Si la série est définitivement indisponible ou dupliquée, employer `pci:<domaine:bus:slot.fonction>` pour chacune des cartes concernées. Résoudre les collisions sur l’inventaire complet, quel que soit l’ordre de découverte. Les identifiants PCI vendeur et périphérique désignent un modèle et ne distinguent pas deux exemplaires. L’adresse PCI complète (BDF) identifie un emplacement et peut changer après une modification de topologie. Conserver `pci_address` et `identity_source` sur `hwraid_controller_info`. Une erreur de lecture temporaire conserve l’identité déjà établie ; à froid, différer la publication des séries métier à identité indéterminée et signaler l’erreur de découverte. Utiliser un ensemble borné d’états normalisés. Les libellés du firmware non reconnus deviennent `unknown` et sont consignés dans les journaux. [Conventions d’écriture d’un exporter](https://prometheus.io/docs/instrumenting/writing_exporters/)
+Les noms ci-dessous sont proposés pour la première version. La liste exacte des métriques publiées, de leurs labels et des vocabulaires normalisés communs à tous les pilotes est tenue dans [docs/metrics.md](../docs/metrics.md), qui fait référence ; les règles d'alerte d'exemple sont dans [docs/alerts.md](../docs/alerts.md). Le label `controller` identifie la carte sur toutes ses métriques. Employer `serial:<série>` lorsque le numéro de série matériel du contrôleur est valide et unique sur l’hôte. Conserver les zéros initiaux. Ignorer les valeurs vides et les sentinelles constructeur. Si la série est définitivement indisponible ou dupliquée, employer `pci:<domaine:bus:slot.fonction>` pour chacune des cartes concernées. Résoudre les collisions sur l’inventaire complet, quel que soit l’ordre de découverte. Les identifiants PCI vendeur et périphérique désignent un modèle et ne distinguent pas deux exemplaires. L’adresse PCI complète (BDF) identifie un emplacement et peut changer après une modification de topologie. Conserver `pci_address` et `identity_source` sur `hwraid_controller_info`. Une erreur de lecture temporaire conserve l’identité déjà établie ; à froid, différer la publication des séries métier à identité indéterminée et signaler l’erreur de découverte. Utiliser un ensemble borné d’états normalisés. Les libellés du firmware non reconnus deviennent `unknown` et sont consignés dans les journaux. [Conventions d’écriture d’un exporter](https://prometheus.io/docs/instrumenting/writing_exporters/)
 
 | Famille | Labels | Sens |
 |---|---|---|
@@ -129,8 +129,8 @@ Les noms ci-dessous sont proposés pour la première version. Le label `controll
 | `hwraid_collection_last_success_timestamp_seconds` | `controller`, `collector` | Date Unix du dernier succès. |
 | `hwraid_collection_interval_seconds` | `controller` | Intervalle effectif de collecte. |
 | `hwraid_controller_state`, `hwraid_volume_state`, `hwraid_disk_state`, `hwraid_cache_protection_state` | objet + `state` | État observé, valeur 1. |
-| `hwraid_volume_member`, `hwraid_disk_info`, `hwraid_cache_protection_info` | objet | Relations et inventaire, valeur 1. |
-| `hwraid_volume_capacity_bytes`, `hwraid_task_progress_ratio`, `hwraid_cache_protection_present`, `hwraid_controller_temperature_celsius` | objet | Mesures. |
+| `hwraid_volume_info`, `hwraid_volume_member`, `hwraid_disk_info` | objet ; `raid_level` normalisé et `vendor_level` pour les volumes, `member` (disque ou volume) pour les relations | Relations et inventaire, valeur 1. |
+| `hwraid_volume_capacity_bytes`, `hwraid_task_progress_ratio`, `hwraid_cache_protection_present` (`type` normalisé, `vendor_type`), `hwraid_controller_temperature_celsius` | objet | Mesures. |
 
 Extrait synthétique d’un même scrape. Deux cartes possèdent chacune un volume 0. La première reconstruit son volume et porte un ZMM. Dans cet exemple illustratif, le futur module MegaRAID de la seconde carte signale explicitement l’absence du module.
 
@@ -143,15 +143,18 @@ hwraid_controller_backend_supported{controller="serial:EXAMPLE6805A01"} 1
 hwraid_controller_backend_supported{controller="pci:0000:05:00.0"} 1
 hwraid_management_node_valid{controller="serial:EXAMPLE6805A01"} 1
 hwraid_collection_success{controller="serial:EXAMPLE6805A01",collector="volumes"} 1
-hwraid_cache_protection_info{controller="serial:EXAMPLE6805A01",type="zmm",model="AFM-600"} 1
-hwraid_volume_state{controller="serial:EXAMPLE6805A01",volume="0",state="degraded"} 1
+hwraid_volume_info{controller="serial:EXAMPLE6805A01",volume="410734af",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""} 1
+hwraid_volume_info{controller="serial:EXAMPLE6805A01",volume="410734b3",name="Array0",raid_level="raid1",vendor_level="1",parent="410734af"} 1
+hwraid_volume_state{controller="serial:EXAMPLE6805A01",volume="410734b3",state="degraded_rebuilding"} 1
+hwraid_volume_state{controller="serial:EXAMPLE6805A01",volume="410734af",state="unknown"} 1
 hwraid_volume_state{controller="pci:0000:05:00.0",volume="0",state="optimal"} 1
-hwraid_task_progress_ratio{controller="serial:EXAMPLE6805A01",volume="0",task="rebuild"} 0.42
-hwraid_disk_info{controller="serial:EXAMPLE6805A01",disk="d3",slot="3",wwn="example-wwn-3"} 1
-hwraid_volume_member{controller="serial:EXAMPLE6805A01",volume="0",disk="d3"} 1
-hwraid_cache_protection_present{controller="serial:EXAMPLE6805A01"} 1
+hwraid_task_progress_ratio{controller="serial:EXAMPLE6805A01",volume="410734b3",task="rebuild"} 0.42
+hwraid_volume_member{controller="serial:EXAMPLE6805A01",volume="410734b3",member="d3"} 1
+hwraid_volume_member{controller="serial:EXAMPLE6805A01",volume="410734b3",member="d7"} 1
+hwraid_disk_state{controller="serial:EXAMPLE6805A01",disk="d7",state="rebuilding"} 1
+hwraid_cache_protection_present{controller="serial:EXAMPLE6805A01",type="flash_supercap",vendor_type="zmm"} 1
 hwraid_cache_protection_state{controller="serial:EXAMPLE6805A01",state="optimal"} 1
-hwraid_cache_protection_present{controller="pci:0000:05:00.0"} 0
+hwraid_cache_protection_present{controller="pci:0000:05:00.0",type="battery",vendor_type="bbu"} 0
 hwraid_collection_success{controller="pci:0000:05:00.0",collector="cache_protection"} 1
 ```
 

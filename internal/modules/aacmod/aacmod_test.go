@@ -264,8 +264,8 @@ func TestCollectCacheProtection(t *testing.T) {
 		collected *bool
 		unsup     bool
 	}{
-		{"optimal", cpAnswer{described: true, st: aacraid.ZMMStatus{State: aacraid.CacheProtectionOptimal}}, &module.CacheProtection{Present: true, Type: "zmm", State: "optimal"}, ptr(true), false},
-		{"non installé", cpAnswer{described: true, st: aacraid.ZMMStatus{State: aacraid.CacheProtectionNotInstalled}}, &module.CacheProtection{Type: "zmm"}, ptr(true), false},
+		{"optimal", cpAnswer{described: true, st: aacraid.ZMMStatus{State: aacraid.CacheProtectionOptimal}}, &module.CacheProtection{Present: true, Type: "flash_supercap", Vendor: "zmm", State: "optimal"}, ptr(true), false},
+		{"non installé", cpAnswer{described: true, st: aacraid.ZMMStatus{State: aacraid.CacheProtectionNotInstalled}}, &module.CacheProtection{Type: "flash_supercap", Vendor: "zmm"}, ptr(true), false},
 		{"non décrit", cpAnswer{described: false}, nil, nil, true},
 		{"autre type", cpAnswer{described: true, st: aacraid.ZMMStatus{State: aacraid.CacheProtectionOtherType}}, nil, nil, true},
 		{"échec", cpAnswer{err: errors.New("EIO")}, nil, ptr(false), false},
@@ -323,12 +323,12 @@ func TestCollectVolumesReference(t *testing.T) {
 		t.Fatalf("%d volumes, %d disques", len(r.Volumes), len(r.Disks))
 	}
 	top := r.Volumes[0]
-	if top.ID != "410734af" || top.Name != "Array0" || top.RaidLevel != "raid_volume" || top.Parent != "" ||
+	if top.ID != "410734af" || top.Name != "Array0" || top.RaidLevel != "concat" || top.VendorLevel != "RAID_volume" || top.Parent != "" ||
 		top.CapacityBytes != 62495109120*512 || top.State != "optimal" || len(top.Members) != 4 {
 		t.Fatalf("volume : %+v", top)
 	}
 	for _, v := range r.Volumes[1:] {
-		if v.RaidLevel != "raid1" || v.Parent != "410734af" || v.State != "optimal" || len(v.Members) != 2 {
+		if v.RaidLevel != "raid1" || v.VendorLevel != "1" || v.Parent != "410734af" || v.State != "optimal" || len(v.Members) != 2 {
 			t.Fatalf("miroir : %+v", v)
 		}
 	}

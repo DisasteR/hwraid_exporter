@@ -165,19 +165,19 @@ func TestCollectionSuccess(t *testing.T) {
 func TestCacheProtectionRender(t *testing.T) {
 	p := plan(aacHost("host0", "0000:01:00.0", "S1"))
 	res := map[string]module.Result{"0000:01:00.0": {NodeValid: true,
-		CacheProtection: &module.CacheProtection{Present: true, Type: "zmm", State: "failed"}}}
+		CacheProtection: &module.CacheProtection{Present: true, Type: "flash_supercap", Vendor: "zmm", State: "failed"}}}
 	out := Render(Build(p, true, res))
 	for _, line := range []string{
-		`hwraid_cache_protection_present{controller="serial:S1",type="zmm"} 1`,
-		`hwraid_cache_protection_state{controller="serial:S1",type="zmm",state="failed"} 1`,
+		`hwraid_cache_protection_present{controller="serial:S1",type="flash_supercap",vendor_type="zmm"} 1`,
+		`hwraid_cache_protection_state{controller="serial:S1",state="failed"} 1`,
 	} {
 		if !strings.Contains(out, line+"\n") {
 			t.Fatalf("ligne absente : %s\n%s", line, out)
 		}
 	}
-	res["0000:01:00.0"] = module.Result{NodeValid: true, CacheProtection: &module.CacheProtection{Type: "zmm"}}
+	res["0000:01:00.0"] = module.Result{NodeValid: true, CacheProtection: &module.CacheProtection{Type: "flash_supercap", Vendor: "zmm"}}
 	out = Render(Build(p, true, res))
-	if !strings.Contains(out, `hwraid_cache_protection_present{controller="serial:S1",type="zmm"} 0`+"\n") || strings.Contains(out, "hwraid_cache_protection_state{") {
+	if !strings.Contains(out, `hwraid_cache_protection_present{controller="serial:S1",type="flash_supercap",vendor_type="zmm"} 0`+"\n") || strings.Contains(out, "hwraid_cache_protection_state{") {
 		t.Fatalf("non installé :\n%s", out)
 	}
 	res["0000:01:00.0"] = module.Result{NodeValid: true}
@@ -190,14 +190,14 @@ func TestVolumeRender(t *testing.T) {
 	p := plan(aacHost("host0", "0000:01:00.0", "S1"))
 	res := map[string]module.Result{"0000:01:00.0": {NodeValid: true,
 		Volumes: []module.Volume{
-			{ID: "410734af", Name: "Array0", RaidLevel: "raid_volume", CapacityBytes: 1024, State: "unknown", Members: []string{"410734b3"}},
-			{ID: "410734b3", Name: "Array0", RaidLevel: "raid1", Parent: "410734af", CapacityBytes: 512, State: "degraded", Members: []string{"d3", "d7"}},
+			{ID: "410734af", Name: "Array0", RaidLevel: "concat", VendorLevel: "RAID_volume", CapacityBytes: 1024, State: "unknown", Members: []string{"410734b3"}},
+			{ID: "410734b3", Name: "Array0", RaidLevel: "raid1", VendorLevel: "1", Parent: "410734af", CapacityBytes: 512, State: "degraded", Members: []string{"d3", "d7"}},
 		},
 		Disks: []module.Disk{{ID: "d3", State: "online"}, {ID: "d7", State: "failed"}}}}
 	out := Render(Build(p, true, res))
 	for _, line := range []string{
-		`hwraid_volume_info{controller="serial:S1",volume="410734af",name="Array0",raid_level="raid_volume",parent=""} 1`,
-		`hwraid_volume_info{controller="serial:S1",volume="410734b3",name="Array0",raid_level="raid1",parent="410734af"} 1`,
+		`hwraid_volume_info{controller="serial:S1",volume="410734af",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""} 1`,
+		`hwraid_volume_info{controller="serial:S1",volume="410734b3",name="Array0",raid_level="raid1",vendor_level="1",parent="410734af"} 1`,
 		`hwraid_volume_state{controller="serial:S1",volume="410734b3",state="degraded"} 1`,
 		`hwraid_volume_capacity_bytes{controller="serial:S1",volume="410734af"} 1024`,
 		`hwraid_volume_member{controller="serial:S1",volume="410734b3",member="d7"} 1`,
