@@ -23,6 +23,9 @@ jobs:
       - name: Format
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
 
+      - name: Outil de capture fibcap
+        run: sh tools/fibcap/test.sh
+
       - name: Vet
         run: go vet ./...
 

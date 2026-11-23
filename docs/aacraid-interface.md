@@ -15,7 +15,7 @@ Tous les entiers sont en little-endian. Les positions sont en octets, à partir 
 | Élément | Valeur | Source |
 |---|---|---|
 | Nœud caractère | major dynamique « aac » dans `/proc/devices`, minor = `unique_id` de l'hôte SCSI | `drivers/scsi/aacraid/linit.c` (`register_chrdev`, `aac_cfg_open`) |
-| Envoi d'une commande firmware | `FSACTL_SENDFIB` = `0x42008` (tampon de 512 octets) ; `FSACTL_SEND_LARGE_FIB` = `0x42168` | `aacraid.h` (`CTL_CODE`), `commctrl.c` (`ioctl_send_fib`) |
+| Envoi d'une commande firmware | `FSACTL_SENDFIB` = `0x42008` ; `FSACTL_SEND_LARGE_FIB` = `0x42168` | `aacraid.h` (`CTL_CODE`), `commctrl.c` (`ioctl_send_fib`) |
 | Plage copiée par le pilote | `max(Size + 32, SenderSize)` octets, au plus 2 048, à l'aller et au retour | `commctrl.c` (`ioctl_send_fib`) |
 | Informations de la carte sans commande firmware | `FSACTL_GET_HBA_INFO` = `0x42198`, réponse de 200 octets construite par le pilote | `commctrl.c` (`aac_get_hba_info`), `aacraid.h` (`struct aac_hba_info`) |
 | Droits | `CAP_SYS_RAWIO` à chaque ioctl | `linit.c` (`aac_cfg_ioctl`) |
@@ -63,8 +63,10 @@ Le nom, la capacité, le type et l'identifiant unique d'un conteneur sont donc d
 Les informations détaillées (volume, disque, liste des membres) sont renvoyées par un transfert en plusieurs FIB, toutes de type `ContainerCommand` / `VM_ContainerConfig` :
 
 1. **Ouverture** : la sous-commande de lecture (par exemple 234 pour un volume, 248 pour un disque, 249 pour une liste de membres), avec le paramètre au mot 2 (numéro de conteneur, numéro de disque ou UID). La réponse donne : mot 0 statut (0 = succès), mot 1 écho de la sous-commande, mot 2 `0xc9`, mot 3 taille totale du transfert, mot 4 `0xda`, mot 5 identifiant du transfert.
-2. **Lecture des morceaux** : sous-commande 83 avec les mots 2 à 6 = `0xc9` (premier morceau) puis `0xc8`, taille totale, `0xda`, identifiant du transfert, numéro du morceau (0, 1…). La réponse reprend ces 8 mots, suivis de **448 octets de données**.
+2. **Lecture des morceaux** : sous-commande 83 avec les mots 2 à 6 = `0xc9` (premier morceau) puis `0xc8`, taille totale, `0xda`, identifiant du transfert, numéro du morceau (0, 1…). La réponse reprend les mots 0 à 7 (le mot 7 n'est pas interprété), suivis de **448 octets de données**. Les données sont reconstruites dans la limite de la taille totale : le dernier morceau n'est utile que jusqu'à cette taille.
 3. **Clôture** : sous-commande 84 avec les paramètres du dernier morceau ; la réponse porte `0xc6` au mot 2.
+
+Le pilote sérialise chaque ioctl, pas un transfert entier : un autre programme (outil constructeur) peut intercaler ses propres commandes entre deux morceaux. Le décodeur de l'exporter doit donc vérifier l'identifiant du transfert à chaque morceau et abandonner la lecture en cas d'incohérence.
 
 Exemples sur l'hôte de référence : 4 096 octets (10 morceaux) pour un volume ou un disque, 136 ou 72 octets (1 morceau) pour une liste de membres.
 
@@ -74,7 +76,7 @@ Exemples sur l'hôte de référence : 4 096 octets (10 morceaux) pour un volume 
 
 | Octets | Champ | Valeur de référence |
 |---|---|---|
-| 16-19 | identifiant unique | `0x410734AF` (= « Unique Identifier » de l'outil témoin) |
+| 16-19 | identifiant unique | égal au « Unique Identifier » affiché par l'outil témoin |
 | 64-71 | taille en blocs de 512 octets | 62 495 109 120 (= 30 515 190 Mo) |
 | 296-… | nom, chaîne terminée par un octet nul (longueur maximale non établie) | `Array0` |
 
@@ -115,18 +117,18 @@ Les octets 12 à 15 d'une entrée de la liste des membres portent l'état du mem
 | `0x4` | membre défaillant |
 | aucun | membre normal |
 
-Le bit `0x2` est examiné en premier. Sur l'hôte de référence, les 16 entrées ont ces octets à 0.
+Si les deux bits sont positionnés, le membre est traité comme en reconstruction. Un autre bit positionné rend l'état du membre **indéterminé**. Sur l'hôte de référence, les 16 entrées ont ces octets à 0.
 
-Un membre est aussi **défaillant** lorsque le disque qu'il désigne (octets 0-3) n'apparaît pas dans la liste des disques présents.
+Un membre est aussi **défaillant** lorsque le disque qu'il désigne (octets 0-3) n'apparaît pas dans la liste des disques présents. Cette règle n'est appliquée que sur une liste des disques lue complètement dans le même cycle ; sinon, l'état est **indéterminé**.
 
 ### État d'un conteneur
 
-L'état d'un conteneur ne figure pas tel quel dans les réponses : il se calcule à partir de ses membres et de son niveau RAID.
+L'état d'un conteneur ne figure pas tel quel dans les réponses : il se calcule à partir de ses membres et de son niveau RAID. La règle s'applique à chaque conteneur séparément : un RAID 10 construit comme un assemblage de miroirs (cas de l'hôte de référence) est évalué miroir par miroir.
 
 1. On compte les membres défaillants. Un membre en reconstruction ne contribue pas encore à la redondance : il est compté avec eux, selon des conditions précisées dans le code du module.
 2. Aucun membre compté : **optimal**.
 3. Sinon, selon la tolérance du niveau RAID :
-   - tolérance d'un membre (RAID 1, RAID 5, RAID 10 et apparentés) : un membre compté → **dégradé**, ou **dégradé en reconstruction** si un membre se reconstruit ; deux ou plus → **en échec** ;
+   - tolérance d'un membre (miroir, RAID 5 et apparentés) : un membre compté → **dégradé**, ou **dégradé en reconstruction** si un membre se reconstruit ; deux ou plus → **en échec** ;
    - tolérance de deux membres (RAID 6 et apparentés) : un membre compté → **redondance réduite**, ou **redondance réduite en reconstruction** ; deux → **dégradé**, ou **dégradé en reconstruction** ; davantage → **en échec** ;
    - sans tolérance (RAID 0, volume simple) : un membre compté → **en échec**.
 
@@ -151,17 +153,17 @@ Les lectures des sections 4 à 6 forment une interface que le firmware annonce d
 | 32-35 | `Version` : version de la zone d'extension |
 | 144-147 | `SupportedOptions2` |
 
-Une carte sous `aacraid` utilise ces lectures si `Version` est supérieur à 1 et si le bit `0x08` de `SupportedOptions2` est positionné (`AAC_SUPPORTED_ARCIO_PHYDEV` dans FreeBSD). L'outil constructeur les emploie alors avec les mêmes formats, quel que soit le modèle ou la version du firmware. Si le bit est absent, il emploie une autre interface, que l'exporter ne prend pas en charge : la carte est publiée comme non prise en charge pour l'état des volumes et des disques.
+Une carte sous `aacraid` utilise ces lectures si `Version` est supérieur à 1 et si le bit `0x08` de `SupportedOptions2` est positionné (`AAC_SUPPORTED_ARCIO_PHYDEV` dans FreeBSD). L'exporter n'emploie ces lectures que sur une carte qui annonce ce bit. Si le bit est absent, la carte est publiée comme non prise en charge pour l'état des volumes et des disques, et aucune autre lecture d'état n'est tentée.
 
 Sur l'hôte de référence : `Version` = 15, `SupportedOptions2` = `0x00c8693c` (bit `0x08` positionné).
 
-Ce critère dit quelles cartes l'outil constructeur interroge de cette façon. Il ne prouve pas qu'un firmware non testé y répond à l'identique : la qualification de la section 8 reste la preuve pour chaque nouveau couple modèle et firmware, et l'exporter publie la version de firmware avec ses métriques.
+Ce critère dit quelles cartes annoncent cette interface. Il ne prouve pas qu'un firmware non testé y répond à l'identique : la qualification de la section 8 reste la preuve pour chaque nouveau couple modèle et firmware, et l'exporter publie la version de firmware avec ses métriques.
 
 ## 8. Qualification
 
 Chaque lecture utilisée par l'exporter est qualifiée sur le matériel de référence selon l'exigence S4 du cahier des charges :
 
-1. capture des FIB émises par l'outil témoin lors d'une consultation, au moyen d'une bibliothèque chargée avec `LD_PRELOAD` qui journalise les ioctl de gestion sans les modifier ;
+1. capture des FIB émises par l'outil témoin lors d'une consultation, au moyen de la bibliothèque [`fibcap`](../tools/fibcap), chargée avec `LD_PRELOAD`, qui journalise les ioctl de gestion sans les modifier ([guide de capture](guide-capture-aacraid.md)) ;
 2. association de chaque FIB à une ligne de l'affichage de l'outil, et comparaison des champs décodés aux valeurs affichées ;
 3. pour chaque requête émise par l'exporter : partie significative identique à la capture, autres octets à zéro lorsqu'ils sont démontrés résiduels.
 
