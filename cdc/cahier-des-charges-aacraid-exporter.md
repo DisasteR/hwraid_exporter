@@ -85,7 +85,7 @@ L’attribut `reset_host` est inscriptible et réinitialise la carte : sysfs res
 | Statistiques du contrôleur et du cache DRAM | Aucune documentation publique. | Établi par observation (sous-commande 244) : entrées-sorties et secteurs par volume, accès servis par le cache DRAM, vidages, attentes, commandes en attente. Histogrammes de latence et compteurs d'erreurs par disque présents, positions à établir. Lecture de 9 FIB, sans remise à zéro des compteurs. |
 | Protection du cache (ZMM) | Enveloppe publique : `struct aac_vmioctl` (FreeBSD) avec `VM_Ioctl`, `FT_DRIVE` ; valeurs d'`IoctlCmd` et format de réponse non documentés. | Établi : deux lectures (présence `0x30000`, état `0x700000`) et règle de l'état (non installé, en panne, en charge, optimal), vérifiés sur le module en panne de l'hôte de référence et implémentés (collecteur `cache_protection`, lu à chaque cycle) ; validés sur l'hôte de référence le 2026-11-23 dans le profil de conteneur de la section 6.5 (`hwraid_cache_protection_state{state="failed"}`). Les états optimal et en charge seront observés après le remplacement du module. |
 
-**Domaine de validité.** Ces lectures ne sont employées que si la réponse publique à `RequestSupplementAdapterInfo` (706) annonce `Version` > 1 et le bit `0x08` de `SupportedOptions2` (`AAC_SUPPORTED_ARCIO_PHYDEV`, FreeBSD `aacraid_reg.h`). Le module lit cette réponse une fois par démarrage. Si le bit est absent, il ne tente aucune autre lecture d’état et publie la carte avec ses fonctions d’état non prises en charge. Le résultat de cette lecture est publié à chaque cycle par `hwraid_collection_success{collector="capabilities"}` : 1 si la réponse est connue, 0 si la lecture vient d’échouer (elle est retentée au cycle suivant). La réponse étant gardée, ce collecteur ne publie pas de date de dernier succès. La 6805 de référence annonce le bit. Vérifié sur l’hôte de référence le 2026-11-23, dans le profil de conteneur de la section 6.5 : la requête de l’exporter, octets 12 à 31 à zéro, est acceptée par le firmware, la réponse est décodée et le bit est lu présent.
+**Domaine de validité.** Ces lectures ne sont employées que si la réponse publique à `RequestSupplementAdapterInfo` (706) annonce `Version` > 1 et le bit `0x08` de `SupportedOptions2` (`AAC_SUPPORTED_ARCIO_PHYDEV`, FreeBSD `aacraid_reg.h`). Le module lit cette réponse une fois par démarrage. Si le bit est absent, il ne tente aucune lecture de volume, de membre ou de disque et publie ces fonctions non prises en charge ; la protection du cache, qui ne relève pas de cette interface, reste lue sur une carte qualifiée. Le résultat de cette lecture est publié à chaque cycle par `hwraid_collection_success{collector="capabilities"}` : 1 si la réponse est connue, 0 si la lecture vient d’échouer (elle est retentée au cycle suivant). La réponse étant gardée, ce collecteur ne publie pas de date de dernier succès. La 6805 de référence annonce le bit. Vérifié sur l’hôte de référence le 2026-11-23, dans le profil de conteneur de la section 6.5 : la requête de l’exporter, octets 12 à 31 à zéro, est acceptée par le firmware, la réponse est décodée et le bit est lu présent.
 
 Le détail des formats et du protocole paginé figure dans [docs/aacraid-interface.md](../docs/aacraid-interface.md).
 
@@ -143,14 +143,14 @@ hwraid_controller_backend_supported{controller="serial:EXAMPLE6805A01"} 1
 hwraid_controller_backend_supported{controller="pci:0000:05:00.0"} 1
 hwraid_management_node_valid{controller="serial:EXAMPLE6805A01"} 1
 hwraid_collection_success{controller="serial:EXAMPLE6805A01",collector="volumes"} 1
-hwraid_volume_info{controller="serial:EXAMPLE6805A01",volume="410734af",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""} 1
-hwraid_volume_info{controller="serial:EXAMPLE6805A01",volume="410734b3",name="Array0",raid_level="raid1",vendor_level="1",parent="410734af"} 1
-hwraid_volume_state{controller="serial:EXAMPLE6805A01",volume="410734b3",state="degraded_rebuilding"} 1
-hwraid_volume_state{controller="serial:EXAMPLE6805A01",volume="410734af",state="unknown"} 1
+hwraid_volume_info{controller="serial:EXAMPLE6805A01",volume="1d000000",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""} 1
+hwraid_volume_info{controller="serial:EXAMPLE6805A01",volume="1d000004",name="Array0",raid_level="raid1",vendor_level="1",parent="1d000000"} 1
+hwraid_volume_state{controller="serial:EXAMPLE6805A01",volume="1d000004",state="degraded_rebuilding"} 1
+hwraid_volume_state{controller="serial:EXAMPLE6805A01",volume="1d000000",state="unknown"} 1
 hwraid_volume_state{controller="pci:0000:05:00.0",volume="0",state="optimal"} 1
-hwraid_task_progress_ratio{controller="serial:EXAMPLE6805A01",volume="410734b3",task="rebuild"} 0.42
-hwraid_volume_member{controller="serial:EXAMPLE6805A01",volume="410734b3",member="d3"} 1
-hwraid_volume_member{controller="serial:EXAMPLE6805A01",volume="410734b3",member="d7"} 1
+hwraid_task_progress_ratio{controller="serial:EXAMPLE6805A01",volume="1d000004",task="rebuild"} 0.42
+hwraid_volume_member{controller="serial:EXAMPLE6805A01",volume="1d000004",member="d3"} 1
+hwraid_volume_member{controller="serial:EXAMPLE6805A01",volume="1d000004",member="d7"} 1
 hwraid_disk_state{controller="serial:EXAMPLE6805A01",disk="d7",state="rebuilding"} 1
 hwraid_cache_protection_present{controller="serial:EXAMPLE6805A01",type="flash_supercap",vendor_type="zmm"} 1
 hwraid_cache_protection_state{controller="serial:EXAMPLE6805A01",state="optimal"} 1
@@ -488,8 +488,11 @@ Deux revues indépendantes du dépôt ont été menées. Les corrections immédi
 
 1. **Filtre seccomp dans le processus.** `CAP_SYS_RAWIO`, conservée pour le pilote, autorise aussi `iopl` et `ioperm`. Installer après l'abandon des privilèges un filtre en liste blanche (`SECCOMP_FILTER_FLAG_TSYNC`), refusant au moins `iopl`, `ioperm`, `mknod*`, `ptrace`, `process_vm_*`, `kexec*`, et vérifier `Seccomp: 2` dans `/proc/self/status`.
 2. **Contrat de module pour les pilotes suivants.** Nœud partagé entre cartes (`megaraid_sas_ioctl_node`), descripteur ouvert pendant la préparation puis transmis après l'abandon de `CAP_SYS_ADMIN`, association des nœuds `sg` à leur carte (`hpsa`, `smartpqi`), échéance passée à `Collect`, capacités conservées seulement pour un plan valide.
-3. **Sens des dates de dernier succès pour une valeur gardée en cache** (capacités de la carte) : distinguer lecture matérielle, valeur en cache et lecture non tentée.
-4. **Lier les morceaux et la clôture d'un transfert paginé à son ouverture** dans le transport (identifiant, total, progression), en plus du contrôle de forme de la liste blanche.
+3. **Sens des dates de dernier succès pour une valeur gardée en cache** : fait pour les capacités (aucune date) ; à étendre aux valeurs gardées des pilotes suivants.
+4. **Lier les morceaux et la clôture d'un transfert paginé à son ouverture** : fait dans le transport (identifiant, total, numéro, marque et taille de réponse ; aucune clôture après une ouverture non conforme). Reste à le vérifier dans la liste blanche elle-même.
 5. **Bits non reconnus du mot d'état ZMM.** Le bit `0x80`, présent sur le module en panne de l'hôte de référence, n'est pas qualifié. Qualifier les bits sur un module sain (bloc AFM-600CC de remplacement), puis publier `unknown` pour tout bit hors de l'ensemble connu.
 6. **Vocabulaires des pilotes suivants.** Identifiant de disque `enclosure:slot`, états `predictive_failure`, `offline`, `unconfigured_bad` pour les disques, `learning` et `degraded` pour les batteries.
-7. **Chaîne d'outillage.** Épingler les actions de CI par empreinte et l'image de base par digest.
+7. **Chaîne d'outillage.** Épingler les actions de la CI par empreinte (fait pour le workflow de publication et l'image de compilation).
+8. **Rattachement du nœud au domaine PCI** (revue du 2026-11-23, avant v0.1.0). `GET_HBA_INFO` est comparé au bus, au slot et à la fonction, pas au domaine PCI ni aux identifiants PCI. Recouper ces champs avant toute commande firmware.
+9. **Collecte hors délai interrompue entre deux commandes.** Une collecte qui dépasse son délai poursuit ses commandes jusqu'à la fin ; la vérifier entre deux appels pour l'interrompre, sans laisser de transfert paginé ouvert.
+10. **Provenance des nœuds du répertoire dédié.** Un nœud caractère au nom valide créé par un tiers dans `/dev/hwraid_exporter` serait remplacé ou supprimé ; exiger une preuve de provenance avant ces opérations, et signaler les erreurs de nettoyage des fichiers temporaires.

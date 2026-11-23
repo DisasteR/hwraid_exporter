@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Appelée par la publication : la suite complète sur le commit tagué.
+  workflow_call:
 
 permissions:
   contents: read
@@ -13,6 +15,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags pour git describe
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -59,7 +63,8 @@ jobs:
 
       - name: Binaire statique
         run: |
-          CGO_ENABLED=0 go build -trimpath -o dist/hwraid-exporter ./cmd/hwraid-exporter
+          CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=$(git describe --tags --always --dirty) -X main.revision=$GITHUB_SHA" -o dist/hwraid-exporter ./cmd/hwraid-exporter
+          test "$(dist/hwraid-exporter version)" = "$(git describe --tags --always --dirty)"
           if readelf -l dist/hwraid-exporter | grep -q 'Requesting program interpreter'; then
             echo "le binaire dépend d'un interpréteur dynamique" >&2; exit 1
           fi
@@ -100,7 +105,7 @@ jobs:
           grep -qE '^Uid:\s+65534\s+65534\s+65534\s+65534$' sds.txt
           grep -qE '^NoNewPrivs:\s+1$' sds.txt
           grep -qE '^Seccomp:\s+2$' sds.txt
-          ! grep -qiE 'operation not permitted|level=ERROR' sd.log
+          if grep -qiE 'operation not permitted|level=ERROR' sd.log; then echo "erreur au journal de l'unité" >&2; exit 1; fi
           systemd-analyze security hwraid-exporter --no-pager | tail -1
           sudo systemctl stop hwraid-exporter
           test "$(systemctl show -p Result --value hwraid-exporter)" = success

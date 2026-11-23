@@ -42,8 +42,13 @@ func (t *Tracker) Update(results map[string]module.Result, present []string, now
 		}
 	}
 	for addr, r := range results {
+		cached := map[string]bool{}
+		for _, c := range r.Cached {
+			cached[c] = true
+			delete(t.last[addr], c)
+		}
 		for col, ok := range r.Collected {
-			if !ok {
+			if !ok || cached[col] {
 				continue
 			}
 			if t.last[addr] == nil {
@@ -60,8 +65,16 @@ func (t *Tracker) Remember(s Snapshot) {
 		return
 	}
 	for _, c := range s.Controllers {
-		if c.IdentitySource == "serial" {
-			t.serial[c.PCIAddress] = c.Label
+		if c.IdentitySource != "serial" {
+			continue
+		}
+		t.serial[c.PCIAddress] = c.Label
+		// Un numéro désormais porté par une autre carte n'identifie plus
+		// celle qui l'avait.
+		for addr, l := range t.serial {
+			if l == c.Label && addr != c.PCIAddress {
+				delete(t.serial, addr)
+			}
 		}
 	}
 }

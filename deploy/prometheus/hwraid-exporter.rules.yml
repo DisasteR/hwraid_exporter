@@ -89,7 +89,8 @@ groups:
         expr: |
           hwraid_cache_protection_state{state="failed"} == 1
           or (last_over_time(hwraid_cache_protection_state{state="failed"}[10m]) == 1
-              unless on (job, instance, controller) hwraid_cache_protection_state)
+              unless on (job, instance, controller) hwraid_cache_protection_state
+              unless on (job, instance, controller) hwraid_cache_protection_present == 0)
         for: 5m
         labels:
           severity: warning
@@ -101,7 +102,8 @@ groups:
         expr: |
           hwraid_cache_protection_state{state="charging"} == 1
           or (last_over_time(hwraid_cache_protection_state{state="charging"}[10m]) == 1
-              unless on (job, instance, controller) hwraid_cache_protection_state)
+              unless on (job, instance, controller) hwraid_cache_protection_state
+              unless on (job, instance, controller) hwraid_cache_protection_present == 0)
         for: 2h
         labels:
           severity: warning
@@ -199,7 +201,9 @@ groups:
 
       - alert: HwraidExporterDown
         # Instance qui a publié des métriques hwraid dans les dernières 24 h
-        # et que Prometheus n'arrive plus à collecter.
+        # et que Prometheus n'arrive plus à collecter. Une cible retirée de
+        # la configuration de Prometheus n'a plus de série up : elle n'est
+        # pas vue par cette règle.
         expr: up == 0 and on (job, instance) last_over_time(hwraid_snapshot_ready[1d])
         for: 10m
         labels:

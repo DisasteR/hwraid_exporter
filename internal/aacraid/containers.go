@@ -60,8 +60,13 @@ func DecodeDiskList(d []byte) ([]uint32, error) {
 		return nil, fmt.Errorf("disk list: %d entries for %d bytes", n, len(d))
 	}
 	out := make([]uint32, n)
+	seen := map[uint32]bool{}
 	for i := range out {
 		out[i] = le.Uint32(d[4+4*i:])
+		if seen[out[i]] {
+			return nil, fmt.Errorf("disk list: duplicate disk %d", out[i])
+		}
+		seen[out[i]] = true
 	}
 	return out, nil
 }

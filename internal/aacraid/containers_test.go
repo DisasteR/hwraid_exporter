@@ -63,14 +63,14 @@ func TestDecodeReferenceConfiguration(t *testing.T) {
 		t.Fatalf("%d conteneurs, %d disques", len(cs), len(disks))
 	}
 	vol := cs[0].Info
-	if vol.UID != 0x410734af || vol.Type != TypeAssembly || vol.Parent != NoUID || vol.Members != 4 ||
+	if vol.UID != 0x1d000000 || vol.Type != TypeAssembly || vol.Parent != NoUID || vol.Members != 4 ||
 		vol.Blocks != 62495109120 || vol.Name != "Array0" {
 		t.Fatalf("volume : %+v", vol)
 	}
 	// Miroirs et leurs disques, dans l'ordre de l'outil de référence.
-	want := map[uint32][2]uint32{0x410734b0: {0, 4}, 0x410734b1: {5, 1}, 0x410734b2: {6, 2}, 0x410734b3: {3, 7}}
+	want := map[uint32][2]uint32{0x1d000001: {0, 4}, 0x1d000002: {5, 1}, 0x1d000003: {6, 2}, 0x1d000004: {3, 7}}
 	for _, c := range cs[1:] {
-		if c.Info.Type != TypeMirror || c.Info.Parent != 0x410734af || c.Info.Members != 2 {
+		if c.Info.Type != TypeMirror || c.Info.Parent != 0x1d000000 || c.Info.Members != 2 {
 			t.Fatalf("miroir : %+v", c.Info)
 		}
 		w, ok := want[c.Info.UID]
@@ -110,7 +110,7 @@ func TestDecodeReferenceConfiguration(t *testing.T) {
 // Variantes construites à partir de la configuration de référence : chaque
 // branche de la règle.
 func TestEvaluateBranches(t *testing.T) {
-	const mirror = 0x410734b3 // disques 3 et 7
+	const mirror = 0x1d000004 // disques 3 et 7
 	type tc struct {
 		name   string
 		mod    func(cs []Container, disks []uint32) []uint32
@@ -159,10 +159,10 @@ func TestEvaluateBranches(t *testing.T) {
 		cs, disks := referenceContainers(t)
 		disks = c.mod(cs, disks)
 		ev := Evaluate(cs, disks)
-		if ev.Volumes[mirror] != c.mirror || ev.Volumes[0x410734af] != c.top || ev.Disks[7] != c.disk7 {
-			t.Fatalf("%s : miroir %s, volume %s, disque 7 %q", c.name, ev.Volumes[mirror], ev.Volumes[0x410734af], ev.Disks[7])
+		if ev.Volumes[mirror] != c.mirror || ev.Volumes[0x1d000000] != c.top || ev.Disks[7] != c.disk7 {
+			t.Fatalf("%s : miroir %s, volume %s, disque 7 %q", c.name, ev.Volumes[mirror], ev.Volumes[0x1d000000], ev.Disks[7])
 		}
-		for _, other := range []uint32{0x410734b0, 0x410734b1, 0x410734b2} {
+		for _, other := range []uint32{0x1d000001, 0x1d000002, 0x1d000003} {
 			if ev.Volumes[other] != VolumeOptimal {
 				t.Fatalf("%s : miroir %#x touché : %s", c.name, other, ev.Volumes[other])
 			}
@@ -184,12 +184,12 @@ func TestDecodeRejects(t *testing.T) {
 	if _, err := DecodeDiskList([]byte{9, 0, 0, 0}); err == nil {
 		t.Fatal("liste de disques tronquée acceptée")
 	}
-	m := fixture(t, "249-410734b3")
+	m := fixture(t, "249-1d000004")
 	le.PutUint32(m[8+4:], 7) // le membre désigne aussi un conteneur
 	if _, err := DecodeMemberList(m); err == nil {
 		t.Fatal("membre à la fois disque et conteneur accepté")
 	}
-	m = fixture(t, "249-410734b3")
+	m = fixture(t, "249-1d000004")
 	le.PutUint32(m[4:], 3) // trois membres annoncés, deux présents
 	if _, err := DecodeMemberList(m); err == nil {
 		t.Fatal("liste des membres tronquée acceptée")
@@ -206,7 +206,7 @@ func TestDecodeRejects(t *testing.T) {
 
 // Configurations incohérentes : indéterminées, quel que soit l'ordre.
 func TestEvaluateInconsistent(t *testing.T) {
-	const top, b3 = 0x410734af, 0x410734b3
+	const top, b3 = 0x1d000000, 0x1d000004
 	cases := map[string]func(cs []Container){
 		"miroir à disque dupliqué": func(cs []Container) {
 			for i := range cs {
@@ -258,5 +258,15 @@ func TestContainerNamePrintable(t *testing.T) {
 	info, err := DecodeContainerInfo(c)
 	if err != nil || info.Name != "A??b" {
 		t.Fatalf("%q %v", info.Name, err)
+	}
+}
+
+// Un disque en double dans la liste 247 est refusé : il donnerait deux
+// séries d'inventaire pour un même disque.
+func TestDiskListDuplicate(t *testing.T) {
+	d := fixture(t, "247-0")
+	binary.LittleEndian.PutUint32(d[8:], binary.LittleEndian.Uint32(d[4:]))
+	if _, err := DecodeDiskList(d); err == nil {
+		t.Fatal("disque en double accepté")
 	}
 }

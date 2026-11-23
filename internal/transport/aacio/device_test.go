@@ -333,13 +333,15 @@ func TestCacheProtectionSequence(t *testing.T) {
 // l'hôte de référence (marques 0xc9 / 0xc8 / 0xc6, 448 octets par morceau),
 // et journalise les requêtes reçues.
 type fakeFirmware struct {
-	payload  []byte
-	xfer     uint32
-	failAt   int // numéro de morceau en erreur (-1 : aucun)
-	requests [][]byte
-	openMark uint32 // marque d'ouverture (0 : 0xc9)
-	total    uint32 // taille annoncée (0 : taille de payload)
-	stopXfer uint32 // transfert annoncé à la clôture (0 : écho)
+	payload   []byte
+	xfer      uint32
+	failAt    int // numéro de morceau en erreur (-1 : aucun)
+	requests  [][]byte
+	openMark  uint32 // marque d'ouverture (0 : 0xc9)
+	total     uint32 // taille annoncée (0 : taille de payload)
+	stopXfer  uint32 // transfert annoncé à la clôture (0 : écho)
+	chunkMark uint32 // marque des réponses de morceau (0 : 0xc8)
+	chunkSize uint16 // champ Size des réponses de morceau (0 : 496)
 }
 
 func (f *fakeFirmware) ioctl(t *testing.T) {
@@ -358,7 +360,15 @@ func (f *fakeFirmware) ioctl(t *testing.T) {
 			if int(n) == f.failAt {
 				return syscall.EIO
 			}
-			le.PutUint32(d[8:], 0xc8)
+			mark, size := uint32(0xc8), uint16(496)
+			if f.chunkMark != 0 {
+				mark = f.chunkMark
+			}
+			if f.chunkSize != 0 {
+				size = f.chunkSize
+			}
+			le.PutUint32(d[8:], mark)
+			le.PutUint16(buf[8:], size)
 			off := int(n) * aacraid.ChunkData
 			chunk := make([]byte, aacraid.ChunkData)
 			if off < len(f.payload) {
@@ -463,8 +473,24 @@ func TestReadPagedRejectedOpenAndShortData(t *testing.T) {
 	if _, err := open(t).ReadPaged(aacraid.ReadContainerInfo, 0, 0, need); err == nil {
 		t.Fatal("ouverture à marque inattendue acceptée")
 	}
-	if got := f.subs(); len(got) != 2 || got[1] != 84 {
-		t.Fatalf("pas de clôture après une ouverture rejetée : %v", got)
+	// Ouverture non conforme : aucune clôture sur un identifiant non prouvé.
+	if got := f.subs(); len(got) != 1 {
+		t.Fatalf("requête envoyée après une ouverture rejetée : %v", got)
+	}
+
+	// Morceau de marque inattendue, ou réponse incomplète (Size) : refusé,
+	// puis transfert clos.
+	for name, ff := range map[string]*fakeFirmware{
+		"marque": {payload: make([]byte, 0x1000), xfer: 9, failAt: -1, chunkMark: 0xc9},
+		"taille": {payload: make([]byte, 0x1000), xfer: 9, failAt: -1, chunkSize: 100},
+	} {
+		ff.ioctl(t)
+		if _, err := open(t).ReadPaged(aacraid.ReadContainerInfo, 0, 0, need); err == nil {
+			t.Fatalf("morceau anormal (%s) accepté", name)
+		}
+		if got := ff.subs(); len(got) != 3 || got[2] != 84 {
+			t.Fatalf("%s : séquence %v, attendu ouverture, morceau, clôture", name, got)
+		}
 	}
 
 	f = &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: -1, total: 0x2000}

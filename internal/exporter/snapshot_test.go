@@ -99,8 +99,8 @@ func TestNodeValidity(t *testing.T) {
 }
 
 func TestRenderExposition(t *testing.T) {
-	initial := "# HELP hwraid_exporter_build_info Exporter and Go versions, value 1.\n# TYPE hwraid_exporter_build_info gauge\n" +
-		`hwraid_exporter_build_info{version="` + Version + `",goversion="` + runtime.Version() + `"} 1` + "\n" +
+	initial := "# HELP hwraid_exporter_build_info Exporter version, source revision and Go version, value 1.\n# TYPE hwraid_exporter_build_info gauge\n" +
+		`hwraid_exporter_build_info{version="` + Version + `",revision="` + Revision + `",goversion="` + runtime.Version() + `"} 1` + "\n" +
 		"# HELP hwraid_snapshot_ready 1 once the first discovery has been published.\n# TYPE hwraid_snapshot_ready gauge\nhwraid_snapshot_ready 0\n"
 	if out := Render(Snapshot{}); out != initial {
 		t.Fatalf("vue initiale :\n%s", out)
@@ -196,17 +196,17 @@ func TestVolumeRender(t *testing.T) {
 	p := plan(aacHost("host0", "0000:01:00.0", "S1"))
 	res := map[string]module.Result{"0000:01:00.0": {NodeValid: true,
 		Volumes: []module.Volume{
-			{ID: "410734af", Name: "Array0", RaidLevel: "concat", VendorLevel: "RAID_volume", CapacityBytes: 1024, State: "unknown", Members: []string{"410734b3"}},
-			{ID: "410734b3", Name: "Array0", RaidLevel: "raid1", VendorLevel: "1", Parent: "410734af", CapacityBytes: 512, State: "degraded", Members: []string{"d3", "d7"}},
+			{ID: "1d000000", Name: "Array0", RaidLevel: "concat", VendorLevel: "RAID_volume", CapacityBytes: 1024, State: "unknown", Members: []string{"1d000004"}},
+			{ID: "1d000004", Name: "Array0", RaidLevel: "raid1", VendorLevel: "1", Parent: "1d000000", CapacityBytes: 512, State: "degraded", Members: []string{"d3", "d7"}},
 		},
 		Disks: []module.Disk{{ID: "d3", State: "online"}, {ID: "d7", State: "failed"}}}}
 	out := Render(Build(p, true, res, nil, 0))
 	for _, line := range []string{
-		`hwraid_volume_info{controller="serial:S1",volume="410734af",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""} 1`,
-		`hwraid_volume_info{controller="serial:S1",volume="410734b3",name="Array0",raid_level="raid1",vendor_level="1",parent="410734af"} 1`,
-		`hwraid_volume_state{controller="serial:S1",volume="410734b3",state="degraded"} 1`,
-		`hwraid_volume_capacity_bytes{controller="serial:S1",volume="410734af"} 1024`,
-		`hwraid_volume_member{controller="serial:S1",volume="410734b3",member="d7"} 1`,
+		`hwraid_volume_info{controller="serial:S1",volume="1d000000",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""} 1`,
+		`hwraid_volume_info{controller="serial:S1",volume="1d000004",name="Array0",raid_level="raid1",vendor_level="1",parent="1d000000"} 1`,
+		`hwraid_volume_state{controller="serial:S1",volume="1d000004",state="degraded"} 1`,
+		`hwraid_volume_capacity_bytes{controller="serial:S1",volume="1d000000"} 1024`,
+		`hwraid_volume_member{controller="serial:S1",volume="1d000004",member="d7"} 1`,
 		`hwraid_disk_state{controller="serial:S1",disk="d7",state="failed"} 1`,
 	} {
 		if !strings.Contains(out, line+"\n") {
@@ -345,12 +345,75 @@ func TestDiskOSDeviceRender(t *testing.T) {
 
 // Version publiée dès l'instantané initial, avant toute collecte.
 func TestBuildInfo(t *testing.T) {
-	old := Version
-	Version = "v9.9.9"
-	defer func() { Version = old }()
+	oldV, oldR := Version, Revision
+	Version, Revision = "v9.9.9", "2bc8c58f0e1d"
+	defer func() { Version, Revision = oldV, oldR }()
 	out := Render(Snapshot{})
-	want := `hwraid_exporter_build_info{version="v9.9.9",goversion="` + runtime.Version() + `"} 1`
+	want := `hwraid_exporter_build_info{version="v9.9.9",revision="2bc8c58f0e1d",goversion="` + runtime.Version() + `"} 1`
 	if !strings.Contains(out, want+"\n") {
 		t.Fatalf("ligne absente : %s\n%s", want, out)
+	}
+}
+
+// Scénario de collision : A porte S ; A devient illisible pendant que B
+// présente S ; puis les deux deviennent illisibles. Aucun cycle ne doit
+// publier deux cartes sous le même label.
+func TestIdentityNeverDuplicated(t *testing.T) {
+	const a, b = "0000:01:00.0", "0000:02:00.0"
+	tr := NewTracker()
+	cycle := func(sa, sb string) map[string]string {
+		p := plan(aacHost("host0", a, sa), aacHost("host1", b, sb))
+		s := Build(p, true, valid(p), tr, 0)
+		tr.Remember(s)
+		got, seen := map[string]string{}, map[string]bool{}
+		for _, c := range s.Controllers {
+			if seen[c.Label] {
+				t.Fatalf("label %s publié deux fois (A=%q, B=%q)", c.Label, sa, sb)
+			}
+			seen[c.Label] = true
+			got[c.PCIAddress] = c.Label
+		}
+		return got
+	}
+	if got := cycle("S", ""); got[a] != "serial:S" {
+		t.Fatal(got)
+	}
+	if got := cycle("", "S"); got[a] != "pci:"+a || got[b] != "serial:S" {
+		t.Fatal(got)
+	}
+	// Seule B garde la mémoire de S.
+	if got := cycle("", ""); got[a] != "pci:"+a || got[b] != "serial:S" {
+		t.Fatalf("après les deux lectures ratées : %v", got)
+	}
+}
+
+// Collecteur servi par une réponse gardée : jamais de date de dernier
+// succès, et une date déjà enregistrée est retirée.
+func TestCachedCollectorHasNoLastSuccess(t *testing.T) {
+	const addr = "0000:01:00.0"
+	tr := NewTracker()
+	t0 := time.Unix(1_000_000, 0)
+	tr.Update(map[string]module.Result{addr: {Collected: map[string]bool{"capabilities": true, "volumes": true}}}, []string{addr}, t0)
+	tr.Update(map[string]module.Result{addr: {Collected: map[string]bool{"capabilities": true, "volumes": true}, Cached: []string{"capabilities"}}}, []string{addr}, t0.Add(time.Minute))
+	last := tr.Last(addr)
+	if _, ok := last["capabilities"]; ok || last["volumes"] != t0.Add(time.Minute) {
+		t.Fatalf("%v", last)
+	}
+}
+
+// Seconde ligne de défense : même si deux adresses mémorisaient le même
+// numéro (état que Remember ne doit pas produire), aucun label n'est publié
+// deux fois.
+func TestIdentityDuplicateFallsBackToPCI(t *testing.T) {
+	const a, b = "0000:01:00.0", "0000:02:00.0"
+	tr := NewTracker()
+	tr.serial[a], tr.serial[b] = "serial:S", "serial:S"
+	p := plan(aacHost("host0", a, ""), aacHost("host1", b, ""))
+	got := map[string]string{}
+	for _, c := range Build(p, true, valid(p), tr, 0).Controllers {
+		got[c.PCIAddress] = c.Label + "/" + c.IdentitySource
+	}
+	if got[a] != "pci:"+a+"/pci" || got[b] != "pci:"+b+"/pci" {
+		t.Fatalf("%v", got)
 	}
 }

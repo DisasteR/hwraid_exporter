@@ -64,6 +64,10 @@ type Result struct {
 	// résultat de sa lecture (hwraid_collection_success). Un collecteur
 	// absent n'a pas été tenté.
 	Collected map[string]bool
+	// Cached liste les collecteurs servis par une réponse gardée en mémoire
+	// (capacités de la carte) : leur succès ne date pas une lecture du
+	// cycle, ils n'ont pas de date de dernier succès.
+	Cached []string
 	// TimedOut : la collecte n'a pas rendu la main avant l'échéance du
 	// cycle. Rien n'a été observé, pas même la validité du nœud.
 	TimedOut bool
@@ -255,6 +259,27 @@ func (p *Plan) Specs(majors map[string]uint32) []nodes.Spec {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// Prepared indique que chaque nœud demandé par la carte, avec le major lu
+// dans majors, est exactement un nœud préparé au démarrage : la carte peut
+// être collectée même si le reste de l'inventaire a changé ou n'a pas pu
+// être lu.
+func Prepared(pc Planned, majors map[string]uint32, prepared []nodes.Spec) bool {
+	if pc.Err != nil {
+		return false
+	}
+	have := map[nodes.Spec]bool{}
+	for _, s := range prepared {
+		have[s] = true
+	}
+	for _, r := range pc.Requests {
+		m, ok := majors[r.MajorOf]
+		if !ok || m == 0 || !have[nodes.Spec{Name: r.Name, MajorOf: r.MajorOf, Major: m, Minor: r.Minor}] {
+			return false
+		}
+	}
+	return true
 }
 
 // Refs renvoie les nœuds préparés d'une carte, pour Collect.

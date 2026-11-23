@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/DisasteR/hwraid_exporter/internal/nodes"
 	"github.com/DisasteR/hwraid_exporter/internal/sysfs"
 )
 
@@ -123,5 +124,36 @@ func TestSpecsResolveMajors(t *testing.T) {
 	refs := Refs("/dev/hwraid_exporter", p.Cards[0], specs)
 	if len(refs) != 1 || refs[0].Path != "/dev/hwraid_exporter/a01" || refs[0].Dev != specs[0].Dev() {
 		t.Fatalf("refs : %+v", refs)
+	}
+}
+
+// Une carte n'est collectée que si chacun de ses nœuds est exactement un
+// nœud préparé au démarrage : nom, major (relu) et minor.
+func TestPrepared(t *testing.T) {
+	mods := []Module{fake{name: "A", driver: "drvA", nodes: perCard("a", "majA")}}
+	p := Build([]sysfs.SCSIHost{h("host0", 0, "0000:01:00.0", "drvA", raid)}, mods)
+	majors := map[string]uint32{"majA": 240}
+	prepared := p.Specs(majors)
+	if len(prepared) != 1 || !Prepared(p.Cards[0], majors, prepared) {
+		t.Fatalf("carte inchangée non collectée : %+v", prepared)
+	}
+	if Prepared(p.Cards[0], map[string]uint32{"majA": 241}, prepared) {
+		t.Fatal("major changé accepté")
+	}
+	if Prepared(p.Cards[0], map[string]uint32{}, prepared) {
+		t.Fatal("major disparu accepté")
+	}
+	other := append([]nodes.Spec(nil), prepared...)
+	other[0].Minor++
+	if Prepared(p.Cards[0], majors, other) {
+		t.Fatal("minor différent accepté")
+	}
+	if Prepared(p.Cards[0], majors, nil) {
+		t.Fatal("carte sans nœud préparé acceptée")
+	}
+	bad := p.Cards[0]
+	bad.Err = errors.New("x")
+	if Prepared(bad, majors, prepared) {
+		t.Fatal("carte en erreur acceptée")
 	}
 }

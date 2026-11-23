@@ -1,6 +1,7 @@
 package aacmod
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -209,8 +210,13 @@ func TestCollectSupplementGate(t *testing.T) {
 	d := &fakeDev{info: hba, sup: arcIo}
 	m := withDev(d, nil)
 	for i := 0; i < 3; i++ {
-		if r := m.Collect(c, ref); !r.NodeValid || r.CollectErr != nil || len(r.Unsupported) != 0 {
+		r := m.Collect(c, ref)
+		if !r.NodeValid || r.CollectErr != nil || len(r.Unsupported) != 0 {
 			t.Fatalf("cycle %d : %+v", i, r)
+		}
+		// Réponse 706 gardée : collecteur sans date de dernier succès.
+		if len(r.Cached) != 1 || r.Cached[0] != CapabilitiesCollector {
+			t.Fatalf("cycle %d : collecteurs en mémoire %v", i, r.Cached)
 		}
 	}
 	if d.supCall != 1 {
@@ -360,12 +366,12 @@ func TestCollectVolumesReference(t *testing.T) {
 		t.Fatalf("%d volumes, %d disques", len(r.Volumes), len(r.Disks))
 	}
 	top := r.Volumes[0]
-	if top.ID != "410734af" || top.Name != "Array0" || top.RaidLevel != "concat" || top.VendorLevel != "RAID_volume" || top.Parent != "" ||
+	if top.ID != "1d000000" || top.Name != "Array0" || top.RaidLevel != "concat" || top.VendorLevel != "RAID_volume" || top.Parent != "" ||
 		top.CapacityBytes != 62495109120*512 || top.State != "optimal" || len(top.Members) != 4 {
 		t.Fatalf("volume : %+v", top)
 	}
 	for _, v := range r.Volumes[1:] {
-		if v.RaidLevel != "raid1" || v.VendorLevel != "1" || v.Parent != "410734af" || v.State != "optimal" || len(v.Members) != 2 {
+		if v.RaidLevel != "raid1" || v.VendorLevel != "1" || v.Parent != "1d000000" || v.State != "optimal" || len(v.Members) != 2 {
 			t.Fatalf("miroir : %+v", v)
 		}
 	}
@@ -446,7 +452,7 @@ func TestCollectVolumesFailureAndGate(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
 	c := card("0000:01:00.0", "0")
 	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}
-	for _, failing := range []string{"229-0", "234-fd", "247-0", "249-410734b2"} {
+	for _, failing := range []string{"229-0", "234-fd", "247-0", "249-1d000003"} {
 		d := &fakeDev{info: hba, sup: arcIo, paged: func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
 			if fmt.Sprintf("%d-%x", r, p) == failing {
 				return nil, errors.New("EIO")
@@ -669,5 +675,53 @@ func TestCollectDiskOSDevices(t *testing.T) {
 	}
 	if got := run(nil); len(got) != 0 {
 		t.Fatalf("sans liste : %+v", got)
+	}
+}
+
+// Liste de membres plus courte que le nombre annoncé par 234 : la
+// configuration du cycle est en erreur, rien n'est publié.
+func TestCollectMemberCountMismatch(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	d := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}, sup: arcIo, paged: func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
+		if r == aacraid.ReadMemberList && p == 0x1d000000 {
+			b, err := referencePaged(r, p, size)
+			if err != nil {
+				return nil, err
+			}
+			binary.LittleEndian.PutUint32(b[4:], 3) // 3 listés, 4 annoncés
+			return b[:8+32*3], nil
+		}
+		return referencePaged(r, p, size)
+	}}
+	r := withDev(d, nil).Collect(card("0000:01:00.0", "0"), ref)
+	if r.Volumes != nil || r.Collected["volumes"] || r.Collected["disks"] || r.CollectErr == nil {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// Carte des connecteurs relue quand l'ensemble des disques présents change
+// (ajout à chaud), et seulement dans ce cas.
+func TestConnectorMapRereadOnDiskChange(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	c := card("0000:01:00.0", "0")
+	seven := true
+	d := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}, sup: arcIo, paged: func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
+		b, err := referencePaged(r, p, size)
+		if err == nil && r == aacraid.ReadDiskList && seven {
+			binary.LittleEndian.PutUint32(b[0:], 7) // d7 absent
+		}
+		return b, err
+	}}
+	m := withDev(d, nil)
+	m.Collect(c, ref)
+	m.Collect(c, ref)
+	if d.cmCall != 1 {
+		t.Fatalf("%d lectures pour une liste inchangée", d.cmCall)
+	}
+	seven = false
+	r := m.Collect(c, ref)
+	m.Collect(c, ref)
+	if d.cmCall != 2 || len(r.DiskLocations) != 8 {
+		t.Fatalf("%d lectures, %d emplacements après l'ajout de d7", d.cmCall, len(r.DiskLocations))
 	}
 }

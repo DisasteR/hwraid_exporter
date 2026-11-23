@@ -32,7 +32,7 @@ Valeurs réservées pour les modules à venir, non publiées aujourd'hui : `redu
 
 | Métrique | Labels | Valeur |
 |---|---|---|
-| `hwraid_exporter_build_info` | `version`, `goversion` | 1 ; version de l'exporter et de Go |
+| `hwraid_exporter_build_info` | `version`, `revision`, `goversion` | 1 ; version de l'exporter (tag de la publication, sinon déduite du dépôt), commit source et version de Go |
 | `hwraid_snapshot_ready` | — | 0 avant la première découverte publiée, puis 1 |
 | `hwraid_discovery_success` | — | 1 si la dernière découverte des cartes dans sysfs a abouti pour tous les hôtes SCSI ; 0 si sysfs ou au moins un hôte est illisible (une carte peut alors manquer à l'inventaire). Un hôte SCSI sans aucun ancêtre PCI (iSCSI, VMBus, hôte virtuel) est hors périmètre : ignoré, il ne met pas la découverte en échec |
 
@@ -50,7 +50,7 @@ Valeurs réservées pour les modules à venir, non publiées aujourd'hui : `redu
 |---|---|---|
 | `hwraid_collection_success` | `controller`, `collector` | 1 si la dernière lecture du collecteur a abouti, 0 sinon ; absente si elle n'a pas été tentée |
 | `hwraid_collector_supported` | `controller`, `collector` | 0 si la carte ne permet pas ce collecteur ; absente sinon |
-| `hwraid_collection_last_success_timestamp_seconds` | `controller`, `collector` | date Unix du dernier cycle où la lecture a abouti ; absente tant qu'elle n'a jamais abouti depuis le démarrage de l'exporter |
+| `hwraid_collection_last_success_timestamp_seconds` | `controller`, `collector` | date Unix du dernier cycle où la lecture a abouti ; absente tant qu'elle n'a jamais abouti depuis le démarrage de l'exporter, et pour un collecteur servi par une réponse gardée en mémoire (`capabilities`) |
 | `hwraid_collection_interval_seconds` | `controller` | intervalle de collecte effectif (option `-interval`), publié pour chaque carte prise en charge |
 
 **Collecte hors délai.** Les cartes sont collectées en parallèle ; une carte qui n'a pas répondu dans le délai (`-collect-timeout`, 30 s par défaut ou l'intervalle s'il est plus court) est publiée avec tous ses collecteurs à 0, sans série d'état, et ses dates de dernier succès sont conservées. Tant que la commande bloquée n'a pas rendu la main, aucune nouvelle commande n'est envoyée à cette carte.
@@ -117,10 +117,10 @@ Hôte de référence (Adaptec 6805, quatre miroirs assemblés, module de protect
 
 ```prometheus
 hwraid_controller_info{controller="serial:XXXX",identity_source="serial",pci_address="0000:01:00.0",driver="aacraid",backend="aacraid",model="6805",firmware="5.3-0[19204]"} 1
-hwraid_volume_info{controller="serial:XXXX",volume="410734af",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""} 1
-hwraid_volume_info{controller="serial:XXXX",volume="410734b3",name="Array0",raid_level="raid1",vendor_level="1",parent="410734af"} 1
-hwraid_volume_state{controller="serial:XXXX",volume="410734b3",state="optimal"} 1
-hwraid_volume_member{controller="serial:XXXX",volume="410734b3",member="d7"} 1
+hwraid_volume_info{controller="serial:XXXX",volume="1d000000",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""} 1
+hwraid_volume_info{controller="serial:XXXX",volume="1d000004",name="Array0",raid_level="raid1",vendor_level="1",parent="1d000000"} 1
+hwraid_volume_state{controller="serial:XXXX",volume="1d000004",state="optimal"} 1
+hwraid_volume_member{controller="serial:XXXX",volume="1d000004",member="d7"} 1
 hwraid_disk_state{controller="serial:XXXX",disk="d7",state="online"} 1
 hwraid_disk_info{controller="serial:XXXX",disk="d7",vendor="ATA",model="ST8000VN0022-2EL",firmware="SC61",serial="XXXXXXXX",wwn="0x5000c500xxxxxxxx"} 1
 hwraid_disk_capacity_bytes{controller="serial:XXXX",disk="d7"} 8001563222016

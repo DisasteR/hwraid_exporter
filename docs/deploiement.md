@@ -26,7 +26,7 @@ La configuration se fait uniquement par la ligne de commande ; il n'y a ni fichi
 
 ## Docker
 
-Image : `ghcr.io/disaster/hwraid_exporter:<version>` (par exemple `v0.1.0`). Seuls des tags de version sont publiés, sans `latest` : changer de version est un changement explicite du fichier Compose, et revenir en arrière consiste à remettre le tag précédent.
+Image : `ghcr.io/disaster/hwraid_exporter:<version>` (par exemple `v0.1.0`). Seuls des tags de version sont publiés, sans `latest`, et une version publiée n'est jamais remplacée. Chaque publication GitHub indique l'empreinte de l'image (`ghcr.io/disaster/hwraid_exporter@sha256:…`) : l'épingler dans le fichier Compose garantit les mêmes octets à chaque déploiement. Revenir en arrière consiste à remettre la version ou l'empreinte précédente.
 
 ```yaml
 services:
@@ -62,14 +62,20 @@ docker login ghcr.io -u <compte-github>
 
 ## Installation native (systemd)
 
-Construire le binaire (statique, sans cgo) et l'installer :
+Chaque publication GitHub fournit le binaire statique (`hwraid-exporter-<version>-linux-amd64`, mêmes octets que dans l'image) et `SHA256SUMS`. Vérifier la somme avant l'installation :
+
+```bash
+sha256sum -c SHA256SUMS
+```
+
+Ou construire le binaire (statique, sans cgo) :
 
 ```bash
 CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=$(git describe --tags --always)" -o hwraid-exporter ./cmd/hwraid-exporter
 ```
 
 ```bash
-sudo install -m 0755 hwraid-exporter /usr/local/bin/hwraid-exporter
+sudo install -m 0755 hwraid-exporter-<version>-linux-amd64 /usr/local/bin/hwraid-exporter
 ```
 
 ```bash

@@ -15,11 +15,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/DisasteR/hwraid_exporter/internal/aacraid"
+	"github.com/DisasteR/hwraid_exporter/internal/buildinfo"
 	"github.com/DisasteR/hwraid_exporter/internal/exporter"
 	"github.com/DisasteR/hwraid_exporter/internal/lifecycle"
 	"github.com/DisasteR/hwraid_exporter/internal/module"
@@ -29,8 +31,10 @@ import (
 	"github.com/DisasteR/hwraid_exporter/internal/sysfs"
 )
 
-// version est fixée à la compilation (-ldflags "-X main.version=v0.1.0").
-var version = "dev"
+// version et revision sont fixées à la compilation
+// (-ldflags "-X main.version=v0.1.0 -X main.revision=<commit>") ; à défaut,
+// elles sont déduites des informations de compilation (buildinfo.Resolve).
+var version, revision string
 
 // nodesDir est fixe (section 6.2 du cahier des charges).
 const nodesDir = "/dev/hwraid_exporter"
@@ -40,6 +44,8 @@ const nodesDir = "/dev/hwraid_exporter"
 const exitNodeChanged = 3
 
 func main() {
+	bi, _ := debug.ReadBuildInfo()
+	version, revision = buildinfo.Resolve(version, revision, bi)
 	if len(os.Args) < 2 {
 		usage()
 	}
@@ -94,7 +100,7 @@ func serve(args []string) int {
 	timeout := fs.Duration("collect-timeout", 0, "maximum time to wait for one card in a cycle (default: the smaller of 30s and -interval)")
 	_ = fs.Parse(args)
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	exporter.Version = version
+	exporter.Version, exporter.Revision = version, revision
 	if *interval <= 0 {
 		log.Error("invalid interval", "interval", *interval)
 		return 2
@@ -209,13 +215,18 @@ func serve(args []string) int {
 		// L'ensemble des nœuds attendus a-t-il changé depuis la préparation ?
 		// (carte ajoutée ou retirée, module rechargé, major réattribué) Si
 		// oui, ou si le major ne peut être confirmé, aucun nœud n'est ouvert.
+		// Inventaire incomplet (hôte illisible) : le changement n'est pas
+		// prouvé, pas de relance ; seules les cartes dont les nœuds sont
+		// exactement ceux préparés sont collectées.
 		collectOK := err == nil
+		var majors map[string]uint32
 		if err == nil {
-			switch m, cerr := readMajors(); {
+			var cerr error
+			switch majors, cerr = readMajors(); {
 			case cerr != nil:
 				log.Error("reading /proc/devices: collection suspended", "err", cerr)
 				collectOK = false
-			case !sameSpecs(cur.Specs(m), specs):
+			case !sameSpecs(cur.Specs(majors), specs) && ok:
 				log.Error("expected nodes changed since preparation: restart required")
 				requestExit(exitNodeChanged)
 				collectOK = false
@@ -224,7 +235,7 @@ func serve(args []string) int {
 		jobs := map[string]func() module.Result{}
 		collectors := map[string][]string{}
 		for _, pc := range cur.Cards {
-			if !collectOK || pc.Module == nil || pc.Err != nil {
+			if !collectOK || pc.Module == nil || !module.Prepared(pc, majors, specs) {
 				continue
 			}
 			addr := pc.Card.PCI.Address
@@ -280,7 +291,7 @@ func serve(args []string) int {
 			requestExit(1)
 		}
 	}()
-	log.Info("listening", "listen", *listen, "version", version)
+	log.Info("listening", "listen", *listen, "version", version, "revision", revision)
 
 	go func() {
 		collect()
