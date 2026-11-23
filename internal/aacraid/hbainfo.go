@@ -61,8 +61,16 @@ func DecodeHBAInfo(b []byte) (HBAInfo, error) {
 	}, nil
 }
 
-// MatchesPCI indique si la réponse correspond à l'adresse PCI attendue
-// (bus, slot, fonction) et au numéro de carte attendu (unique_id).
-func (h HBAInfo) MatchesPCI(uniqueID uint8, bus, slot, function uint8) bool {
-	return h.AdapterNumber == uniqueID && h.Bus == bus && h.Device == slot && h.Function == uint32(function)
+// PCIIdentity est l'identité attendue d'une carte, relevée dans sysfs.
+type PCIIdentity struct {
+	Bus, Slot, Function                  uint8
+	Vendor, Device, SubVendor, SubDevice uint32
+}
+
+// Matches indique si la réponse désigne la carte attendue : numéro de carte
+// (unique_id, minor du nœud), adresse PCI hors domaine (absent de la
+// réponse) et les quatre identifiants PCI.
+func (h HBAInfo) Matches(uniqueID uint8, id PCIIdentity) bool {
+	return h.AdapterNumber == uniqueID && h.Bus == id.Bus && h.Device == id.Slot && h.Function == uint32(id.Function) &&
+		h.VendorID == id.Vendor && h.DeviceID == id.Device && h.SubVendorID == id.SubVendor && h.SubSystemID == id.SubDevice
 }

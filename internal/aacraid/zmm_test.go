@@ -76,11 +76,18 @@ func TestDecodeZMMRecorded(t *testing.T) {
 func TestZMMStateRule(t *testing.T) {
 	cases := map[uint32]CacheProtectionState{
 		0x40000081: CacheProtectionFailed,       // référence : installé, pas prêt
-		0x40000000: CacheProtectionNotInstalled, // bit 0x1 absent
-		0x40000008: CacheProtectionNotInstalled, // prêt sans être installé : non installé d'abord
+		0x40000001: CacheProtectionFailed,       // installé, pas prêt
+		0x40100001: CacheProtectionFailed,       // installé, pas prêt, bit inconnu : en panne quand même
+		0x40000000: CacheProtectionNotInstalled, // aucun bit d'état
+		0x40000008: CacheProtectionUnknown,      // prêt sans être installé : ambigu, pas « absent »
+		0x40000080: CacheProtectionUnknown,      // bit 0x80 seul : ambigu, pas « absent »
 		0x40000009: CacheProtectionOptimal,
 		0x4000000D: CacheProtectionCharging, // prêt et en charge
 		0x40000005: CacheProtectionFailed,   // en charge mais pas prêt : en panne d'abord
+		0x40000089: CacheProtectionUnknown,  // prêt avec 0x80 : 0x80 non qualifié sur un module sain
+		0x4000008D: CacheProtectionUnknown,  // en charge avec 0x80
+		0x40000019: CacheProtectionUnknown,  // prêt avec un bit inconnu : jamais « optimal »
+		0x4100000D: CacheProtectionUnknown,  // en charge avec un bit inconnu
 		0x30000009: CacheProtectionOtherType,
 		0x00000009: CacheProtectionOtherType,
 	}

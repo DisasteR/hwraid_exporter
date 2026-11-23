@@ -22,16 +22,17 @@ const (
 
 	pagedDataSize  = 480
 	pagedHeadWords = 8
-	// ChunkData est le nombre d'octets de données par morceau.
-	ChunkData = 448
+	// ChunkData est le nombre d'octets de données par morceau : la réponse
+	// annonce Size = 496 (32 d'en-tête, 32 de mots de contrôle, 432 de
+	// données) et, sur les 325 réponses de morceau capturées, les octets
+	// suivants ne sont jamais écrits par la carte.
+	ChunkData = 432
 
 	markFirst = 0xc9
 	markNext  = 0xc8
 	// MarkChunk est la marque de toute réponse de morceau, et ChunkRspSize
 	// son champ Size (en-tête compris) : forme constante sur les 325
-	// réponses de morceau capturées. Size n'est pas la longueur des
-	// données (448 octets par morceau, établi par reconstitution) ; il sert
-	// à reconnaître une réponse complète.
+	// réponses de morceau capturées.
 	MarkChunk    = 0xc8
 	ChunkRspSize = 496
 	markClosed   = 0xc6
@@ -200,9 +201,8 @@ func DecodePagedResponse(req, rsp []byte) (PagedResponse, error) {
 		if sz := le.Uint16(rsp[fibSize:]); sz != ChunkRspSize {
 			return PagedResponse{}, fmt.Errorf("paged response: chunk size field %d, expected %d", sz, ChunkRspSize)
 		}
-		// Le champ Size des réponses vaut 496 sur l'hôte de référence, en
-		// deçà des 512 octets du tampon ; le pas de 448 octets de données
-		// est établi par la reconstitution des transferts (section 4).
+		// Données du morceau : jusqu'à la fin annoncée par Size, jamais
+		// au-delà (octets non écrits par la carte).
 		r.Data = d[32 : 32+ChunkData]
 	}
 	return r, nil

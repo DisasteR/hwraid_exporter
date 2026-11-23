@@ -149,7 +149,9 @@ func TestHBAInfoDecodesKernelResponse(t *testing.T) {
 			t.Fatalf("ioctl inattendu %#x", req)
 		}
 		buf[50], buf[51], buf[52] = 0, 1, 0
-		binary.LittleEndian.PutUint32(buf[60:], 0x9005)
+		for off, v := range map[int]uint32{60: 0x9005, 64: 0x028b, 68: 0x9005, 72: 0x0301} {
+			binary.LittleEndian.PutUint32(buf[off:], v)
+		}
 		return nil
 	})
 	d, err := Open("/dev/null", devNull, list(t))
@@ -161,7 +163,7 @@ func TestHBAInfoDecodesKernelResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if *calls != 1 || info.VendorID != 0x9005 || !info.MatchesPCI(0, 1, 0, 0) {
+	if *calls != 1 || info.VendorID != 0x9005 || !info.Matches(0, aacraid.PCIIdentity{Bus: 1, Vendor: 0x9005, Device: 0x028b, SubVendor: 0x9005, SubDevice: 0x0301}) {
 		t.Fatalf("calls=%d info=%+v", *calls, info)
 	}
 }
@@ -369,12 +371,19 @@ func (f *fakeFirmware) ioctl(t *testing.T) {
 			}
 			le.PutUint32(d[8:], mark)
 			le.PutUint16(buf[8:], size)
-			off := int(n) * aacraid.ChunkData
-			chunk := make([]byte, aacraid.ChunkData)
+			// Comme la carte : 432 octets de données par morceau (valeur
+			// littérale, indépendante du code), puis des octets que la carte
+			// n'écrit pas, ici des parasites que le transport doit ignorer.
+			const perChunk = 432
+			off := int(n) * perChunk
+			chunk := make([]byte, perChunk)
 			if off < len(f.payload) {
 				copy(chunk, f.payload[off:])
 			}
 			copy(d[32:], chunk)
+			for i := 32 + perChunk; i < len(d); i++ {
+				d[i] = 0xee
+			}
 		case 84:
 			le.PutUint32(d[8:], 0xc6)
 			if f.stopXfer != 0 {
@@ -421,7 +430,8 @@ func TestReadPagedStopsWhenEnough(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(data) != aacraid.ChunkData || !bytes.Equal(data, payload[:aacraid.ChunkData]) {
+	// Premier morceau seul : 432 octets (valeur littérale), sans parasite.
+	if len(data) != 432 || !bytes.Equal(data, payload[:432]) {
 		t.Fatalf("%d octets lus", len(data))
 	}
 	if got := f.subs(); len(got) != 3 || got[0] != 234 || got[1] != 83 || got[2] != 84 {

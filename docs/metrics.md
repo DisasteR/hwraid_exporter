@@ -18,7 +18,7 @@ Les métriques sont **les mêmes quel que soit le pilote, le contrôleur ou le c
 |---|---|---|
 | `hwraid_volume_state` / `state` | `optimal`, `degraded`, `degraded_rebuilding`, `failed`, `unknown` | toutes |
 | `hwraid_disk_state` / `state` | `online`, `rebuilding`, `failed` | toutes |
-| `hwraid_cache_protection_state` / `state` | `optimal`, `charging`, `failed` | toutes (`charging` et `optimal` non encore observés sur matériel) |
+| `hwraid_cache_protection_state` / `state` | `optimal`, `charging`, `failed`, `unknown` | toutes (`charging` et `optimal` non encore observés sur matériel ; `unknown` pour toute combinaison de bits non qualifiée, jamais publiée comme saine) |
 | `hwraid_volume_info` / `raid_level` | `raid0`, `raid1`, `raid1e`, `raid5`, `raid6`, `raid10`, `raid50`, `raid60`, `concat`, `unknown` | `raid1`, `concat`, `unknown` |
 | `hwraid_cache_protection_present` / `type` | `flash_supercap` (supercondensateur et mémoire flash : ZMM/AFM, CacheVault, FBWC), `battery` (BBU) | `flash_supercap` |
 

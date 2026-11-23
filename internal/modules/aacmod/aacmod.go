@@ -123,7 +123,7 @@ func (m *Module) Collect(c module.Card, refs []module.NodeRef) module.Result {
 	if err != nil {
 		return module.Result{Err: err}
 	}
-	bus, slot, fn, err := parsePCI(c.PCI.Address)
+	id, err := pciIdentity(c)
 	if err != nil {
 		return module.Result{Err: err}
 	}
@@ -136,9 +136,11 @@ func (m *Module) Collect(c module.Card, refs []module.NodeRef) module.Result {
 	if err != nil {
 		return module.Result{Err: err}
 	}
-	if !info.MatchesPCI(uint8(uid), bus, slot, fn) {
-		return module.Result{Err: fmt.Errorf("GET_HBA_INFO points to card %d at %02x:%02x.%d",
-			info.AdapterNumber, info.Bus, info.Device, info.Function)}
+	// Aucune commande firmware avant que le nœud ouvert désigne la carte
+	// attendue : numéro, adresse et identifiants PCI.
+	if !info.Matches(uint8(uid), id) {
+		return module.Result{Err: fmt.Errorf("GET_HBA_INFO points to card %d at %02x:%02x.%d (%04x:%04x %04x:%04x)",
+			info.AdapterNumber, info.Bus, info.Device, info.Function, info.VendorID, info.DeviceID, info.SubVendorID, info.SubSystemID)}
 	}
 	r := module.Result{NodeValid: true}
 	key := c.PCI.Address + "|" + strconv.FormatUint(refs[0].Dev, 10)
@@ -420,6 +422,14 @@ func readConfiguration(d device) ([]module.Volume, []module.Disk, []uint32, erro
 		if len(cs[i].Members) != cs[i].Info.Members {
 			return nil, nil, nil, fmt.Errorf("container %#x: %d members announced, %d listed", cs[i].Info.UID, cs[i].Info.Members, len(cs[i].Members))
 		}
+		seen := map[[2]uint32]bool{}
+		for _, mb := range cs[i].Members {
+			k := [2]uint32{mb.Disk, mb.ChildUID}
+			if seen[k] {
+				return nil, nil, nil, fmt.Errorf("container %#x: member listed twice (disk %#x, container %#x)", cs[i].Info.UID, mb.Disk, mb.ChildUID)
+			}
+			seen[k] = true
+		}
 	}
 	ev := aacraid.Evaluate(cs, disks)
 	return volumesOf(cs, ev), disksOf(ev), disks, nil
@@ -519,6 +529,26 @@ func (m *Module) supplementInfo(key string, d device) (aacraid.SupplementInfo, e
 	}
 	m.supplement[key] = s
 	return s, nil
+}
+
+// pciIdentity relève l'identité attendue de la carte dans sysfs.
+func pciIdentity(c module.Card) (aacraid.PCIIdentity, error) {
+	bus, slot, fn, err := parsePCI(c.PCI.Address)
+	if err != nil {
+		return aacraid.PCIIdentity{}, err
+	}
+	id := aacraid.PCIIdentity{Bus: bus, Slot: slot, Function: fn}
+	for _, f := range []struct {
+		s   string
+		dst *uint32
+	}{{c.PCI.Vendor, &id.Vendor}, {c.PCI.Device, &id.Device}, {c.PCI.SubsystemVendor, &id.SubVendor}, {c.PCI.SubsystemDevice, &id.SubDevice}} {
+		v, err := strconv.ParseUint(strings.TrimPrefix(f.s, "0x"), 16, 16)
+		if err != nil || !strings.HasPrefix(f.s, "0x") {
+			return aacraid.PCIIdentity{}, fmt.Errorf("invalid PCI identifier %q for %s", f.s, c.PCI.Address)
+		}
+		*f.dst = uint32(v)
+	}
+	return id, nil
 }
 
 func parsePCI(addr string) (bus, slot, fn uint8, err error) {

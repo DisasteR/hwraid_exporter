@@ -270,3 +270,12 @@ func TestDiskListDuplicate(t *testing.T) {
 		t.Fatal("disque en double accepté")
 	}
 }
+
+// Un numéro de conteneur en double dans la liste 229 est refusé.
+func TestContainerListDuplicate(t *testing.T) {
+	d := fixture(t, "229-0")
+	binary.LittleEndian.PutUint32(d[12:], binary.LittleEndian.Uint32(d[8:]))
+	if _, err := DecodeContainerList(d); err == nil {
+		t.Fatal("conteneur en double accepté")
+	}
+}

@@ -14,10 +14,10 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0 # tags pour git describe
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
 
@@ -31,7 +31,7 @@ jobs:
         run: sh tools/fibcap/test.sh
 
       - name: Règles d'alerte (promtool)
-        run: docker run --rm --network none -v "$PWD/deploy/prometheus":/r:ro -w /r --entrypoint promtool prom/prometheus:v3.7.3 test rules hwraid-exporter.rules.test.yml
+        run: docker run --rm --network none -v "$PWD/deploy/prometheus":/r:ro -w /r --entrypoint promtool prom/prometheus:v3.7.3@sha256:49214755b6153f90a597adcbff0252cc61069f8ab69ce8411285cd4a560e8038 test rules hwraid-exporter.rules.test.yml
 
       - name: Vet
         run: go vet ./...
@@ -55,7 +55,7 @@ jobs:
             --cap-drop ALL --cap-add MKNOD --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add SYS_RAWIO \
             --device-cgroup-rule 'c *:* r' --security-opt no-new-privileges \
             --tmpfs /tmp:rw,exec,dev,size=64m \
-            -v "$PWD/dist/roottests:/t:ro" alpine:3.20 \
+            -v "$PWD/dist/roottests:/t:ro" alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc \
             sh -ec 'grep -E "^Cap(Eff|Bnd)" /proc/self/status; for t in /t/*.test; do HWRAID_REQUIRE_ROOT_TESTS=1 "$t" -test.v -test.count=1; done'
 
       - name: Vulnérabilités connues
@@ -86,8 +86,10 @@ jobs:
           grep -qE '^NoNewPrivs:\s+1$' status.txt
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9799/autre)" = 404
           sudo kill -TERM $pid
-          for i in $(seq 1 20); do kill -0 $pid 2>/dev/null || break; sleep 0.25; done
-          ! kill -0 $pid 2>/dev/null
+          # Le processus tourne sous l'UID 65534 : kill -0 sans sudo échouerait
+          # par refus de permission, pas parce qu'il est arrêté.
+          for i in $(seq 1 20); do sudo kill -0 $pid 2>/dev/null || break; sleep 0.25; done
+          if sudo kill -0 $pid 2>/dev/null; then echo "processus toujours actif après SIGTERM" >&2; exit 1; fi
 
       - name: Unité systemd (sans carte)
         run: |
@@ -116,7 +118,7 @@ jobs:
             --cap-drop ALL --cap-add MKNOD --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add SYS_RAWIO \
             --device-cgroup-rule 'c *:* r' --security-opt no-new-privileges \
             -p 127.0.0.1:9800:9799 -v "$PWD/dist/hwraid-exporter:/hwraid-exporter:ro" \
-            alpine:3.20 /hwraid-exporter serve --listen 0.0.0.0:9799 --interval 2s
+            alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc /hwraid-exporter serve --listen 0.0.0.0:9799 --interval 2s
           for i in $(seq 1 20); do curl -fsS http://127.0.0.1:9800/metrics > cmetrics.txt 2>/dev/null && grep -q '^hwraid_snapshot_ready 1$' cmetrics.txt && break; sleep 0.5; done
           docker logs hw; cat cmetrics.txt
           grep -qx 'hwraid_snapshot_ready 1' cmetrics.txt

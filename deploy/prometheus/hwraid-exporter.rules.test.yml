@@ -376,3 +376,42 @@ tests:
       - eval_time: 75m
         alertname: HwraidControllerUnsupported
         exp_alerts: []
+
+  # État de la protection du cache non déterminé : alerte après 30 min.
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_cache_protection_state{controller="serial:A",state="unknown"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 29m
+        alertname: HwraidCacheProtectionStateUnknown
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: HwraidCacheProtectionStateUnknown
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: "serial:A", state: unknown}
+            exp_annotations:
+              summary: "État de la protection du cache non déterminé (serial:A)"
+              description: "Le module répond avec une combinaison d'état non qualifiée : sa protection n'est pas garantie. Vérifier avec l'outil du constructeur."
+
+  # Charge prolongée : alerte après 2 h, puis retour à la normale.
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_cache_protection_state{controller="serial:B",state="charging"}'
+        values: '1x130 stale _x20'
+      - series: 'hwraid_cache_protection_state{controller="serial:B",state="optimal"}'
+        values: '_x131 1x20'
+    alert_rule_test:
+      - eval_time: 119m
+        alertname: HwraidCacheProtectionNotReady
+        exp_alerts: []
+      - eval_time: 121m
+        alertname: HwraidCacheProtectionNotReady
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: "serial:B", state: charging}
+            exp_annotations:
+              summary: "Protection du cache en charge depuis plus de 2 h (serial:B)"
+              description: "Un module sain se charge en quelques minutes : une charge qui n'aboutit pas annonce une panne du module."
+      - eval_time: 140m
+        alertname: HwraidCacheProtectionNotReady
+        exp_alerts: []

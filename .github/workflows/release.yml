@@ -1,14 +1,19 @@
 name: release
 
 # Publication sur un tag de version (vX.Y.Z) seulement, après la suite CI
-# complète sur le commit tagué. Le tag d'image est immuable : une version
-# déjà publiée est refusée, aucune étiquette flottante (latest) n'existe.
+# complète sur le commit tagué. Une version publiée n'est jamais remplacée :
+# si l'image existe déjà pour ce commit (publication interrompue), seule la
+# publication GitHub est terminée ; pour un autre commit, refus.
 on:
   push:
     tags: ['v*.*.*']
 
 permissions:
   contents: read
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   ci:
@@ -34,15 +39,30 @@ jobs:
           echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
           grep -q "^## $TAG " CHANGELOG.md
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "la publication GitHub $TAG existe déjà" >&2; exit 1
+          fi
 
-      - name: Version absente du registre
+      - name: État du registre
+        id: registry
         run: |
           echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          if docker manifest inspect "$IMAGE:$TAG" >/dev/null 2>&1; then
-            echo "$IMAGE:$TAG existe déjà : une version publiée n'est pas remplacée" >&2; exit 1
+          if out=$(docker manifest inspect "$IMAGE:$TAG" 2>&1); then
+            docker pull -q "$IMAGE:$TAG"
+            rev=$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE:$TAG")
+            if [ "$rev" != "$GITHUB_SHA" ]; then
+              echo "$IMAGE:$TAG existe pour le commit $rev, pas $GITHUB_SHA : refus" >&2; exit 1
+            fi
+            echo "image déjà publiée pour ce commit : reprise"
+            echo "mode=resume" >> "$GITHUB_OUTPUT"
+          elif echo "$out" | grep -qiE 'manifest unknown|not found'; then
+            echo "mode=new" >> "$GITHUB_OUTPUT"
+          else
+            echo "réponse inattendue du registre : $out" >&2; exit 1
           fi
 
       - name: Construction
+        if: steps.registry.outputs.mode == 'new'
         run: docker build --build-arg VERSION="$TAG" --build-arg REVISION="$GITHUB_SHA" -t "$IMAGE:$TAG" .
 
       - name: Essai de l'image au profil du NAS (sans carte)
@@ -70,13 +90,13 @@ jobs:
           (cd dist && sha256sum hwraid-exporter-*-linux-amd64 > SHA256SUMS && cat SHA256SUMS)
 
       - name: Publication de l'image
-        run: |
-          docker push "$IMAGE:$TAG"
-          docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$TAG" | tee digest.txt
+        if: steps.registry.outputs.mode == 'new'
+        run: docker push "$IMAGE:$TAG"
 
       - name: Publication GitHub
         run: |
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$TAG")
           awk -v t="## $TAG " 'index($0, t) == 1 {f = 1; next} /^## / {f = 0} f' CHANGELOG.md > notes.md
-          printf '\nImage : `%s`\n' "$(cat digest.txt)" >> notes.md
+          printf '\nImage : `%s`\n' "$digest" >> notes.md
           gh release create "$TAG" --verify-tag --title "$TAG" --notes-file notes.md \
             "dist/hwraid-exporter-$TAG-linux-amd64" dist/SHA256SUMS
