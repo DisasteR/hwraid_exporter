@@ -1,0 +1,7 @@
+# Seuls go.mod, go.sum, cmd/ et internal/ sont copiés ; le reste du dépôt,
+# et en particulier les preuves internes, n'entre pas dans le contexte.
+*
+!go.mod
+!go.sum
+!cmd/
+!internal/

@@ -1,0 +1,55 @@
+# Unité pour une installation native (docs/deploiement.md).
+# Le processus démarre en root pour créer ses nœuds dans
+# /dev/hwraid_exporter, puis abandonne lui-même ses privilèges :
+# UID et GID 65534, seule capacité conservée CAP_SYS_RAWIO (aacraid),
+# no_new_privs. L'unité borne ce qu'il peut faire avant cet abandon.
+[Unit]
+Description=hwraid_exporter : contrôleurs RAID matériels pour Prometheus
+Documentation=https://github.com/DisasteR/hwraid_exporter
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/hwraid-exporter serve -listen 127.0.0.1:9799 -interval 1m
+# Code 3 : les nœuds attendus ont changé (carte ou pilote) ; la relance
+# refait la préparation.
+Restart=on-failure
+RestartSec=10s
+
+# Capacités de la phase de préparation seulement ; ensemble ambiant vide.
+CapabilityBoundingSet=CAP_MKNOD CAP_CHOWN CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_SYS_RAWIO
+AmbientCapabilities=
+NoNewPrivileges=yes
+
+# Périphériques : création et lecture des seuls nœuds aacraid (major
+# dynamique « aac »). Les autres pilotes ajoutent leur ligne.
+DevicePolicy=closed
+DeviceAllow=char-aac rm
+
+# Système de fichiers et noyau.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+UMask=0077
+
+# Processus et réseau.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=ioctl mknodat capset capget setgroups setresuid setresgid prctl
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

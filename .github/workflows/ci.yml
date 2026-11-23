@@ -84,6 +84,27 @@ jobs:
           for i in $(seq 1 20); do kill -0 $pid 2>/dev/null || break; sleep 0.25; done
           ! kill -0 $pid 2>/dev/null
 
+      - name: Unité systemd (sans carte)
+        run: |
+          sudo install -m 0755 dist/hwraid-exporter /usr/local/bin/hwraid-exporter
+          sudo install -m 0644 deploy/systemd/hwraid-exporter.service /etc/systemd/system/
+          systemd-analyze verify /etc/systemd/system/hwraid-exporter.service
+          sudo systemctl daemon-reload
+          sudo systemctl start hwraid-exporter
+          for i in $(seq 1 20); do curl -fsS http://127.0.0.1:9799/metrics > sd.txt 2>/dev/null && grep -q '^hwraid_snapshot_ready 1$' sd.txt && break; sleep 0.5; done
+          sudo journalctl -u hwraid-exporter --no-pager -o cat | tee sd.log
+          grep -qx 'hwraid_snapshot_ready 1' sd.txt
+          grep -qx 'hwraid_discovery_success 1' sd.txt
+          pid=$(systemctl show -p MainPID --value hwraid-exporter)
+          grep -E '^(Uid|Gid|Groups|CapEff|CapBnd|NoNewPrivs|Seccomp):' /proc/$pid/status | tee sds.txt
+          grep -qE '^Uid:\s+65534\s+65534\s+65534\s+65534$' sds.txt
+          grep -qE '^NoNewPrivs:\s+1$' sds.txt
+          grep -qE '^Seccomp:\s+2$' sds.txt
+          ! grep -qiE 'operation not permitted|level=ERROR' sd.log
+          systemd-analyze security hwraid-exporter --no-pager | tail -1
+          sudo systemctl stop hwraid-exporter
+          test "$(systemctl show -p Result --value hwraid-exporter)" = success
+
       - name: Conteneur Docker au profil du NAS (sans carte)
         run: |
           docker run -d --name hw --read-only \
