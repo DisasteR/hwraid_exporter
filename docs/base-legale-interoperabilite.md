@@ -146,7 +146,7 @@ Une lecture stricte de l'article 6 §2 b) pourrait n'admettre que des communicat
 
 ### Conditions de l'article 6
 
-| Condition | Situation du projet | Appréciation |
+| Condition | Faits | Appréciation du projet |
 |---|---|---|
 | §1 a) Actes faits par une personne ayant le droit d'utiliser une copie | ARCCONF est fourni gratuitement par le constructeur avec ses cartes, sous la licence jointe à l'outil. L'analyse a été faite par l'acheteur de la carte, utilisateur de l'outil installé sur son propre serveur, sur une copie identique octet pour octet à cette installation (empreinte SHA-256 vérifiée) | Remplie |
 | §1 b) Informations pas déjà facilement accessibles | Format des échanges avec le firmware : aucune source publique. Sources publiques et observation utilisées d'abord ; décompilation seulement pour ce qu'elles ne montrent pas (tableau ci-dessus) | Remplie pour le format des échanges |
