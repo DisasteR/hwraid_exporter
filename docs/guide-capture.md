@@ -24,7 +24,7 @@ La capture se limite à observer un programme pendant son utilisation normale. A
 ## 3. Règles communes
 
 - **Consultation uniquement.** Ne lancer que les commandes de lecture listées dans l'annexe. Aucune commande qui modifie la carte (création, suppression, réglage du cache, tâche, mise à jour) n'est nécessaire.
-- **Bibliothèque protégée.** La compiler et la tester sans droits particuliers, puis l'installer dans un répertoire que seul root peut modifier : l'outil est lancé en root et ne doit pas charger un fichier modifiable par un autre utilisateur.
+- **Bibliothèque protégée.** La compiler et la tester sans droits particuliers, puis la copier dans le répertoire de séance réservé à root : l'outil est lancé en root et ne doit pas charger un fichier modifiable par un autre utilisateur. Rien n'est installé durablement sur le système.
 - **Répertoire réservé à root.** Écrire les journaux dans un répertoire de séance créé par root et réservé à root, puis en copier le contenu vers le compte courant à la fin. La bibliothèque refuse d'écrire dans un fichier qui existe déjà.
 - **Outil désigné par son chemin absolu**, tel que root le voit, et son empreinte relevée avec les versions du noyau et du firmware.
 - **Volumes de données intacts.** Ne jamais dégrader volontairement un volume qui contient des données : utiliser un volume de test. Sur un incident réel, ne capturer qu'avec l'accord de l'exploitant, quand le système est stable.
