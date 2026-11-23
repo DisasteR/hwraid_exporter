@@ -56,6 +56,8 @@ type Result struct {
 	// DiskInventory : inventaire de tous les disques présents (membres ou
 	// non), publié seulement si la lecture complète a abouti.
 	DiskInventory []DiskInfo
+	// DiskLocations : emplacement des disques reliés directement à la carte.
+	DiskLocations []DiskLocation
 	// Collected donne, pour chaque collecteur tenté pendant le cycle, le
 	// résultat de sa lecture (hwraid_collection_success). Un collecteur
 	// absent n'a pas été tenté.
@@ -88,6 +90,16 @@ type DiskInfo struct {
 	ID                                   string // « d<N> », comme Disk.ID
 	Vendor, Model, Firmware, Serial, WWN string // vides si non publiés par la carte
 	CapacityBytes                        uint64 // 0 si inconnue
+}
+
+// DiskLocation est l'emplacement d'un disque relié directement à la carte,
+// tel que la carte le décrit et que l'outil du constructeur l'affiche.
+type DiskLocation struct {
+	ID            string // « d<N> »
+	Connector     string // numéro du connecteur
+	ConnectorName string // nom donné par la carte (« CN1 »)
+	Device        string // position dans le connecteur
+	Phy           string // phy de la carte
 }
 
 // CacheProtection décrit le module de protection du cache (ZMM, batterie).

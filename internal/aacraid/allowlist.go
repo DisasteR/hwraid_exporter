@@ -4,8 +4,8 @@ import "github.com/DisasteR/hwraid_exporter/internal/allowlist"
 
 // Entries est la liste blanche déclarée du module aacraid.
 // Toute modification exige une revue et une référence de qualification (S3).
-// FSACTL_SENDFIB et FSACTL_SEND_LARGE_FIB n'y figurent pas encore :
-// aucune commande firmware n'est autorisée tant qu'elle n'est pas qualifiée.
+// FSACTL_SENDFIB et FSACTL_SEND_LARGE_FIB n'acceptent que des requêtes
+// qualifiées, contrôlées octet par octet.
 var Entries = []allowlist.Entry{
 	{
 		Name:  "FSACTL_GET_HBA_INFO",
@@ -19,6 +19,13 @@ var Entries = []allowlist.Entry{
 		Size:    FIBSize,
 		Payload: CheckFIBRequest,
 		Proof:   "RequestSupplementAdapterInfo (706) et lectures VM_Ioctl de présence et d'état de la protection du cache : partie significative identique aux captures de l'outil de référence (docs/aacraid-interface.md, sections 6 et 8)",
+	},
+	{
+		Name:    "FSACTL_SEND_LARGE_FIB",
+		Ioctl:   IoctlSendLargeFIB,
+		Size:    LargeFIBSize,
+		Payload: CheckLargeFIBRequest,
+		Proof:   "RequestConnectorMap (708) seule : partie significative identique à la capture de l'outil de référence (docs/aacraid-interface.md, section 5)",
 	},
 }
 

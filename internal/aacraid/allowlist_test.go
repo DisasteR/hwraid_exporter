@@ -32,7 +32,7 @@ var knownIoctls = map[string]uint32{
 
 // Ioctl présents dans la liste. FSACTL_SENDFIB n'y figure qu'avec un
 // contrôle du contenu (CheckFIBRequest) : un tampon nul est refusé.
-var expectedAllowed = map[string]bool{"FSACTL_GET_HBA_INFO": true, "FSACTL_SENDFIB": true}
+var expectedAllowed = map[string]bool{"FSACTL_GET_HBA_INFO": true, "FSACTL_SENDFIB": true, "FSACTL_SEND_LARGE_FIB": true}
 
 func mustList(t *testing.T) *allowlist.List {
 	t.Helper()

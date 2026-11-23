@@ -142,11 +142,28 @@ Lue pour chaque disque de la liste 247 (collecteur `disk_inventory`). Les champs
 | 96-111 | modèle |
 | 112-115 | version de firmware |
 | 116-135 | numéro de série, terminé par un octet nul s'il est plus court |
+| 200 | phy de la carte auquel le disque est relié (même valeur à l'octet 191) |
 | 288-295 | WWN, dans l'ordre de l'identifiant (`0x5000c500…`) |
 
 Vérifié sur les huit disques de l'hôte de référence contre l'outil témoin (même capture) : fabricant, modèle, firmware, numéro de série, WWN et capacité brute identiques. Lecture par l'exporter validée le 2026-11-23 sur l'hôte de référence (huit disques, valeurs identiques). Le numéro de série figure aussi aux octets 304-327, cadré à droite ; il n'est pas utilisé.
 
-La réponse ne contient pas d'emplacement (connecteur, position). L'outil témoin affiche « Connector N÷4, Device N mod 4 » pour le disque N ; les octets 191 et 200 portent une autre numérotation (4 × (N÷4) + 3 − N mod 4). Aucune des deux n'est publiée : la formule réelle de l'emplacement physique n'est pas établie, et une erreur ferait retirer le mauvais disque. Le numéro de série, imprimé sur l'étiquette du disque, sert à l'identifier physiquement.
+Le phy concorde avec « Attached PHY Identifier » de l'outil témoin pour les huit disques. La réponse ne contient pas d'emplacement (connecteur, position) : il est donné par la carte des connecteurs, ci-dessous.
+
+### Carte des connecteurs (commande 708, `FSACTL_SEND_LARGE_FIB`)
+
+Commande FIB 708 (`RequestConnectorMap`), envoyée une fois par l'outil témoin à chaque consultation, par `FSACTL_SEND_LARGE_FIB` sur un tampon de 2 048 octets. Requête : `XferState` = HostOwned | ApiFib, `Command` = 708, `StructType` = 1, `Size` = 4, `SenderSize` = 2 048, données nulles. Réponse : `Size` = 192, en-tête compris, sur l'hôte de référence.
+
+| Octets (données) | Champ |
+|---|---|
+| 0-3 | 1 sur l'hôte de référence (seule valeur acceptée) |
+| 4 | nombre d'entrées de disque |
+| 5 | nombre de connecteurs (2 sur l'hôte de référence, seule valeur acceptée) |
+| 8 + 12 × c | connecteur c : numéro (octet 0), nom sur 8 octets à partir de l'octet 4 (`CN0`, `CN1`) |
+| 32 + 16 × i | entrée i : désignation du disque comme dans la liste 247 (canal × 2²⁴ + cible, mot 0), numéro de connecteur (octet 4), position dans le connecteur (octet 5), phy de la carte (octet 6), adresse SAS de la carte (octets 8-15) |
+
+L'outil témoin affiche la position telle quelle (« Connector n, Device m ») pour le disque dont l'entrée correspond, sans calcul. Un disque qui n'est pas relié directement à la carte (expandeur, fond de panier) n'a pas d'entrée : l'outil l'affiche alors par boîtier et emplacement, lus autrement ; l'exporter ne publie pas d'emplacement pour ce disque. Sur l'hôte de référence, le phy d'une entrée est celui de la lecture 248 du même disque : l'exporter exige cette concordance avant de publier un emplacement.
+
+Vérifié sur les huit disques de l'hôte de référence contre l'outil témoin (« Reported Location » et « Attached PHY Identifier »), et sur le câblage réel le 2026-11-23 : avec des câbles éclatés mini-SAS vers 4 SATA, la position m correspond à la fiche P(m+1).
 
 ### Statistiques du contrôleur (sous-commande 244, paramètre : 0) [observé]
 

@@ -35,6 +35,7 @@ type Controller struct {
 	Volumes                []module.Volume
 	Disks                  []module.Disk
 	DiskInventory          []module.DiskInfo
+	DiskLocations          []module.DiskLocation
 }
 
 // Snapshot est une vue complète et immuable.
@@ -99,7 +100,7 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 				c.Collected = r.Collected
 				c.CacheProtection = r.CacheProtection
 				c.LastSuccess = tracker.Last(addr)
-				c.Volumes, c.Disks, c.DiskInventory = r.Volumes, r.Disks, r.DiskInventory
+				c.Volumes, c.Disks, c.DiskInventory, c.DiskLocations = r.Volumes, r.Disks, r.DiskInventory, r.DiskLocations
 				if r.CollectErr != nil {
 					c.CollectError = r.CollectErr.Error()
 				}
@@ -192,6 +193,13 @@ func Render(s Snapshot) string {
 		for _, d := range c.DiskInventory {
 			fmt.Fprintf(&b, "hwraid_disk_info{%s} 1\n", labels("controller", c.Label, "disk", d.ID, "vendor", d.Vendor,
 				"model", d.Model, "firmware", d.Firmware, "serial", d.Serial, "wwn", d.WWN))
+		}
+	}
+	gauge("hwraid_disk_location", "Emplacement des disques reliés directement à la carte, valeur 1.")
+	for _, c := range s.Controllers {
+		for _, d := range c.DiskLocations {
+			fmt.Fprintf(&b, "hwraid_disk_location{%s} 1\n", labels("controller", c.Label, "disk", d.ID, "connector", d.Connector,
+				"connector_name", d.ConnectorName, "device", d.Device, "phy", d.Phy))
 		}
 	}
 	gauge("hwraid_disk_capacity_bytes", "Capacité brute du disque en octets.")

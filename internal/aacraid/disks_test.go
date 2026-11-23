@@ -20,7 +20,9 @@ func TestDecodeDiskInfoReference(t *testing.T) {
 			t.Fatal(err)
 		}
 		exp := DiskInfo{Number: n, Vendor: "ATA", Model: w[0], Firmware: w[1], Serial: fmt.Sprintf("TESTSN0%d", n),
-			WWN: fmt.Sprintf("0x5000c5000000000%d", n), Blocks: 15628053168, BlockSize: 512}
+			WWN: fmt.Sprintf("0x5000c5000000000%d", n), Blocks: 15628053168, BlockSize: 512,
+			// Phy relevé par l'outil témoin (Attached PHY Identifier).
+			Phy: uint8(4*(n/4) + 3 - n%4)}
 		if i != exp {
 			t.Fatalf("disque %d :\n got %+v\nwant %+v", n, i, exp)
 		}

@@ -20,6 +20,7 @@ const (
 	diskModel     = 96  // 16 octets
 	diskFirmware  = 112 // 4 octets
 	diskSerial    = 116 // 20 octets au plus, terminé par un octet nul
+	diskPhy       = 200 // phy de la carte auquel le disque est relié
 	diskWWN       = 288 // 8 octets, ordre de l'identifiant
 )
 
@@ -33,6 +34,7 @@ type DiskInfo struct {
 	WWN                             string // « 0x » et 16 chiffres hexadécimaux, vide si nul
 	Blocks                          uint64
 	BlockSize                       uint32
+	Phy                             uint8 // phy de la carte (contrôle de la carte des connecteurs)
 }
 
 // DecodeDiskInfo décode l'information de disque.
@@ -49,6 +51,7 @@ func DecodeDiskInfo(d []byte) (DiskInfo, error) {
 		Serial:    field(d[diskSerial : diskSerial+20]),
 		Blocks:    le.Uint64(d[diskBlocks:]),
 		BlockSize: le.Uint32(d[diskBlockSize:]),
+		Phy:       d[diskPhy],
 	}
 	if w := d[diskWWN : diskWWN+8]; !bytes.Equal(w, make([]byte, 8)) {
 		i.WWN = "0x" + hex.EncodeToString(w)
