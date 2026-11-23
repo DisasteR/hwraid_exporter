@@ -278,14 +278,16 @@ func create(dfd int, s Spec, uid, gid int) error {
 	return nil
 }
 
+// fix fixe le mode puis le propriétaire du temporaire que create vient de
+// créer. L'ordre compte : tant que root est propriétaire, il peut changer le
+// mode sans CAP_FOWNER, que le profil du conteneur ne donne pas. Le répertoire
+// n'étant modifiable que par le processus, aucun lien n'a pu être substitué.
 func fix(dfd int, name string, uid, gid int) error {
-	if err := unix.Fchownat(dfd, name, uid, gid, unix.AT_SYMLINK_NOFOLLOW); err != nil {
-		return fmt.Errorf("propriétaire de %s : %w", name, err)
-	}
-	// N'est appelé que sur le temporaire que create vient de créer, dans un
-	// répertoire que seul le processus peut modifier : pas de lien possible.
 	if err := unix.Fchmodat(dfd, name, 0o600, 0); err != nil {
 		return fmt.Errorf("mode de %s : %w", name, err)
+	}
+	if err := unix.Fchownat(dfd, name, uid, gid, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return fmt.Errorf("propriétaire de %s : %w", name, err)
 	}
 	return nil
 }

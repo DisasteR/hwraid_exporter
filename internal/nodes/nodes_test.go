@@ -174,23 +174,36 @@ func TestSyncLifecycleAsRoot(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "hwraid_exporter")
 	null, zero := Spec{"aac0", 1, 3}, Spec{"aac0", 1, 5} // /dev/null puis /dev/zero
 
-	rep, err := Sync(dir, []Spec{null}, testMajors, 65534, 65534)
+	// Création pour root d'abord : le test, root sans CAP_DAC_OVERRIDE dans le
+	// profil du conteneur, ne peut ouvrir qu'un nœud qui lui appartient.
+	// L'ouverture prouve que le nœud est utilisable (pas de montage nodev).
+	rep, err := Sync(dir, []Spec{null}, testMajors, 0, 0)
 	if err != nil || len(rep.Created) != 1 {
 		t.Fatalf("création : rep=%+v err=%v", rep, err)
 	}
-	checkNode(t, filepath.Join(dir, "aac0"), null.Dev(), 65534, 65534)
-	checkDir(t, dir, 0, 65534)
+	checkNode(t, filepath.Join(dir, "aac0"), null.Dev(), 0, 0)
 	f, err := os.Open(filepath.Join(dir, "aac0"))
 	if err != nil {
 		t.Fatalf("ouverture du nœud créé : %v (montage nodev ?)", err)
 	}
 	f.Close()
 
+	// Bascule vers l'identité d'exécution : propriétaire corrigé par recréation.
+	rep, err = Sync(dir, []Spec{null}, testMajors, 65534, 65534)
+	if err != nil || len(rep.Fixed) != 1 {
+		t.Fatalf("changement de propriétaire : rep=%+v err=%v", rep, err)
+	}
+	checkNode(t, filepath.Join(dir, "aac0"), null.Dev(), 65534, 65534)
+	checkDir(t, dir, 0, 65534)
+
 	rep, err = Sync(dir, []Spec{null}, testMajors, 65534, 65534)
 	if err != nil || len(rep.Created)+len(rep.Replaced)+len(rep.Fixed)+len(rep.Removed) != 0 {
 		t.Fatalf("idempotence : rep=%+v err=%v", rep, err)
 	}
 
+	// Nœud rendu à root et en 0666 (sans CAP_FOWNER, le changement de mode
+	// exige d'en être propriétaire) : Sync doit corriger propriétaire et mode.
+	must(t, os.Lchown(filepath.Join(dir, "aac0"), 0, 0))
 	must(t, os.Chmod(filepath.Join(dir, "aac0"), 0o666))
 	rep, err = Sync(dir, []Spec{null}, testMajors, 65534, 65534)
 	if err != nil || len(rep.Fixed) != 1 {

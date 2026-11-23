@@ -39,6 +39,15 @@ jobs:
             sudo env HWRAID_REQUIRE_ROOT_TESTS=1 "$t" -test.v -test.count=1
           done
 
+      - name: Tests root au profil du conteneur (capacités réduites)
+        run: |
+          docker run --rm --read-only \
+            --cap-drop ALL --cap-add MKNOD --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add SYS_RAWIO \
+            --device-cgroup-rule 'c *:* r' --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,exec,dev,size=64m \
+            -v "$PWD/dist/roottests:/t:ro" alpine:3.20 \
+            sh -ec 'grep -E "^Cap(Eff|Bnd)" /proc/self/status; for t in /t/*.test; do HWRAID_REQUIRE_ROOT_TESTS=1 "$t" -test.v -test.count=1; done'
+
       - name: Vulnérabilités connues
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
