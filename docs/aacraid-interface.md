@@ -173,21 +173,24 @@ La façon dont l'état d'un conteneur membre (par exemple un miroir dégradé) s
 
 ### État du module de protection du cache (ZMM) [interopérabilité]
 
-Deux lectures `ContainerCommand`, commande VM `VM_Ioctl` (3, public), mot 1 = 9, mot 2 = 3, en-tête `SenderSize` = 512 :
+Deux lectures `ContainerCommand` dont les données suivent `struct aac_vmioctl` (FreeBSD `aacraid_reg.h`, public) : `Command` = `VM_Ioctl` (3), `ObjType` = `FT_DRIVE` (9), `MethId` = 3, `ObjId` = 0, puis `IoctlCmd`. En-tête : `XferState` = `HostOwned | ApiFib` (`0x00100001`, Linux `aacraid.h`), `StructType` = 1, `SenderSize` = 512. La même enveloppe porte aussi des actions (par exemple `ResetBus`) : la liste blanche n'accepte que ces deux requêtes, octet pour octet.
 
-1. **Présence** : mot 4 = `0x30000`, 44 octets de données (mots 5 à 10 nuls). Dans la réponse, le mot de 16 bits à l'octet 42 porte le bit `0x2000` quand la carte décrit son module dans la lecture suivante.
-2. **État** : mot 4 = `0x700000`, 76 octets de données (mots 5 à 18 nuls). Dans la réponse, l'octet 20 doit avoir son bit `0x1` (bloc valide) ; le mot d'état R est aux octets 48-51.
+1. **Présence** : `IoctlCmd` = `0x30000`, 44 octets de données (mots 5 à 10 nuls). Dans la réponse, le mot de 16 bits à l'octet 42 porte le bit `0x2000` quand la carte décrit son module dans la lecture suivante.
+2. **État** : `IoctlCmd` = `0x700000`, 76 octets de données (mots 5 à 18 nuls). Dans la réponse, l'octet 20 doit avoir son bit `0x1` (bloc valide) ; le mot d'état R est aux octets 48-51.
 
-| Condition sur R | État |
+Chaque réponse est vérifiée avant décodage : statut (mot 0) nul, écho de `ObjType`, `MethId` et `IoctlCmd`, taille couvrant les champs lus.
+
+Règle appliquée à R, dans cet ordre :
+
+| Condition | État |
 |---|---|
 | `R & 0xF0000000` différent de `0x40000000` | autre type de module : non décodé |
 | bit `0x1` absent | module non installé |
-| bit `0x8` absent | **en panne** |
-| bit `0x4` présent | en charge, pas prêt |
-| bit `0x8` présent, bit `0x4` absent | optimal |
-| autre cas | indéterminé |
+| bit `0x8` absent | **en panne** (même si le bit `0x4` est présent) |
+| bit `0x4` présent | en charge |
+| sinon | optimal |
 
-Sur l'hôte de référence : R = `0x40000081`, module en panne, conforme à l'affichage de l'outil témoin.
+Sur l'hôte de référence : R = `0x40000081`, module en panne, conforme à l'affichage de l'outil témoin. Les états « en charge » et « optimal » restent à observer sur matériel.
 
 ## 7. Domaine de validité [interopérabilité]
 

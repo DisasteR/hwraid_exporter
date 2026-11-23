@@ -159,3 +159,29 @@ func TestCollectionSuccess(t *testing.T) {
 		t.Fatalf("série publiée sans collecte :\n%s", out)
 	}
 }
+
+// Protection du cache : présence et état publiés seulement quand ils ont été
+// lus ; un module non installé publie present=0 sans état.
+func TestCacheProtectionRender(t *testing.T) {
+	p := plan(aacHost("host0", "0000:01:00.0", "S1"))
+	res := map[string]module.Result{"0000:01:00.0": {NodeValid: true,
+		CacheProtection: &module.CacheProtection{Present: true, Type: "zmm", State: "failed"}}}
+	out := Render(Build(p, true, res))
+	for _, line := range []string{
+		`hwraid_cache_protection_present{controller="serial:S1",type="zmm"} 1`,
+		`hwraid_cache_protection_state{controller="serial:S1",type="zmm",state="failed"} 1`,
+	} {
+		if !strings.Contains(out, line+"\n") {
+			t.Fatalf("ligne absente : %s\n%s", line, out)
+		}
+	}
+	res["0000:01:00.0"] = module.Result{NodeValid: true, CacheProtection: &module.CacheProtection{Type: "zmm"}}
+	out = Render(Build(p, true, res))
+	if !strings.Contains(out, `hwraid_cache_protection_present{controller="serial:S1",type="zmm"} 0`+"\n") || strings.Contains(out, "hwraid_cache_protection_state{") {
+		t.Fatalf("non installé :\n%s", out)
+	}
+	res["0000:01:00.0"] = module.Result{NodeValid: true}
+	if out := Render(Build(p, true, res)); strings.Contains(out, "hwraid_cache_protection_present{") {
+		t.Fatalf("présence publiée sans lecture :\n%s", out)
+	}
+}

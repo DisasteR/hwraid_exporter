@@ -58,6 +58,8 @@ type fakeDev struct {
 	supErr  error
 	supCall int
 	closed  bool
+	cp      *cpAnswer
+	cpCall  int
 }
 
 func (f *fakeDev) HBAInfo() (aacraid.HBAInfo, error) { return f.info, f.err }
@@ -66,6 +68,20 @@ func (f *fakeDev) SupplementInfo() (aacraid.SupplementInfo, error) {
 	return f.sup, f.supErr
 }
 func (f *fakeDev) Close() error { f.closed = true; return nil }
+
+func (f *fakeDev) CacheProtection() (bool, aacraid.ZMMStatus, error) {
+	f.cpCall++
+	if f.cp == nil {
+		return true, aacraid.ZMMStatus{Word: 0x40000081, State: aacraid.CacheProtectionFailed}, nil
+	}
+	return f.cp.described, f.cp.st, f.cp.err
+}
+
+type cpAnswer struct {
+	described bool
+	st        aacraid.ZMMStatus
+	err       error
+}
 
 var arcIo = aacraid.SupplementInfo{Version: 15, SupportedOptions2: 0x00c8693c}
 
@@ -185,3 +201,67 @@ func TestCollectReportsCapabilitiesCollection(t *testing.T) {
 		t.Fatalf("lecture non tentée rapportée : %+v", r.Collected)
 	}
 }
+
+// Protection du cache : lue à chaque cycle (l'état change sans
+// redémarrage), traduite en état normalisé ; un format non décrit ou un
+// autre type de module est « non pris en charge », un échec n'invente rien.
+func TestCollectCacheProtection(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	c := card("0000:01:00.0", "0")
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}
+	run := func(a *cpAnswer) (module.Result, *fakeDev) {
+		d := &fakeDev{info: hba, sup: arcIo, cp: a}
+		return withDev(d, nil).Collect(c, ref), d
+	}
+
+	r, d := run(nil) // état de l'hôte de référence
+	if r.CacheProtection == nil || !r.CacheProtection.Present || r.CacheProtection.State != "failed" || !r.Collected[CacheProtectionCollector] {
+		t.Fatalf("référence : %+v", r)
+	}
+	m := withDev(d, nil)
+	m.Collect(c, ref)
+	m.Collect(c, ref)
+	if d.cpCall != 3 {
+		t.Fatalf("protection du cache lue %d fois en 3 cycles, attendu 3", d.cpCall)
+	}
+
+	cases := []struct {
+		name      string
+		a         cpAnswer
+		cp        *module.CacheProtection
+		collected *bool
+		unsup     bool
+	}{
+		{"optimal", cpAnswer{described: true, st: aacraid.ZMMStatus{State: aacraid.CacheProtectionOptimal}}, &module.CacheProtection{Present: true, Type: "zmm", State: "optimal"}, ptr(true), false},
+		{"non installé", cpAnswer{described: true, st: aacraid.ZMMStatus{State: aacraid.CacheProtectionNotInstalled}}, &module.CacheProtection{Type: "zmm"}, ptr(true), false},
+		{"non décrit", cpAnswer{described: false}, nil, nil, true},
+		{"autre type", cpAnswer{described: true, st: aacraid.ZMMStatus{State: aacraid.CacheProtectionOtherType}}, nil, nil, true},
+		{"échec", cpAnswer{err: errors.New("EIO")}, nil, ptr(false), false},
+	}
+	for _, tc := range cases {
+		r, _ := run(&tc.a)
+		if (r.CacheProtection == nil) != (tc.cp == nil) || (tc.cp != nil && *r.CacheProtection != *tc.cp) {
+			t.Fatalf("%s : protection %+v, attendu %+v", tc.name, r.CacheProtection, tc.cp)
+		}
+		got, ok := r.Collected[CacheProtectionCollector]
+		if (tc.collected == nil) != !ok || (tc.collected != nil && got != *tc.collected) {
+			t.Fatalf("%s : collected=%v (présent=%v)", tc.name, got, ok)
+		}
+		has := false
+		for _, u := range r.Unsupported {
+			has = has || u == CacheProtectionCollector
+		}
+		if has != tc.unsup || !r.NodeValid {
+			t.Fatalf("%s : unsupported=%v %+v", tc.name, r.Unsupported, r)
+		}
+	}
+
+	// Lecture des capacités en échec : pas de lecture du cache non plus.
+	f := &fakeDev{info: hba, supErr: errors.New("EIO")}
+	withDev(f, nil).Collect(c, ref)
+	if f.cpCall != 0 {
+		t.Fatal("protection du cache lue alors que la carte n'a pas répondu à 706")
+	}
+}
+
+func ptr(b bool) *bool { return &b }
