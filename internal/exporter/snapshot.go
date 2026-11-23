@@ -24,6 +24,8 @@ type Controller struct {
 	// NodeValid en donne le résultat.
 	NodeChecked, NodeValid bool
 	NodeError              string
+	Unsupported            []string // collecteurs non pris en charge par la carte
+	CollectError           string   // échec d'une lecture firmware
 }
 
 // Snapshot est une vue complète et immuable.
@@ -69,6 +71,10 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result) Sn
 				c.NodeError = r.Err.Error()
 			default:
 				c.NodeValid = r.NodeValid
+				c.Unsupported = r.Unsupported
+				if r.CollectErr != nil {
+					c.CollectError = r.CollectErr.Error()
+				}
 			}
 		}
 		ctrls = append(ctrls, c)
@@ -113,6 +119,12 @@ func Render(s Snapshot) string {
 	for _, c := range s.Controllers {
 		if c.NodeChecked {
 			fmt.Fprintf(&b, "hwraid_management_node_valid{%s} %d\n", labels("controller", c.Label), b2i(c.NodeValid))
+		}
+	}
+	gauge("hwraid_collector_supported", "0 pour une fonction explicitement non prise en charge par la carte.")
+	for _, c := range s.Controllers {
+		for _, col := range c.Unsupported {
+			fmt.Fprintf(&b, "hwraid_collector_supported{%s} 0\n", labels("controller", c.Label, "collector", col))
 		}
 	}
 	return b.String()

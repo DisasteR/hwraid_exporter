@@ -113,3 +113,31 @@ func TestRenderExposition(t *testing.T) {
 		}
 	}
 }
+
+// Un collecteur non pris en charge par la carte est publié à 0 ; un échec
+// de lecture ne publie rien sur la prise en charge et n'invalide pas le nœud.
+func TestCollectorSupported(t *testing.T) {
+	p := plan(aacHost("host0", "0000:01:00.0", "S1"))
+	res := map[string]module.Result{"0000:01:00.0": {NodeValid: true, Unsupported: []string{"volumes", "disks"}}}
+	out := Render(Build(p, true, res))
+	for _, line := range []string{
+		`hwraid_collector_supported{controller="serial:S1",collector="volumes"} 0`,
+		`hwraid_collector_supported{controller="serial:S1",collector="disks"} 0`,
+	} {
+		if !strings.Contains(out, line+"\n") {
+			t.Fatalf("ligne absente : %s\n%s", line, out)
+		}
+	}
+	res = map[string]module.Result{"0000:01:00.0": {NodeValid: true, CollectErr: errors.New("EIO")}}
+	s := Build(p, true, res)
+	if c := s.Controllers[0]; !c.NodeValid || c.CollectError == "" {
+		t.Fatalf("%+v", c)
+	}
+	if out := Render(s); strings.Contains(out, "hwraid_collector_supported{") {
+		t.Fatalf("prise en charge publiée malgré l'échec :\n%s", out)
+	}
+	// Carte qui annonce l'interface : aucune série à 0.
+	if out := Render(Build(p, true, valid(p))); strings.Contains(out, "hwraid_collector_supported{") {
+		t.Fatalf("série inattendue :\n%s", out)
+	}
+}

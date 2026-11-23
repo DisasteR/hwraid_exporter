@@ -13,6 +13,13 @@ var Entries = []allowlist.Entry{
 		Size:  HBAInfoSize,
 		Proof: "drivers/scsi/aacraid/commctrl.c aac_get_hba_info : réponse construite par le pilote, sans FIB",
 	},
+	{
+		Name:    "FSACTL_SENDFIB",
+		Ioctl:   IoctlSendFIB,
+		Size:    FIBSize,
+		Payload: CheckFIBRequest,
+		Proof:   "RequestSupplementAdapterInfo (706) : partie significative identique à la capture de l'outil de référence (docs/aacraid-interface.md, section 8)",
+	},
 }
 
 // NewAllowlist construit la liste blanche du module.

@@ -1,6 +1,7 @@
 package aacio
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"os"
@@ -191,5 +192,48 @@ func TestRealIoctlPath(t *testing.T) {
 	defer d.Close()
 	if _, err := d.HBAInfo(); !errors.Is(err, syscall.ENOTTY) {
 		t.Fatalf("ENOTTY attendu de /dev/null, obtenu %v", err)
+	}
+}
+
+// La requête 706 part par FSACTL_SENDFIB, telle que construite, et la
+// réponse écrite par le noyau dans le tampon est décodée.
+func TestSupplementInfoRoundTrip(t *testing.T) {
+	calls := fakeIoctl(t, func(req uint32, buf []byte) error {
+		if req != aacraid.IoctlSendFIB {
+			t.Fatalf("ioctl inattendu %#x", req)
+		}
+		if !bytes.Equal(buf, aacraid.SupplementInfoRequest()) {
+			t.Fatal("requête transmise différente de la requête qualifiée")
+		}
+		// Réponse du firmware : Size inclut l'en-tête.
+		binary.LittleEndian.PutUint16(buf[8:], aacraid.FIBSize)
+		binary.LittleEndian.PutUint32(buf[aacraid.FIBHeaderSize+0x20:], 15)
+		binary.LittleEndian.PutUint32(buf[aacraid.FIBHeaderSize+0x90:], 0x08)
+		return nil
+	})
+	d, err := Open("/dev/null", devNull, list(t))
+	if err != nil {
+		t.Skip(err)
+	}
+	defer d.Close()
+	s, err := d.SupplementInfo()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *calls != 1 || !s.ArcIoReads() {
+		t.Fatalf("calls=%d %+v", *calls, s)
+	}
+}
+
+// Une réponse que le firmware n'a pas remplie (Size reste à 4) est refusée.
+func TestSupplementInfoUnansweredRejected(t *testing.T) {
+	fakeIoctl(t, func(uint32, []byte) error { return nil })
+	d, err := Open("/dev/null", devNull, list(t))
+	if err != nil {
+		t.Skip(err)
+	}
+	defer d.Close()
+	if _, err := d.SupplementInfo(); err == nil {
+		t.Fatal("réponse vide acceptée")
 	}
 }
