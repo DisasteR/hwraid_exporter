@@ -41,6 +41,11 @@ type NodeRef struct {
 type Result struct {
 	NodeValid bool  // le nœud ouvert désigne bien la carte
 	Err       error // cause d'un échec, sans donnée identifiante
+	// Unsupported liste les collecteurs que la carte ne permet pas
+	// (hwraid_collector_supported = 0).
+	Unsupported []string
+	// CollectErr : échec d'une lecture firmware, sans effet sur NodeValid.
+	CollectErr error
 }
 
 // Module est le contrat d'un module de pilote.

@@ -103,3 +103,13 @@ func (d *Device) HBAInfo() (aacraid.HBAInfo, error) {
 	}
 	return aacraid.DecodeHBAInfo(buf)
 }
+
+// SupplementInfo envoie RequestSupplementAdapterInfo (706) au firmware et
+// décode la réponse.
+func (d *Device) SupplementInfo() (aacraid.SupplementInfo, error) {
+	buf := aacraid.SupplementInfoRequest()
+	if err := d.Do(allowlist.Request{Ioctl: aacraid.IoctlSendFIB, Buf: buf}); err != nil {
+		return aacraid.SupplementInfo{}, err
+	}
+	return aacraid.DecodeSupplementInfo(buf)
+}

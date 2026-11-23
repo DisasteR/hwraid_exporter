@@ -29,8 +29,9 @@ var knownIoctls = map[string]uint32{
 	"FSACTL_GET_HBA_INFO":          ctl(2150, 0),
 }
 
-// Seul FSACTL_GET_HBA_INFO est qualifié dans le prototype 0.
-var expectedAllowed = map[string]bool{"FSACTL_GET_HBA_INFO": true}
+// Ioctl présents dans la liste. FSACTL_SENDFIB n'y figure qu'avec un
+// contrôle du contenu (CheckFIBRequest) : un tampon nul est refusé.
+var expectedAllowed = map[string]bool{"FSACTL_GET_HBA_INFO": true, "FSACTL_SENDFIB": true}
 
 func mustList(t *testing.T) *allowlist.List {
 	t.Helper()
@@ -55,14 +56,14 @@ func TestAllowlistIsExactlyExpected(t *testing.T) {
 	}
 }
 
-// Chaque ioctl connu est testé avec la taille de l'entrée qualifiée et
-// d'autres tailles : seul GET_HBA_INFO à 200 octets passe.
+// Chaque ioctl connu est testé avec des tampons nuls de plusieurs tailles :
+// seul GET_HBA_INFO à 200 octets passe (une FIB nulle n'est pas qualifiée).
 func TestKnownIoctls(t *testing.T) {
 	l := mustList(t)
 	for name, code := range knownIoctls {
 		for _, size := range []int{0, 1, 4, 199, HBAInfoSize, 201, 512, 4096} {
 			_, err := l.Check(allowlist.Request{Ioctl: code, Buf: make([]byte, size)})
-			allowed := expectedAllowed[name] && size == HBAInfoSize
+			allowed := name == "FSACTL_GET_HBA_INFO" && size == HBAInfoSize
 			if allowed && err != nil {
 				t.Fatalf("%s/%d refusé : %v", name, size, err)
 			}
@@ -107,6 +108,36 @@ func TestNewRejectsInvalidEntries(t *testing.T) {
 	for name, entries := range cases {
 		if _, err := allowlist.New(entries...); err == nil {
 			t.Fatalf("%s : liste acceptée", name)
+		}
+	}
+}
+
+// La requête 706 n'est acceptée que par FSACTL_SENDFIB, et telle quelle.
+func TestSupplementRequestOnlyThroughSendFIB(t *testing.T) {
+	l := mustList(t)
+	for name, code := range knownIoctls {
+		_, err := l.Check(allowlist.Request{Ioctl: code, Buf: SupplementInfoRequest()})
+		if want := name == "FSACTL_SENDFIB"; want != (err == nil) {
+			t.Fatalf("%s : accepté=%v, attendu=%v (%v)", name, err == nil, want, err)
+		}
+	}
+}
+
+// Toute modification d'un seul octet de la requête la fait refuser : le
+// contrôle porte sur l'intégralité du tampon, pas seulement sur Command.
+func TestSendFIBRejectsEveryByteMutation(t *testing.T) {
+	l := mustList(t)
+	ref := SupplementInfoRequest()
+	for i := range ref {
+		for _, v := range []byte{0x00, 0x01, 0x80, 0xff} {
+			if ref[i] == v {
+				continue
+			}
+			b := append([]byte(nil), ref...)
+			b[i] = v
+			if _, err := l.Check(allowlist.Request{Ioctl: IoctlSendFIB, Buf: b}); !errors.Is(err, allowlist.ErrDenied) {
+				t.Fatalf("octet %d = %#x accepté (err=%v)", i, v, err)
+			}
 		}
 	}
 }

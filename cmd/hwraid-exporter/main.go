@@ -191,6 +191,9 @@ func serve(args []string) int {
 				// Adresse PCI et non label : le label peut contenir la série (S9).
 				log.Warn("nœud de gestion invalide", "pci", c.PCIAddress, "err", c.NodeError)
 			}
+			if c.CollectError != "" {
+				log.Warn("lecture en échec", "pci", c.PCIAddress, "err", c.CollectError)
+			}
 		}
 		out := exporter.Render(s)
 		snap.Store(&out)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 
 	"github.com/DisasteR/hwraid_exporter/internal/aacraid"
 	"github.com/DisasteR/hwraid_exporter/internal/allowlist"
@@ -18,12 +19,24 @@ import (
 // device est la partie du transport utilisée par le module (injectable).
 type device interface {
 	HBAInfo() (aacraid.HBAInfo, error)
+	SupplementInfo() (aacraid.SupplementInfo, error)
 	Close() error
 }
+
+// StateCollectors sont les collecteurs qui reposent sur les lectures de
+// volume, de membres et de disque (docs/aacraid-interface.md, section 7).
+var StateCollectors = []string{"volumes", "disks"}
 
 // Module implémente module.Module pour aacraid.
 type Module struct {
 	open func(path string, dev uint64) (device, error)
+
+	mu sync.Mutex
+	// supplement garde, par carte et par nœud, la réponse à
+	// RequestSupplementAdapterInfo : elle ne change pas sans réinitialisation
+	// de la carte, qui change aussi le nœud. Une lecture en échec n'est pas
+	// gardée et sera retentée au cycle suivant.
+	supplement map[string]aacraid.SupplementInfo
 }
 
 // New construit le module avec le transport réel et la liste blanche aacraid.
@@ -68,7 +81,10 @@ func (*Module) Nodes(c module.Card) ([]module.NodeRequest, error) {
 }
 
 // Collect ouvre le nœud préparé, lit FSACTL_GET_HBA_INFO (réponse du pilote,
-// sans commande firmware) et vérifie qu'il désigne bien cette carte.
+// sans commande firmware) et vérifie qu'il désigne bien cette carte. Il lit
+// ensuite, une fois par carte, RequestSupplementAdapterInfo : si la carte
+// n'annonce pas l'interface des lectures d'état, les collecteurs d'état sont
+// déclarés non pris en charge et aucune autre lecture n'est tentée.
 func (m *Module) Collect(c module.Card, refs []module.NodeRef) module.Result {
 	if len(refs) != 1 {
 		return module.Result{Err: fmt.Errorf("%d nœud(s) préparé(s), 1 attendu", len(refs))}
@@ -94,7 +110,34 @@ func (m *Module) Collect(c module.Card, refs []module.NodeRef) module.Result {
 		return module.Result{Err: fmt.Errorf("GET_HBA_INFO désigne la carte %d en %02x:%02x.%d",
 			info.AdapterNumber, info.Bus, info.Device, info.Function)}
 	}
-	return module.Result{NodeValid: true}
+	r := module.Result{NodeValid: true}
+	sup, err := m.supplementInfo(c.PCI.Address+"|"+strconv.FormatUint(refs[0].Dev, 10), d)
+	if err != nil {
+		r.CollectErr = fmt.Errorf("RequestSupplementAdapterInfo : %w", err)
+		return r
+	}
+	if !sup.ArcIoReads() {
+		r.Unsupported = append([]string(nil), StateCollectors...)
+	}
+	return r
+}
+
+// supplementInfo lit la réponse 706 une seule fois par carte et par nœud.
+func (m *Module) supplementInfo(key string, d device) (aacraid.SupplementInfo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s, ok := m.supplement[key]; ok {
+		return s, nil
+	}
+	s, err := d.SupplementInfo()
+	if err != nil {
+		return s, err
+	}
+	if m.supplement == nil {
+		m.supplement = map[string]aacraid.SupplementInfo{}
+	}
+	m.supplement[key] = s
+	return s, nil
 }
 
 func parsePCI(addr string) (bus, slot, fn uint8, err error) {
