@@ -163,7 +163,7 @@ Commande FIB 708 (`RequestConnectorMap`), envoyée une fois par l'outil témoin 
 
 L'outil témoin affiche la position telle quelle (« Connector n, Device m ») pour le disque dont l'entrée correspond, sans calcul. Un disque qui n'est pas relié directement à la carte (expandeur, fond de panier) n'a pas d'entrée : l'outil l'affiche alors par boîtier et emplacement, lus autrement ; l'exporter ne publie pas d'emplacement pour ce disque. Sur l'hôte de référence, le phy d'une entrée est celui de la lecture 248 du même disque : l'exporter exige cette concordance avant de publier un emplacement.
 
-Vérifié sur les huit disques de l'hôte de référence contre l'outil témoin (« Reported Location » et « Attached PHY Identifier »), et sur le câblage réel le 2026-11-23 : avec des câbles éclatés mini-SAS vers 4 SATA, la position m correspond à la fiche P(m+1).
+Vérifié sur les huit disques de l'hôte de référence contre l'outil témoin (« Reported Location » et « Attached PHY Identifier »), et sur le câblage réel le 2026-11-23 : avec des câbles éclatés mini-SAS vers 4 SATA, la position m correspond à la fiche P(m+1). Lecture par l'exporter validée le 2026-11-23 sur l'hôte de référence (huit emplacements identiques à l'outil témoin).
 
 ### Statistiques du contrôleur (sous-commande 244, paramètre : 0) [observé]
 
