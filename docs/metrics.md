@@ -76,9 +76,12 @@ Une grappe à plusieurs niveaux (par exemple quatre miroirs assemblés) publie u
 | `hwraid_disk_state` | `controller`, `disk`, `state` | 1, pour chaque disque membre d'un volume dont l'état est établi |
 | `hwraid_disk_info` | `controller`, `disk`, `vendor`, `model`, `firmware`, `serial`, `wwn` | 1, pour chaque disque présent sur la carte, membre ou non ; `wwn` au format `0x` suivi de 16 chiffres hexadécimaux, vide si la carte n'en donne pas |
 | `hwraid_disk_capacity_bytes` | `controller`, `disk` | capacité brute en octets, absente si la taille de bloc n'est pas reconnue |
+| `hwraid_disk_os_device` | `controller`, `disk`, `device`, `scsi_address` | 1, pour chaque disque que le pilote présente à Linux : nœud SCSI générique (`sg8`) et adresse SCSI Linux (`0:1:7:0`) |
 | `hwraid_disk_location` | `controller`, `disk`, `connector`, `connector_name`, `device`, `phy` | 1, pour chaque disque relié directement à la carte : numéro et nom du connecteur, position dans le connecteur, phy de la carte |
 
 L'inventaire est relu à chaque cycle : un disque remplacé au même emplacement change aussitôt de numéro de série.
+
+Le lien avec Linux est lu dans sysfs à chaque cycle, sans commande à la carte. Il n'est publié que si le numéro de série gardé par le noyau (page VPD 0x80) est celui de la carte : un nœud `sgX` peut changer de numéro d'un démarrage à l'autre, la métrique suit. Pour interroger un disque avec `smartctl`, c'est le nœud à utiliser.
 
 L'emplacement reprend la numérotation de l'outil du constructeur (« Connector n, Device m » d'ARCCONF et de maxView), fournie par la carte. Avec un câble éclaté mini-SAS vers 4 SATA, `device` m correspond à la fiche P(m+1) (vérifié sur l'hôte de référence). Un disque relié par un expandeur ou un fond de panier n'a pas d'emplacement publié. Le numéro de série, imprimé sur l'étiquette du disque, reste la confirmation avant de retirer un disque. Pour relier un disque à sa santé SMART, joindre sur le numéro de série, par exemple avec smartctl_exporter (label `serial_number` de `smartctl_device`) :
 

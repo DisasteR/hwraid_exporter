@@ -325,3 +325,16 @@ func TestDiskLocationRender(t *testing.T) {
 		t.Fatalf("ligne absente : %s\n%s", want, out)
 	}
 }
+
+// Périphérique Linux : une série par disque relié.
+func TestDiskOSDeviceRender(t *testing.T) {
+	p := plan(aacHost("host0", "0000:01:00.0", "S1"))
+	res := map[string]module.Result{"0000:01:00.0": {NodeValid: true, DiskOSDevices: []module.DiskOSDevice{
+		{ID: "d7", Device: "sg8", Address: "0:1:7:0"},
+	}}}
+	out := Render(Build(p, true, res, nil, 0))
+	want := `hwraid_disk_os_device{controller="serial:S1",disk="d7",device="sg8",scsi_address="0:1:7:0"} 1`
+	if !strings.Contains(out, want+"\n") || strings.Count(out, "hwraid_disk_os_device{") != 1 {
+		t.Fatalf("ligne absente : %s\n%s", want, out)
+	}
+}

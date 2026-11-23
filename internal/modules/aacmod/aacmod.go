@@ -159,7 +159,8 @@ func (m *Module) Collect(c module.Card, refs []module.NodeRef) module.Result {
 	}
 	collectCacheProtection(&r, d)
 	if sup.ArcIoReads() {
-		m.collectVolumes(&r, d, key)
+		_, h, _ := hostOf(c)
+		m.collectVolumes(&r, d, key, h)
 	}
 	return r
 }
@@ -208,7 +209,7 @@ func hostOf(c module.Card) (int, sysfs.SCSIHost, error) {
 // jamais de configuration ni d'inventaire partiels. L'inventaire réutilise
 // la liste des disques présents : il n'est pas lu si la configuration ne
 // l'a pas été.
-func (m *Module) collectVolumes(r *module.Result, d device, key string) {
+func (m *Module) collectVolumes(r *module.Result, d device, key string, h sysfs.SCSIHost) {
 	vols, disks, present, err := readConfiguration(d)
 	for _, col := range StateCollectors {
 		r.Collected[col] = err == nil
@@ -235,6 +236,7 @@ func (m *Module) collectVolumes(r *module.Result, d device, key string) {
 		r.DiskInventory = append(r.DiskInventory, module.DiskInfo{ID: diskID(i.Number), Vendor: i.Vendor, Model: i.Model,
 			Firmware: i.Firmware, Serial: i.Serial, WWN: i.WWN, CapacityBytes: i.CapacityBytes()})
 	}
+	r.DiskOSDevices = osDevices(h, inv)
 	locs, err := m.locations(key, d, inv)
 	r.Collected[DiskLocationCollector] = err == nil
 	if err != nil {
@@ -247,6 +249,28 @@ func (m *Module) collectVolumes(r *module.Result, d device, key string) {
 }
 
 func diskID(n uint32) string { return fmt.Sprintf("d%d", n) }
+
+// osDevices relie chaque disque à son périphérique SCSI Linux. Le pilote
+// présente le disque (canal c, cible t) de la carte à l'adresse Linux
+// (c + 1, t), LUN 0 (aac_phys_to_logical, drivers/scsi/aacraid/aacraid.h) ;
+// le lien n'est publié que si le numéro de série de la page VPD 0x80 gardée
+// par le noyau est celui de l'information de disque du cycle. Lecture de
+// sysfs seulement, aucune commande à la carte.
+func osDevices(h sysfs.SCSIHost, inv []aacraid.DiskInfo) []module.DiskOSDevice {
+	var out []module.DiskOSDevice
+	for _, i := range inv {
+		channel, target := int(i.Number>>24)+1, int(i.Number&0xffffff)
+		for _, dev := range h.Devices {
+			if dev.Channel != channel || dev.Target != target || dev.LUN != 0 {
+				continue
+			}
+			if dev.Generic != "" && dev.Serial != "" && dev.Serial == i.Serial {
+				out = append(out, module.DiskOSDevice{ID: diskID(i.Number), Device: dev.Generic, Address: dev.Address})
+			}
+		}
+	}
+	return out
+}
 
 // locations donne l'emplacement de chaque disque relié directement à la
 // carte, tel que la carte des connecteurs le décrit et tel que l'outil de
