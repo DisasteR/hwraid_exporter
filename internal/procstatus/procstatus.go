@@ -34,6 +34,7 @@ func Mask(caps ...uint) uint64 {
 // Status regroupe les champs utiles de /proc/<pid>/status.
 type Status struct {
 	UID, GID               [4]uint32 // réel, effectif, sauvegardé, système de fichiers
+	Groups                 []uint32  // groupes supplémentaires
 	CapInh, CapPrm, CapEff uint64
 	CapBnd, CapAmb         uint64
 	NoNewPrivs             bool
@@ -57,6 +58,8 @@ func Parse(r io.Reader) (Status, error) {
 			s.UID, err = parseIDs(val)
 		case "Gid":
 			s.GID, err = parseIDs(val)
+		case "Groups":
+			s.Groups, err = parseGroups(val)
 		case "CapInh":
 			s.CapInh, err = strconv.ParseUint(val, 16, 64)
 		case "CapPrm":
@@ -80,12 +83,24 @@ func Parse(r io.Reader) (Status, error) {
 	if err := sc.Err(); err != nil {
 		return Status{}, err
 	}
-	for _, k := range []string{"Uid", "Gid", "CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb", "NoNewPrivs"} {
+	for _, k := range []string{"Uid", "Gid", "Groups", "CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb", "NoNewPrivs"} {
 		if !seen[k] {
 			return Status{}, fmt.Errorf("champ %s absent", k)
 		}
 	}
 	return s, nil
+}
+
+func parseGroups(v string) ([]uint32, error) {
+	var out []uint32
+	for _, x := range strings.Fields(v) {
+		n, err := strconv.ParseUint(x, 10, 32)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, uint32(n))
+	}
+	return out, nil
 }
 
 func parseIDs(v string) ([4]uint32, error) {
@@ -141,6 +156,15 @@ func (s Status) Verify(e Expected) error {
 		if set.got != set.want {
 			errs = append(errs, fmt.Sprintf("%s=%016x (attendu %016x)", set.name, set.got, set.want))
 		}
+	}
+	for i := range s.UID {
+		if s.UID[i] == 0 || s.GID[i] == 0 {
+			errs = append(errs, "identité root résiduelle")
+			break
+		}
+	}
+	if len(s.Groups) != 0 {
+		errs = append(errs, fmt.Sprintf("groupes supplémentaires non vides : %v", s.Groups))
 	}
 	if !s.NoNewPrivs {
 		errs = append(errs, "NoNewPrivs=0")

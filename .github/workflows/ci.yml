@@ -57,13 +57,32 @@ jobs:
           grep -qx 'hwraid_snapshot_ready 1' metrics.txt
           grep -qx 'hwraid_discovery_success 1' metrics.txt
           pid=$(pgrep -f 'hwraid-exporter serve' | grep -v sudo | while read p; do [ "$(ps -o comm= -p $p)" = hwraid-exporter ] && echo $p; done | head -1)
-          grep -E '^(Uid|Gid|Cap(Inh|Prm|Eff|Bnd|Amb)|NoNewPrivs):' /proc/$pid/status | tee status.txt
+          grep -E '^(Uid|Gid|Groups|Cap(Inh|Prm|Eff|Bnd|Amb)|NoNewPrivs):' /proc/$pid/status | tee status.txt
+          grep -qE '^Groups:\s*$' status.txt
           grep -qE '^Uid:\s+65534\s+65534\s+65534\s+65534$' status.txt
-          grep -qE '^CapEff:\s+0000000000020000$' status.txt
-          grep -qE '^CapBnd:\s+0000000000020000$' status.txt
-          grep -qE '^CapInh:\s+0000000000000000$' status.txt
+          # Sans carte prise en charge : aucune capacité conservée.
+          grep -qE '^Gid:\s+65534\s+65534\s+65534\s+65534$' status.txt
+          for set in CapInh CapPrm CapEff CapBnd CapAmb; do grep -qE "^$set:\s+0000000000000000$" status.txt; done
           grep -qE '^NoNewPrivs:\s+1$' status.txt
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9799/autre)" = 404
           sudo kill -TERM $pid
           for i in $(seq 1 20); do kill -0 $pid 2>/dev/null || break; sleep 0.25; done
           ! kill -0 $pid 2>/dev/null
+
+      - name: Conteneur Docker au profil du NAS (sans carte)
+        run: |
+          docker run -d --name hw --read-only \
+            --cap-drop ALL --cap-add MKNOD --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add SYS_RAWIO \
+            --device-cgroup-rule 'c *:* r' --security-opt no-new-privileges \
+            -p 127.0.0.1:9800:9799 -v "$PWD/dist/hwraid-exporter:/hwraid-exporter:ro" \
+            alpine:3.20 /hwraid-exporter serve --listen 0.0.0.0:9799 --interval 2s
+          for i in $(seq 1 20); do curl -fsS http://127.0.0.1:9800/metrics > cmetrics.txt 2>/dev/null && grep -q '^hwraid_snapshot_ready 1$' cmetrics.txt && break; sleep 0.5; done
+          docker logs hw; cat cmetrics.txt
+          grep -qx 'hwraid_snapshot_ready 1' cmetrics.txt
+          docker exec hw grep -E '^(Uid|Gid|Groups|Cap(Inh|Prm|Eff|Bnd|Amb)|NoNewPrivs):' /proc/1/status | tee cstatus.txt
+          grep -qE '^Uid:\s+65534\s+65534\s+65534\s+65534$' cstatus.txt
+          for set in CapInh CapPrm CapEff CapBnd CapAmb; do grep -qE "^$set:\s+0000000000000000$" cstatus.txt; done
+          grep -qE '^NoNewPrivs:\s+1$' cstatus.txt
+          docker exec hw ls -ld /dev/hwraid_exporter
+          docker stop -t 10 hw
+          test "$(docker inspect -f '{{.State.ExitCode}}' hw)" = 0

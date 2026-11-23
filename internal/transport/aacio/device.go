@@ -18,14 +18,19 @@ import (
 // ErrNodeMismatch : le nœud ouvert n'est pas le périphérique attendu.
 var ErrNodeMismatch = errors.New("le nœud ne correspond pas à la carte attendue")
 
-// ioctlFn est l'appel système réel ; les tests le remplacent.
-var ioctlFn = func(fd int, req uint32, arg unsafe.Pointer) error {
-	_, _, e := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), uintptr(req), uintptr(arg))
+// ioctlFn est l'appel système réel ; les tests le remplacent. Il reçoit le
+// tampon entier, pour que la taille effectivement passée soit observable.
+var ioctlFn = func(fd int, req uint32, buf []byte) error {
+	_, _, e := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), uintptr(req), uintptr(unsafe.Pointer(&buf[0])))
+	runtime.KeepAlive(buf)
 	if e != 0 {
 		return e
 	}
 	return nil
 }
+
+// ErrClosed : le nœud a déjà été refermé.
+var ErrClosed = errors.New("nœud de gestion refermé")
 
 // Device est un nœud de gestion ouvert pour un cycle de collecte.
 // Il doit être refermé à la fin du cycle (pas de descripteur persistant).
@@ -58,20 +63,35 @@ func Open(path string, wantDev uint64, list *allowlist.List) (*Device, error) {
 	return &Device{fd: fd, path: path, list: list}, nil
 }
 
-// Close referme le nœud.
-func (d *Device) Close() error { return unix.Close(d.fd) }
+// Close referme le nœud. Un second appel est sans effet : le descripteur,
+// une fois libéré, peut être réattribué à un autre fichier.
+func (d *Device) Close() error {
+	if d.fd < 0 {
+		return nil
+	}
+	err := unix.Close(d.fd)
+	d.fd = -1
+	return err
+}
 
 // Do émet req si la liste blanche l'autorise. Une interruption (EINTR) est
 // un échec de la lecture en cours, sans nouvel essai (exigence S8).
+//
+// La vérification et l'appel portent sur une copie privée du tampon : un
+// appelant ne peut pas modifier la requête entre la vérification de la
+// liste blanche et l'appel système. La réponse est recopiée ensuite.
 func (d *Device) Do(req allowlist.Request) error {
-	if _, err := d.list.Check(req); err != nil {
+	if d.fd < 0 {
+		return ErrClosed
+	}
+	priv := allowlist.Request{Ioctl: req.Ioctl, Buf: append([]byte(nil), req.Buf...)}
+	if _, err := d.list.Check(priv); err != nil {
 		return err
 	}
-	err := ioctlFn(d.fd, req.Ioctl, unsafe.Pointer(&req.Buf[0]))
-	runtime.KeepAlive(req.Buf)
-	if err != nil {
+	if err := ioctlFn(d.fd, priv.Ioctl, priv.Buf); err != nil {
 		return fmt.Errorf("ioctl %#x sur %s : %w", req.Ioctl, d.path, err)
 	}
+	copy(req.Buf, priv.Buf)
 	return nil
 }
 

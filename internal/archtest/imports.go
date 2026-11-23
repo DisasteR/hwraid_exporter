@@ -17,6 +17,9 @@ import (
 // Forbidden : imports réservés aux paquets autorisés.
 var Forbidden = []string{"syscall", "golang.org/x/sys/unix", "unsafe"}
 
+// TransportDir : seul répertoire autorisé à émettre un ioctl.
+const TransportDir = "internal/transport"
+
 // AllowedDirs : répertoires (relatifs à la racine du module) qui peuvent
 // les importer.
 var AllowedDirs = []string{"internal/transport", "internal/nodes", "internal/privilege", "internal/lifecycle"}
@@ -52,9 +55,6 @@ func Check(root string) ([]Violation, error) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		if allowed(rel) {
-			return nil
-		}
 		src, err := os.ReadFile(path)
 		if err != nil {
 			return err
@@ -62,6 +62,43 @@ func Check(root string) ([]Violation, error) {
 		f, err := parser.ParseFile(token.NewFileSet(), path, src, parser.SkipObjectResolution)
 		if err != nil {
 			return err
+		}
+		// Valable partout : pas de cgo, et pas d'ioctl hors du transport.
+		for _, imp := range f.Imports {
+			if p, _ := strconv.Unquote(imp.Path.Value); p == "C" {
+				out = append(out, Violation{File: rel, Detail: "import C (cgo interdit)"})
+			}
+		}
+		if !strings.HasPrefix(rel, TransportDir+"/") {
+			// Noms locaux (alias compris) des paquets d'appel système.
+			sys := map[string]bool{}
+			for _, imp := range f.Imports {
+				p, _ := strconv.Unquote(imp.Path.Value)
+				if p != "syscall" && p != "golang.org/x/sys/unix" {
+					continue
+				}
+				name := filepath.Base(p)
+				if imp.Name != nil {
+					name = imp.Name.Name
+				}
+				sys[name] = true
+			}
+			ioctl := false
+			ast.Inspect(f, func(n ast.Node) bool {
+				if sel, ok := n.(*ast.SelectorExpr); ok {
+					if id, ok := sel.X.(*ast.Ident); ok && sys[id.Name] &&
+						(strings.HasPrefix(sel.Sel.Name, "Ioctl") || sel.Sel.Name == "SYS_IOCTL") {
+						ioctl = true
+					}
+				}
+				return !ioctl
+			})
+			if ioctl {
+				out = append(out, Violation{File: rel, Detail: "ioctl hors de " + TransportDir})
+			}
+		}
+		if allowed(rel) {
+			return nil
 		}
 		for _, imp := range f.Imports {
 			p, _ := strconv.Unquote(imp.Path.Value)

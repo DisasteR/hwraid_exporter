@@ -8,9 +8,11 @@ import (
 
 const rawio = "0000000000020000" // CAP_SYS_RAWIO seule
 
+var groups = ""
+
 func status(uid, gid, inh, prm, eff, bnd, amb, nnp string) string {
 	return "Name:\thwraid-exporter\nUmask:\t0022\nState:\tS (sleeping)\n" +
-		"Uid:\t" + uid + "\nGid:\t" + gid + "\nGroups:\t\n" +
+		"Uid:\t" + uid + "\nGid:\t" + gid + "\nGroups:\t" + groups + "\n" +
 		"CapInh:\t" + inh + "\nCapPrm:\t" + prm + "\nCapEff:\t" + eff +
 		"\nCapBnd:\t" + bnd + "\nCapAmb:\t" + amb + "\nNoNewPrivs:\t" + nnp + "\nSeccomp:\t2\n"
 }
@@ -63,11 +65,34 @@ func TestVerifyDetectsEachDeviation(t *testing.T) {
 	}
 }
 
+// Groupes supplémentaires restants et identité root : toujours des écarts,
+// même si l'attendu demandait root par erreur.
+func TestVerifyGroupsAndRoot(t *testing.T) {
+	ok := "65534\t65534\t65534\t65534"
+	groups = "4 24 65534"
+	s, err := Parse(strings.NewReader(status(ok, ok, none, rawio, rawio, rawio, none, "1")))
+	groups = ""
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Groups) != 3 || s.Verify(target) == nil {
+		t.Fatalf("groupes non détectés : %v", s.Groups)
+	}
+	root := "0\t0\t0\t0"
+	s, err = Parse(strings.NewReader(status(root, root, none, rawio, rawio, rawio, none, "1")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Verify(AfterDrop(0, 0, Mask(CapSysRawIO))) == nil {
+		t.Fatal("un attendu root ne doit jamais être validé")
+	}
+}
+
 // Un champ manquant ou illisible fait échouer l'analyse : la vérification
 // ne doit jamais passer faute d'avoir pu lire.
 func TestParseRejectsIncompleteStatus(t *testing.T) {
 	full := status("1\t1\t1\t1", "1\t1\t1\t1", rawio, rawio, rawio, rawio, rawio, "1")
-	for _, field := range []string{"Uid", "Gid", "CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb", "NoNewPrivs"} {
+	for _, field := range []string{"Uid", "Gid", "Groups", "CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb", "NoNewPrivs"} {
 		var kept []string
 		for _, l := range strings.Split(full, "\n") {
 			if !strings.HasPrefix(l, field+":") {

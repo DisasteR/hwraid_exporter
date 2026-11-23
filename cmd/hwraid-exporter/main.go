@@ -93,6 +93,10 @@ func serve(args []string) int {
 		log.Error("intervalle invalide", "interval", *interval)
 		return 2
 	}
+	if *uid == 0 || *gid == 0 || *uid >= 1<<32-1 || *gid >= 1<<32-1 {
+		log.Error("identité d'exécution invalide : ni root ni hors plage", "uid", *uid, "gid", *gid)
+		return 2
+	}
 
 	// --- Phase de préparation (root) -------------------------------------
 	if os.Geteuid() != 0 {
@@ -121,7 +125,7 @@ func serve(args []string) int {
 	for _, e := range serrs {
 		log.Warn("nœud non calculable", "err", e)
 	}
-	rep, err := nodes.Sync(nodesDir, specs, int(*uid), int(*gid))
+	rep, err := nodes.Sync(nodesDir, specs, majors, int(*uid), int(*gid))
 	if err != nil {
 		log.Error("préparation des nœuds", "dir", nodesDir, "err", err)
 		return 1
@@ -129,7 +133,11 @@ func serve(args []string) int {
 	log.Info("nœuds préparés", "créés", rep.Created, "remplacés", rep.Replaced, "corrigés", rep.Fixed, "supprimés", rep.Removed)
 
 	// --- Abandon des privilèges ------------------------------------------
-	keep := procstatus.Mask(procstatus.CapSysRawIO)
+	// Capacités réduites à celles des pilotes présents : aucune sans carte.
+	var keep uint64
+	if len(specs) > 0 {
+		keep = procstatus.Mask(procstatus.CapSysRawIO)
+	}
 	if err := privilege.Drop(uint32(*uid), uint32(*gid), keep); err != nil {
 		log.Error("abandon des privilèges", "err", err)
 		return 1
@@ -138,7 +146,7 @@ func serve(args []string) int {
 		log.Error("vérification des privilèges", "err", err)
 		return 1
 	}
-	log.Info("privilèges abandonnés", "uid", *uid, "gid", *gid, "capacités", "CAP_SYS_RAWIO")
+	log.Info("privilèges abandonnés", "uid", *uid, "gid", *gid, "capacités", fmt.Sprintf("%#x", keep))
 
 	// --- Collecte et service ---------------------------------------------
 	specByUID := map[string]nodes.Spec{}
@@ -151,17 +159,30 @@ func serve(args []string) int {
 
 	ctx, stop := signal.NotifyContext(context.Background(), lifecycle.TerminationSignals()...)
 	defer stop()
-	exitCode := make(chan int, 1)
-	startValid := map[string]bool{} // validité du nœud au premier cycle
+	exitCode := make(chan int, 2)
+	requestExit := func(code int) {
+		select {
+		case exitCode <- code:
+		default:
+		}
+	}
 
-	collect := func(first bool) {
-		hosts, herrs, err := sysfs.Discover(*root)
+	collect := func() {
+		hosts, _, err := sysfs.Discover(*root)
 		ok := err == nil
 		if err != nil {
 			log.Warn("découverte en échec", "err", err)
 		}
-		for _, e := range herrs {
-			log.Warn("hôte SCSI ignoré", "host", e.Host, "err", e.Err)
+		// L'ensemble des nœuds attendus a-t-il changé depuis la préparation ?
+		// (carte ajoutée ou retirée, module rechargé, unique_id réattribué)
+		if ok {
+			if cur, cerr := readMajors(); cerr == nil {
+				now, _ := nodes.Desired(hosts, cur)
+				if !sameSpecs(now, specs) {
+					log.Error("les nœuds attendus ont changé depuis la préparation : relance nécessaire")
+					requestExit(exitNodeChanged)
+				}
+			}
 		}
 		check := func(h sysfs.SCSIHost) (aacraid.HBAInfo, error) {
 			return checkNode(h, specByUID, list)
@@ -169,16 +190,8 @@ func serve(args []string) int {
 		s := exporter.Build(hosts, ok, check)
 		for _, c := range s.Controllers {
 			if !c.NodeValid {
-				log.Warn("nœud de gestion invalide", "controller", c.Label, "err", c.NodeError)
-			}
-			if first {
-				startValid[c.PCIAddress] = c.NodeValid
-			} else if startValid[c.PCIAddress] && !c.NodeValid {
-				log.Error("nœud valide au démarrage devenu invalide : relance nécessaire", "controller", c.Label)
-				select {
-				case exitCode <- exitNodeChanged:
-				default:
-				}
+				// Adresse PCI et non label : le label peut contenir la série (S9).
+				log.Warn("nœud de gestion invalide", "pci", c.PCIAddress, "err", c.NodeError)
 			}
 		}
 		out := exporter.Render(s)
@@ -190,17 +203,18 @@ func serve(args []string) int {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		_, _ = w.Write([]byte(*snap.Load()))
 	})
-	srv := &http.Server{Addr: *listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Addr: *listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("serveur HTTP", "err", err)
-			exitCode <- 1
+			requestExit(1)
 		}
 	}()
 	log.Info("écoute", "listen", *listen)
 
 	go func() {
-		collect(true)
+		collect()
 		t := time.NewTicker(*interval)
 		defer t.Stop()
 		for {
@@ -208,7 +222,7 @@ func serve(args []string) int {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				collect(false)
+				collect()
 			}
 		}
 	}()
@@ -246,6 +260,19 @@ func checkNode(h sysfs.SCSIHost, specs map[string]nodes.Spec, list *allowlist.Li
 	}
 	defer d.Close()
 	return d.HBAInfo()
+}
+
+// sameSpecs compare deux ensembles de nœuds attendus (déjà triés par nom).
+func sameSpecs(a, b []nodes.Spec) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func readMajors() (map[string]uint32, error) {

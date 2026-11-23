@@ -30,7 +30,10 @@ func TestCheckerDetectsPlantedViolations(t *testing.T) {
 	}
 	sort.Strings(got)
 	want := []string{
+		"internal/nodes/ioctl.go : ioctl hors de internal/transport",
+		"internal/privilege/sysioctl.go : ioctl hors de internal/transport",
 		"internal/sysfs/alias.go : import golang.org/x/sys/unix",
+		"internal/sysfs/cgo.go : import C (cgo interdit)",
 		"internal/sysfs/conn.go : usage de SyscallConn",
 		"internal/sysfs/direct.go : import syscall",
 		"internal/sysfs/direct.go : import unsafe",

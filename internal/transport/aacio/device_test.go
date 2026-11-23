@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
-	"unsafe"
 
 	"golang.org/x/sys/unix"
 
@@ -26,14 +25,17 @@ func list(t *testing.T) *allowlist.List {
 	return l
 }
 
-// fakeIoctl remplace l'appel système et compte les appels.
+// fakeIoctl remplace l'appel système, compte les appels et vérifie que le
+// tampon reçu a exactement la taille attendue par le noyau.
 func fakeIoctl(t *testing.T, fn func(req uint32, buf []byte) error) *int {
 	t.Helper()
 	calls := 0
 	orig := ioctlFn
-	ioctlFn = func(fd int, req uint32, arg unsafe.Pointer) error {
+	ioctlFn = func(fd int, req uint32, buf []byte) error {
 		calls++
-		buf := unsafe.Slice((*byte)(arg), aacraid.HBAInfoSize)
+		if req == aacraid.IoctlGetHBAInfo && len(buf) != aacraid.HBAInfoSize {
+			t.Fatalf("tampon de %d octets transmis, %d attendus", len(buf), aacraid.HBAInfoSize)
+		}
 		return fn(req, buf)
 	}
 	t.Cleanup(func() { ioctlFn = orig })
@@ -68,6 +70,53 @@ func TestOpenChecksDevice(t *testing.T) {
 	}
 	if _, err := Open("/dev/null", devNull, nil); err == nil {
 		t.Fatal("ouverture sans liste blanche acceptée")
+	}
+}
+
+// Close est idempotent et Do après Close est refusé sans appel système.
+func TestCloseIsFinal(t *testing.T) {
+	calls := fakeIoctl(t, func(uint32, []byte) error { return nil })
+	d, err := Open("/dev/null", devNull, list(t))
+	if err != nil {
+		t.Skip(err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatalf("second Close : %v", err)
+	}
+	if _, err := d.HBAInfo(); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Do après Close : ErrClosed attendu, obtenu %v", err)
+	}
+	if *calls != 0 {
+		t.Fatal("appel système émis après Close")
+	}
+}
+
+// La requête vérifiée est celle qui part : modifier le tampon de l'appelant
+// pendant l'appel n'atteint pas le noyau, et la réponse revient bien.
+func TestDoUsesPrivateCopy(t *testing.T) {
+	var caller []byte
+	fakeIoctl(t, func(_ uint32, buf []byte) error {
+		caller[0] = 0xAA // l'appelant écrit dans son tampon pendant l'appel
+		if buf[0] == 0xAA {
+			t.Fatal("le tampon émis est celui de l'appelant")
+		}
+		buf[1] = 0x55
+		return nil
+	})
+	d, err := Open("/dev/null", devNull, list(t))
+	if err != nil {
+		t.Skip(err)
+	}
+	defer d.Close()
+	caller = make([]byte, aacraid.HBAInfoSize)
+	if err := d.Do(allowlist.Request{Ioctl: aacraid.IoctlGetHBAInfo, Buf: caller}); err != nil {
+		t.Fatal(err)
+	}
+	if caller[1] != 0x55 {
+		t.Fatal("la réponse n'a pas été recopiée")
 	}
 }
 

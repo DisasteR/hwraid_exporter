@@ -97,14 +97,32 @@ type Report struct {
 // ErrForeignEntry : une entrée étrangère au schéma a été trouvée ; rien n'a été modifié.
 var ErrForeignEntry = errors.New("entrée étrangère dans le répertoire des nœuds")
 
+// driverMajor associe un nom de nœud au nom de pilote dont le major doit
+// être lu dans /proc/devices.
+func driverMajor(name string) string {
+	switch {
+	case strings.HasPrefix(name, "aac"):
+		return "aac"
+	case name == "megaraid_sas_ioctl":
+		return "megaraid_sas_ioctl"
+	default: // hpsa-*, smartpqi-* : nœud sg du contrôleur
+		return "sg"
+	}
+}
+
 // Sync met le répertoire dir en conformité avec specs. Les nœuds sont créés
 // en 0600 pour uid:gid ; le répertoire appartient à root:gid en 0750.
-func Sync(dir string, specs []Spec, uid, gid int) (Report, error) {
+// majors est la table des majors caractère lue dans /proc/devices : un
+// nœud dont le major ne correspond pas à celui de son pilote est refusé.
+func Sync(dir string, specs []Spec, majors map[string]uint32, uid, gid int) (Report, error) {
 	var rep Report
 	want := map[string]Spec{}
 	for _, s := range specs {
 		if !schema.MatchString(s.Name) {
 			return rep, fmt.Errorf("nom de nœud hors schéma : %q", s.Name)
+		}
+		if m, ok := majors[driverMajor(s.Name)]; !ok || m == 0 || s.Major != m {
+			return rep, fmt.Errorf("major %d refusé pour %s (pilote %s : %d)", s.Major, s.Name, driverMajor(s.Name), m)
 		}
 		if _, dup := want[s.Name]; dup {
 			return rep, fmt.Errorf("nœud en double : %q", s.Name)
@@ -137,7 +155,8 @@ func Sync(dir string, specs []Spec, uid, gid int) (Report, error) {
 		switch {
 		case ok && st.Rdev == s.Dev():
 			if st.Uid != uint32(uid) || st.Gid != uint32(gid) || st.Mode&0o7777 != 0o600 {
-				if err := fix(dfd, name, uid, gid); err != nil {
+				// Jamais de chmod en place : recréation puis renommage atomique.
+				if err := create(dfd, s, uid, gid); err != nil {
 					return rep, err
 				}
 				rep.Fixed = append(rep.Fixed, name)
@@ -185,6 +204,16 @@ func openDir(dir string) (int, error) {
 	if err != nil {
 		return -1, fmt.Errorf("ouverture de %s : %w", dir, err)
 	}
+	// Un répertoire modifiable par un autre que le processus ouvrirait des
+	// courses entre validation et action : refus, sans rien modifier.
+	if err := unix.Fstat(dfd, &st); err != nil {
+		unix.Close(dfd)
+		return -1, fmt.Errorf("fstat de %s : %w", dir, err)
+	}
+	if st.Uid != uint32(os.Geteuid()) || st.Mode&0o022 != 0 {
+		unix.Close(dfd)
+		return -1, fmt.Errorf("%s appartient à l'UID %d avec le mode %o : refus (propriétaire attendu %d, sans écriture pour le groupe ni les autres)", dir, st.Uid, st.Mode&0o7777, os.Geteuid())
+	}
 	return dfd, nil
 }
 
@@ -219,7 +248,7 @@ func inventory(dfd int) (map[string]unix.Stat_t, error) {
 			return nil, fmt.Errorf("%s : %w", name, err)
 		}
 		isChar := st.Mode&unix.S_IFMT == unix.S_IFCHR
-		if isChar && (schema.MatchString(name) || strings.HasPrefix(name, tmpPrefix)) {
+		if isChar && (schema.MatchString(name) || (strings.HasPrefix(name, tmpPrefix) && schema.MatchString(strings.TrimPrefix(name, tmpPrefix)))) {
 			out[name] = st
 			continue
 		}
@@ -253,7 +282,8 @@ func fix(dfd int, name string, uid, gid int) error {
 	if err := unix.Fchownat(dfd, name, uid, gid, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		return fmt.Errorf("propriétaire de %s : %w", name, err)
 	}
-	// fchmodat ne suit pas de lien ici : l'entrée a été vérifiée comme nœud caractère.
+	// N'est appelé que sur le temporaire que create vient de créer, dans un
+	// répertoire que seul le processus peut modifier : pas de lien possible.
 	if err := unix.Fchmodat(dfd, name, 0o600, 0); err != nil {
 		return fmt.Errorf("mode de %s : %w", name, err)
 	}

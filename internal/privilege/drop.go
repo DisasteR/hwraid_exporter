@@ -26,12 +26,18 @@ import (
 // ErrNotRoot : la phase de préparation exige de démarrer en root.
 var ErrNotRoot = errors.New("le processus doit démarrer en root pour la phase de préparation")
 
+// ErrInvalidIdentity : l'identité cible est root ou la valeur spéciale -1.
+var ErrInvalidIdentity = errors.New("identité cible invalide : ni 0 ni 4294967295")
+
 // Drop passe tous les threads à l'identité uid/gid, vide les groupes
 // supplémentaires, ne conserve que les capacités de keep dans les ensembles
 // effectif, permis et limite, vide les ensembles hérité et ambiant, puis
 // active no_new_privs. L'opération est irréversible. En cas d'échec à mi-
 // parcours, le processus doit s'arrêter : son état n'est plus garanti.
 func Drop(uid, gid uint32, keep uint64) error {
+	if uid == 0 || gid == 0 || uid == ^uint32(0) || gid == ^uint32(0) {
+		return ErrInvalidIdentity
+	}
 	if os.Geteuid() != 0 {
 		return ErrNotRoot
 	}

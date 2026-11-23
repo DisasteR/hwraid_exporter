@@ -2,6 +2,7 @@ package nodes
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,10 @@ import (
 )
 
 const requireRoot = "HWRAID_REQUIRE_ROOT_TESTS"
+
+// testMajors : table factice où « aac » vaut 1, pour créer en test des
+// nœuds vers /dev/null (1:3) et /dev/zero (1:5).
+var testMajors = map[string]uint32{"aac": 1}
 
 const procDevices = `Character devices:
   1 mem
@@ -92,12 +97,14 @@ func TestSyncRefusesForeignEntries(t *testing.T) {
 		{"nom inconnu", func(d string) { must(t, os.WriteFile(filepath.Join(d, "autre"), nil, 0o644)) }},
 		{"lien symbolique", func(d string) { must(t, os.Symlink("/dev/null", filepath.Join(d, "aac1"))) }},
 		{"sous-répertoire", func(d string) { must(t, os.Mkdir(filepath.Join(d, "aac2"), 0o755)) }},
+		{"temporaire hors schéma", func(d string) { must(t, os.WriteFile(filepath.Join(d, tmpPrefix+"x"), nil, 0o600)) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
+			must(t, os.Chmod(dir, 0o750)) // répertoire sûr : seul le cas testé doit provoquer le refus
 			tc.setup(dir)
 			before := snapshot(t, dir)
-			_, err := Sync(dir, []Spec{{"aac0", 1, 3}}, 65534, 65534)
+			_, err := Sync(dir, []Spec{{"aac0", 1, 3}}, testMajors, 65534, 65534)
 			if !errors.Is(err, ErrForeignEntry) {
 				t.Fatalf("ErrForeignEntry attendu, obtenu %v", err)
 			}
@@ -108,13 +115,30 @@ func TestSyncRefusesForeignEntries(t *testing.T) {
 	}
 }
 
+// Un répertoire modifiable par le groupe ou les autres est refusé sans
+// modification : il permettrait des courses entre validation et action.
+func TestSyncRefusesWritableDirectory(t *testing.T) {
+	for _, mode := range []os.FileMode{0o777, 0o770, 0o702} {
+		dir := t.TempDir()
+		must(t, os.Chmod(dir, mode))
+		if _, err := Sync(dir, nil, testMajors, 65534, 65534); err == nil {
+			t.Fatalf("mode %o accepté", mode)
+		}
+		st, err := os.Stat(dir)
+		must(t, err)
+		if st.Mode().Perm() != mode {
+			t.Fatalf("mode %o modifié en %o", mode, st.Mode().Perm())
+		}
+	}
+}
+
 func TestSyncRefusesSymlinkDirectory(t *testing.T) {
 	base := t.TempDir()
 	target := filepath.Join(base, "ailleurs")
 	must(t, os.Mkdir(target, 0o755))
 	link := filepath.Join(base, "hwraid_exporter")
 	must(t, os.Symlink(target, link))
-	if _, err := Sync(link, nil, 65534, 65534); err == nil {
+	if _, err := Sync(link, nil, testMajors, 65534, 65534); err == nil {
 		t.Fatal("un lien symbolique à la place du répertoire doit être refusé")
 	}
 	if entries, _ := os.ReadDir(target); len(entries) != 0 {
@@ -124,12 +148,15 @@ func TestSyncRefusesSymlinkDirectory(t *testing.T) {
 
 func TestSyncRejectsInvalidSpecs(t *testing.T) {
 	dir := t.TempDir()
+	must(t, os.Chmod(dir, 0o750))
 	for _, specs := range [][]Spec{
 		{{"../evil", 1, 3}},
 		{{"sda", 8, 0}},
 		{{"aac0", 1, 3}, {"aac0", 1, 5}},
+		{{"aac0", 8, 0}},               // major différent de celui du pilote
+		{{"megaraid_sas_ioctl", 1, 0}}, // pilote absent de la table
 	} {
-		if _, err := Sync(dir, specs, 65534, 65534); err == nil {
+		if _, err := Sync(dir, specs, testMajors, 65534, 65534); err == nil {
 			t.Fatalf("specs acceptées : %+v", specs)
 		}
 	}
@@ -147,7 +174,7 @@ func TestSyncLifecycleAsRoot(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "hwraid_exporter")
 	null, zero := Spec{"aac0", 1, 3}, Spec{"aac0", 1, 5} // /dev/null puis /dev/zero
 
-	rep, err := Sync(dir, []Spec{null}, 65534, 65534)
+	rep, err := Sync(dir, []Spec{null}, testMajors, 65534, 65534)
 	if err != nil || len(rep.Created) != 1 {
 		t.Fatalf("création : rep=%+v err=%v", rep, err)
 	}
@@ -159,26 +186,26 @@ func TestSyncLifecycleAsRoot(t *testing.T) {
 	}
 	f.Close()
 
-	rep, err = Sync(dir, []Spec{null}, 65534, 65534)
+	rep, err = Sync(dir, []Spec{null}, testMajors, 65534, 65534)
 	if err != nil || len(rep.Created)+len(rep.Replaced)+len(rep.Fixed)+len(rep.Removed) != 0 {
 		t.Fatalf("idempotence : rep=%+v err=%v", rep, err)
 	}
 
 	must(t, os.Chmod(filepath.Join(dir, "aac0"), 0o666))
-	rep, err = Sync(dir, []Spec{null}, 65534, 65534)
+	rep, err = Sync(dir, []Spec{null}, testMajors, 65534, 65534)
 	if err != nil || len(rep.Fixed) != 1 {
 		t.Fatalf("correction du mode : rep=%+v err=%v", rep, err)
 	}
 	checkNode(t, filepath.Join(dir, "aac0"), null.Dev(), 65534, 65534)
 
-	rep, err = Sync(dir, []Spec{zero}, 65534, 65534)
+	rep, err = Sync(dir, []Spec{zero}, testMajors, 65534, 65534)
 	if err != nil || len(rep.Replaced) != 1 {
 		t.Fatalf("remplacement : rep=%+v err=%v", rep, err)
 	}
 	checkNode(t, filepath.Join(dir, "aac0"), zero.Dev(), 65534, 65534)
 
 	must(t, unix.Mknod(filepath.Join(dir, tmpPrefix+"aac9"), unix.S_IFCHR|0o600, int(unix.Mkdev(1, 3))))
-	rep, err = Sync(dir, nil, 65534, 65534)
+	rep, err = Sync(dir, nil, testMajors, 65534, 65534)
 	if err != nil || len(rep.Removed) != 2 {
 		t.Fatalf("suppression : rep=%+v err=%v", rep, err)
 	}
@@ -188,7 +215,7 @@ func TestSyncLifecycleAsRoot(t *testing.T) {
 
 	// Un nœud bloc portant un nom du schéma est refusé.
 	must(t, unix.Mknod(filepath.Join(dir, "aac3"), unix.S_IFBLK|0o600, int(unix.Mkdev(7, 0))))
-	if _, err := Sync(dir, nil, 65534, 65534); !errors.Is(err, ErrForeignEntry) {
+	if _, err := Sync(dir, nil, testMajors, 65534, 65534); !errors.Is(err, ErrForeignEntry) {
 		t.Fatalf("nœud bloc : ErrForeignEntry attendu, obtenu %v", err)
 	}
 	must(t, os.Remove(filepath.Join(dir, "aac3")))
@@ -204,7 +231,7 @@ func TestSyncLifecycleAsRoot(t *testing.T) {
 			if i%2 == 1 {
 				s = zero
 			}
-			_, err := Sync(dir, []Spec{s}, 65534, 65534)
+			_, err := Sync(dir, []Spec{s}, testMajors, 65534, 65534)
 			errs <- err
 		}(i)
 	}
@@ -219,6 +246,12 @@ func TestSyncLifecycleAsRoot(t *testing.T) {
 	if len(entries) != 1 || entries[0].Name() != "aac0" {
 		t.Fatalf("état final incohérent : %v", entries)
 	}
+	var st unix.Stat_t
+	must(t, unix.Lstat(filepath.Join(dir, "aac0"), &st))
+	if st.Rdev != null.Dev() && st.Rdev != zero.Dev() {
+		t.Fatalf("rdev final inattendu : %x", st.Rdev)
+	}
+	checkNode(t, filepath.Join(dir, "aac0"), st.Rdev, 65534, 65534)
 }
 
 func checkNode(t *testing.T, p string, dev uint64, uid, gid uint32) {
@@ -249,9 +282,7 @@ func snapshot(t *testing.T, dir string) string {
 		must(t, unix.Lstat(filepath.Join(dir, e.Name()), &st))
 		b.WriteString(e.Name())
 		b.WriteString(":")
-		b.WriteString(strings.TrimSpace(strings.Repeat(" ", 0)))
-		b.WriteString(os.FileMode(st.Mode).String())
-		b.WriteString(";")
+		fmt.Fprintf(&b, "%o/%d/%d/%x;", st.Mode, st.Uid, st.Gid, st.Rdev)
 	}
 	return b.String()
 }

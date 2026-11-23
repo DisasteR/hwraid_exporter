@@ -44,6 +44,15 @@ func TestDropRequiresRoot(t *testing.T) {
 	}
 }
 
+// Une identité cible root ou -1 est refusée avant toute autre vérification.
+func TestDropRejectsInvalidIdentity(t *testing.T) {
+	for _, id := range [][2]uint32{{0, nobody}, {nobody, 0}, {^uint32(0), nobody}, {nobody, ^uint32(0)}} {
+		if err := Drop(id[0], id[1], keep); !errors.Is(err, ErrInvalidIdentity) {
+			t.Fatalf("uid=%d gid=%d : ErrInvalidIdentity attendu, obtenu %v", id[0], id[1], err)
+		}
+	}
+}
+
 // Test réel, en root : l'abandon s'exécute dans un processus enfant, car il
 // est irréversible. L'enfant vérifie l'état de tous ses threads, puis tente
 // des opérations qui doivent toutes échouer.
@@ -80,6 +89,42 @@ func TestDropPrivilegesForReal(t *testing.T) {
 	if err != nil || !strings.Contains(string(out), "CHILD-OK") {
 		t.Fatalf("enfant en échec (%v) :\n%s", err, out)
 	}
+	// Échec fermé : sans CAP_SYS_RAWIO dans l'ensemble permis, Drop échoue.
+	cmd = exec.Command(os.Args[0], "-test.run=^TestDropFailsWithoutRawIO$", "-test.v")
+	cmd.Env = append(os.Environ(), childEnv+"=1")
+	out, err = cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "CHILD-FAIL-OK") {
+		t.Fatalf("enfant d'échec (%v) :\n%s", err, out)
+	}
+}
+
+// TestDropFailsWithoutRawIO retire CAP_SYS_RAWIO de l'ensemble permis, puis
+// vérifie que Drop renvoie une erreur au lieu de poursuivre sans elle.
+func TestDropFailsWithoutRawIO(t *testing.T) {
+	if os.Getenv(childEnv) != "1" {
+		t.Skip("exécuté seulement comme processus enfant")
+	}
+	all, err := readCapPrm()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := capsetAll(all &^ keep); err != nil {
+		t.Fatalf("retrait de RAWIO : %v", err)
+	}
+	if err := Drop(nobody, nobody, keep); err == nil {
+		t.Fatal("Drop a réussi sans CAP_SYS_RAWIO dans l'ensemble permis")
+	}
+	t.Log("CHILD-FAIL-OK")
+}
+
+func readCapPrm() (uint64, error) {
+	f, err := os.Open("/proc/self/status")
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	st, err := procstatus.Parse(f)
+	return st.CapPrm, err
 }
 
 // TestDropChild n'est exécuté que par TestDropPrivilegesForReal.
@@ -106,12 +151,32 @@ func TestDropChild(t *testing.T) {
 		}
 	}()
 
+	// Groupes supplémentaires à vider par Drop.
+	if err := syscall.Setgroups([]int{4, 24, 100}); err != nil {
+		t.Fatalf("setgroups préalable : %v", err)
+	}
 	if err := Drop(nobody, nobody, keep); err != nil {
 		t.Fatalf("Drop : %v", err)
 	}
 	if err := VerifyAllThreads(nobody, nobody, keep); err != nil {
 		t.Fatalf("vérification : %v", err)
 	}
+	// Threads créés après l'abandon : ils héritent de l'état réduit.
+	var late, lateRelease sync.WaitGroup
+	lateRelease.Add(1)
+	for i := 0; i < 4; i++ {
+		late.Add(1)
+		go func() {
+			runtime.LockOSThread()
+			late.Done()
+			lateRelease.Wait()
+		}()
+	}
+	late.Wait()
+	if err := VerifyAllThreads(nobody, nobody, keep); err != nil {
+		t.Fatalf("vérification après création de threads : %v", err)
+	}
+	lateRelease.Done()
 	tasks, _ := filepath.Glob("/proc/self/task/*")
 	if len(tasks) < 9 {
 		t.Fatalf("seulement %d threads : le test ne couvre pas le multi-thread", len(tasks))
