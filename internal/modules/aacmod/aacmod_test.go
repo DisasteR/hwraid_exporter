@@ -196,7 +196,7 @@ func TestCollectSupplementGate(t *testing.T) {
 		"version 1":  {Version: 1, SupportedOptions2: 0x08},
 	} {
 		r := withDev(&fakeDev{info: hba, sup: sup}, nil).Collect(c, ref)
-		if !r.NodeValid || len(r.Unsupported) != 2 || r.Unsupported[0] != "volumes" || r.Unsupported[1] != "disks" {
+		if !r.NodeValid || len(r.Unsupported) != 3 || r.Unsupported[0] != "volumes" || r.Unsupported[1] != "disks" || r.Unsupported[2] != DiskInventoryCollector {
 			t.Fatalf("%s : %+v", name, r)
 		}
 	}
@@ -347,9 +347,69 @@ func TestCollectVolumesReference(t *testing.T) {
 			t.Fatalf("disque : %+v", dk)
 		}
 	}
-	// Séquence : liste, 5 informations, disques, 5 listes de membres.
-	if len(d.reads) != 12 || d.reads[0] != "229-0" || d.reads[6] != "247-0" {
+	// Séquence : liste, 5 informations, disques, 5 listes de membres, puis
+	// l'information de chacun des 8 disques présents.
+	if len(d.reads) != 20 || d.reads[0] != "229-0" || d.reads[6] != "247-0" || d.reads[12] != "248-0" || d.reads[19] != "248-7" {
 		t.Fatalf("lectures %v", d.reads)
+	}
+	// Inventaire : tous les disques présents, dans l'ordre, valeurs de la
+	// capture anonymisée.
+	if !r.Collected[DiskInventoryCollector] || len(r.DiskInventory) != 8 {
+		t.Fatalf("inventaire : %+v", r)
+	}
+	want := module.DiskInfo{ID: "d7", Vendor: "ATA", Model: "ST8000VN0022-2EL", Firmware: "SC61", Serial: "TESTSN07",
+		WWN: "0x5000c50000000007", CapacityBytes: 15628053168 * 512}
+	if got := r.DiskInventory[7]; got != want {
+		t.Fatalf("d7 :\n got %+v\nwant %+v", got, want)
+	}
+}
+
+// Inventaire : une lecture en échec ou une réponse qui désigne un autre
+// disque annule l'inventaire du cycle, sans toucher aux volumes ni aux
+// états ; un échec de configuration ne lit pas l'inventaire.
+func TestCollectDiskInventoryFailure(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	c := card("0000:01:00.0", "0")
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}
+	cases := map[string]func(r aacraid.PagedRead, p, size uint32) ([]byte, error){
+		"lecture en échec": func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
+			if r == aacraid.ReadDiskInfo && p == 5 {
+				return nil, errors.New("EIO")
+			}
+			return referencePaged(r, p, size)
+		},
+		"autre disque": func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
+			if r == aacraid.ReadDiskInfo && p == 5 {
+				return referencePaged(r, 6, size)
+			}
+			return referencePaged(r, p, size)
+		},
+	}
+	for name, paged := range cases {
+		d := &fakeDev{info: hba, sup: arcIo, paged: paged}
+		r := withDev(d, nil).Collect(c, ref)
+		if r.DiskInventory != nil || r.Collected[DiskInventoryCollector] || r.CollectErr == nil {
+			t.Fatalf("%s : %+v", name, r)
+		}
+		if len(r.Volumes) != 5 || !r.Collected["volumes"] || !r.Collected["disks"] {
+			t.Fatalf("%s : volumes touchés : %+v", name, r)
+		}
+	}
+	d := &fakeDev{info: hba, sup: arcIo, paged: func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
+		if r == aacraid.ReadContainerList {
+			return nil, errors.New("EIO")
+		}
+		return referencePaged(r, p, size)
+	}}
+	r := withDev(d, nil).Collect(c, ref)
+	got, tried := r.Collected[DiskInventoryCollector]
+	if !tried || got || r.DiskInventory != nil {
+		t.Fatalf("échec de configuration : %+v", r)
+	}
+	for _, rd := range d.reads {
+		if strings.HasPrefix(rd, "248-") {
+			t.Fatalf("inventaire lu malgré l'échec de configuration : %v", d.reads)
+		}
 	}
 }
 
@@ -398,7 +458,7 @@ func TestCollectRequiresQualification(t *testing.T) {
 		if d.cpCall != 0 || len(d.reads) != 0 {
 			t.Fatalf("%s : lectures envoyées (ZMM %d, paginées %v)", name, d.cpCall, d.reads)
 		}
-		want := map[string]bool{"volumes": true, "disks": true, CacheProtectionCollector: true}
+		want := map[string]bool{"volumes": true, "disks": true, DiskInventoryCollector: true, CacheProtectionCollector: true}
 		for _, u := range r.Unsupported {
 			delete(want, u)
 		}

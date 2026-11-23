@@ -56,7 +56,7 @@ Valeurs réservées pour les modules à venir, non publiées aujourd'hui : `redu
 
 L'intervalle permet d'écrire des règles qui s'adaptent au réglage, par exemple « aucun succès depuis plus de trois cycles » : `time() - hwraid_collection_last_success_timestamp_seconds > on (job, instance, controller) group_left 3 * hwraid_collection_interval_seconds`. Joindre toujours aussi sur `job` et `instance` : deux hôtes peuvent publier le même identifiant `pci:`.
 
-Collecteurs du module aacraid : `capabilities` (capacités de la carte), `volumes`, `disks`, `cache_protection`.
+Collecteurs du module aacraid : `capabilities` (capacités de la carte), `volumes`, `disks`, `disk_inventory`, `cache_protection`.
 
 ### Volumes
 
@@ -74,8 +74,17 @@ Une grappe à plusieurs niveaux (par exemple quatre miroirs assemblés) publie u
 | Métrique | Labels | Valeur |
 |---|---|---|
 | `hwraid_disk_state` | `controller`, `disk`, `state` | 1, pour chaque disque membre d'un volume dont l'état est établi |
+| `hwraid_disk_info` | `controller`, `disk`, `vendor`, `model`, `firmware`, `serial`, `wwn` | 1, pour chaque disque présent sur la carte, membre ou non ; `wwn` au format `0x` suivi de 16 chiffres hexadécimaux, vide si la carte n'en donne pas |
+| `hwraid_disk_capacity_bytes` | `controller`, `disk` | capacité brute en octets, absente si la taille de bloc n'est pas reconnue |
 
-Un disque présent qui n'est membre d'aucun volume (secours, disponible) n'est pas publié tant que son état n'est pas établi. La santé SMART des disques est hors périmètre : elle relève d'outils dédiés.
+L'inventaire est relu à chaque cycle : un disque remplacé au même emplacement change aussitôt de numéro de série. Il ne contient pas d'emplacement physique (connecteur, baie) : pour retrouver un disque, se fier au numéro de série imprimé sur son étiquette. Pour relier un disque à sa santé SMART, joindre sur le numéro de série, par exemple avec smartctl_exporter (label `serial_number` de `smartctl_device`) :
+
+```promql
+hwraid_disk_info * on (serial) group_left (device)
+  label_replace(smartctl_device, "serial", "$1", "serial_number", "(.+)")
+```
+
+Un disque présent qui n'est membre d'aucun volume (secours, disponible) figure dans `hwraid_disk_info`, mais n'a pas de `hwraid_disk_state` tant que son état n'est pas établi. La santé SMART des disques est hors périmètre : elle relève d'outils dédiés.
 
 ### Protection du cache
 
@@ -92,7 +101,7 @@ Prévues au cahier des charges, pas encore publiées :
 |---|---|
 | `hwraid_task_progress_ratio` (reconstruction, vérification…) | décodage de la réponse aux requêtes de tâches (à capturer pendant une reconstruction) |
 | `hwraid_controller_state`, `hwraid_controller_temperature_celsius` | lecture d'état et des capteurs de la carte |
-| `hwraid_disk_info` (fabricant, modèle, firmware, numéro de série, WWN, emplacement) | lecture d'inventaire des disques (sous-commande 248) : capture de référence et découpage des champs texte à établir |
+| Emplacement physique des disques (connecteur, baie) | formule de l'emplacement à établir (absente de la réponse 248) et à vérifier sur le câblage réel |
 | `hwraid_volume_write_cache_enabled` | position de l'état du cache d'écriture dans la lecture de volume |
 
 ## Exemple
@@ -106,6 +115,8 @@ hwraid_volume_info{controller="serial:XXXX",volume="410734b3",name="Array0",raid
 hwraid_volume_state{controller="serial:XXXX",volume="410734b3",state="optimal"} 1
 hwraid_volume_member{controller="serial:XXXX",volume="410734b3",member="d7"} 1
 hwraid_disk_state{controller="serial:XXXX",disk="d7",state="online"} 1
+hwraid_disk_info{controller="serial:XXXX",disk="d7",vendor="ATA",model="ST8000VN0022-2EL",firmware="SC61",serial="XXXXXXXX",wwn="0x5000c500xxxxxxxx"} 1
+hwraid_disk_capacity_bytes{controller="serial:XXXX",disk="d7"} 8001563222016
 hwraid_cache_protection_present{controller="serial:XXXX",type="flash_supercap",vendor_type="zmm"} 1
 hwraid_cache_protection_state{controller="serial:XXXX",state="failed"} 1
 hwraid_collection_success{controller="serial:XXXX",collector="volumes"} 1

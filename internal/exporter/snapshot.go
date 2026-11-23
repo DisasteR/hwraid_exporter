@@ -34,6 +34,7 @@ type Controller struct {
 	CacheProtection        *module.CacheProtection
 	Volumes                []module.Volume
 	Disks                  []module.Disk
+	DiskInventory          []module.DiskInfo
 }
 
 // Snapshot est une vue complète et immuable.
@@ -98,7 +99,7 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 				c.Collected = r.Collected
 				c.CacheProtection = r.CacheProtection
 				c.LastSuccess = tracker.Last(addr)
-				c.Volumes, c.Disks = r.Volumes, r.Disks
+				c.Volumes, c.Disks, c.DiskInventory = r.Volumes, r.Disks, r.DiskInventory
 				if r.CollectErr != nil {
 					c.CollectError = r.CollectErr.Error()
 				}
@@ -184,6 +185,21 @@ func Render(s Snapshot) string {
 	for _, c := range s.Controllers {
 		for _, d := range c.Disks {
 			fmt.Fprintf(&b, "hwraid_disk_state{%s} 1\n", labels("controller", c.Label, "disk", d.ID, "state", d.State))
+		}
+	}
+	gauge("hwraid_disk_info", "Inventaire des disques présents sur la carte, valeur 1.")
+	for _, c := range s.Controllers {
+		for _, d := range c.DiskInventory {
+			fmt.Fprintf(&b, "hwraid_disk_info{%s} 1\n", labels("controller", c.Label, "disk", d.ID, "vendor", d.Vendor,
+				"model", d.Model, "firmware", d.Firmware, "serial", d.Serial, "wwn", d.WWN))
+		}
+	}
+	gauge("hwraid_disk_capacity_bytes", "Capacité brute du disque en octets.")
+	for _, c := range s.Controllers {
+		for _, d := range c.DiskInventory {
+			if d.CapacityBytes > 0 {
+				fmt.Fprintf(&b, "hwraid_disk_capacity_bytes{%s} %d\n", labels("controller", c.Label, "disk", d.ID), d.CapacityBytes)
+			}
 		}
 	}
 	gauge("hwraid_cache_protection_present", "1 si un module de protection du cache est installé.")
