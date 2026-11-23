@@ -1,4 +1,6 @@
 #!/bin/sh
+# Copyright 2026 Benjamin Saiz
+# SPDX-License-Identifier: Apache-2.0
 # Construit fibcap.so et le vérifie avec test_fibcap (ioctl sur /dev/null).
 set -eu
 cd "$(dirname "$0")"

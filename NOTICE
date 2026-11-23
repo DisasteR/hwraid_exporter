@@ -1,0 +1,15 @@
+hwraid_exporter
+Copyright 2026 Benjamin Saiz
+
+This product is licensed under the Apache License, Version 2.0 (LICENSE).
+
+The aacraid interface (docs/aacraid-interface.md, internal/aacraid) names structures, commands and
+constants after their public definitions in the Linux aacraid driver (GPL-2.0) and the FreeBSD
+aacraid driver (BSD licence), cited as sources; no code is copied from either. Formats not
+described by a public source were established for interoperability purposes under Article 6 of
+Directive 2009/24/EC (docs/base-legale-interoperabilite.md); only the information needed to
+interoperate is published, without code or tooling from the vendor.
+
+Binaries and container images include third-party Go code under its own licence (the Go standard
+library and golang.org/x/sys, BSD-3-Clause); the container image ships their licence files under
+/licenses.

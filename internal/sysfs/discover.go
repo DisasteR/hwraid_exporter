@@ -1,3 +1,6 @@
+// Copyright 2026 Benjamin Saiz
+// SPDX-License-Identifier: Apache-2.0
+
 // Package sysfs inventorie les hôtes SCSI et leur fonction PCI parente
 // à partir de sysfs, sans aucun appel au matériel.
 package sysfs

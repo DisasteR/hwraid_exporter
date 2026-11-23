@@ -1,3 +1,6 @@
+// Copyright 2026 Benjamin Saiz
+// SPDX-License-Identifier: Apache-2.0
+
 // Package exporter assemble l'instantané publié par /metrics à partir de
 // l'inventaire sysfs et des lectures du transport. Il ne fait aucun appel
 // système direct.

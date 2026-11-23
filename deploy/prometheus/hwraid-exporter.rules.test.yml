@@ -1,3 +1,5 @@
+# Copyright 2026 Benjamin Saiz
+# SPDX-License-Identifier: Apache-2.0
 # Tests des règles : promtool test rules hwraid-exporter.rules.test.yml
 rule_files:
   - hwraid-exporter.rules.yml

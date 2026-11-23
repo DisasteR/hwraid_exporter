@@ -1,3 +1,6 @@
+// Copyright 2026 Benjamin Saiz
+// SPDX-License-Identifier: Apache-2.0
+
 // Package aacraid décode les réponses de l'interface de gestion du pilote
 // Linux aacraid. Il ne réalise aucun appel système.
 package aacraid

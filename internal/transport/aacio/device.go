@@ -1,3 +1,6 @@
+// Copyright 2026 Benjamin Saiz
+// SPDX-License-Identifier: Apache-2.0
+
 // Package aacio est la couche de transport unique du module aacraid
 // (exigence S1) : ouverture du nœud dédié, vérification du périphérique
 // ouvert, puis émission des seules requêtes de la liste blanche (S2).

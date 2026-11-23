@@ -1,3 +1,6 @@
+// Copyright 2026 Benjamin Saiz
+// SPDX-License-Identifier: Apache-2.0
+
 // Package procstatus lit l'identité et les capacités d'un processus dans
 // /proc/<pid>/status et vérifie qu'elles correspondent exactement à
 // l'état attendu après l'abandon des privilèges (exigence S6).

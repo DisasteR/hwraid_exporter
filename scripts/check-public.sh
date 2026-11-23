@@ -1,4 +1,6 @@
 #!/bin/sh
+# Copyright 2026 Benjamin Saiz
+# SPDX-License-Identifier: Apache-2.0
 # Vérifie que les fichiers suivis par git ne contiennent rien de l'analyse
 # interne : ni chemin réservé, ni symbole interne d'ARCCONF, ni valeur réelle
 # de l'hôte de référence.

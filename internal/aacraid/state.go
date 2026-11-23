@@ -1,3 +1,6 @@
+// Copyright 2026 Benjamin Saiz
+// SPDX-License-Identifier: Apache-2.0
+
 package aacraid
 
 // Calcul des états (docs/aacraid-interface.md, section 6). Seuls les types

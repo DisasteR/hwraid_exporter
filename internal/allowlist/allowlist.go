@@ -1,3 +1,6 @@
+// Copyright 2026 Benjamin Saiz
+// SPDX-License-Identifier: Apache-2.0
+
 // Package allowlist implémente la liste blanche positive et fermée des
 // requêtes de gestion (exigence S2 du cahier des charges) : toute requête
 // qui ne correspond pas exactement à une entrée déclarée est refusée

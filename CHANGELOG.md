@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Apache License 2.0 (`LICENSE`, `NOTICE`, SPDX headers).
+- Third-party licences shipped with the binaries: `/licenses` in the container image, licence archive next to the release binary.
+- Security policy (`SECURITY.md`).
+
 ## v0.1.0 — 2026-11-23
 
 First release. `aacraid` module, qualified on Adaptec 6805, firmware 5.3-0[19204].

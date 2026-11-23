@@ -1,3 +1,5 @@
+# Copyright 2026 Benjamin Saiz
+# SPDX-License-Identifier: Apache-2.0
 # Unité pour une installation native (docs/deploiement.md).
 # Le processus démarre en root pour créer ses nœuds dans
 # /dev/hwraid_exporter, puis abandonne lui-même ses privilèges :

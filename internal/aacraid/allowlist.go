@@ -1,3 +1,6 @@
+// Copyright 2026 Benjamin Saiz
+// SPDX-License-Identifier: Apache-2.0
+
 package aacraid
 
 import "github.com/DisasteR/hwraid_exporter/internal/allowlist"

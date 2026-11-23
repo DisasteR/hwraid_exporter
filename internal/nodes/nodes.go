@@ -1,3 +1,6 @@
+// Copyright 2026 Benjamin Saiz
+// SPDX-License-Identifier: Apache-2.0
+
 // Package nodes crée et nettoie les nœuds de gestion dédiés à l'exporter
 // (section 6.2 du cahier des charges). Il ne s'exécute que pendant la phase
 // de préparation, en root, avant l'abandon des privilèges.

@@ -1,3 +1,6 @@
+// Copyright 2026 Benjamin Saiz
+// SPDX-License-Identifier: Apache-2.0
+
 // Package lifecycle isole les constantes de signal du système, pour que la
 // commande n'importe pas syscall (exigence S1).
 package lifecycle

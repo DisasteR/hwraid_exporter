@@ -86,3 +86,11 @@ sh scripts/check-public.sh
 ```
 
 Some tests need root (privileges, node creation). They run in CI with `HWRAID_REQUIRE_ROOT_TESTS=1`. `scripts/check-public.sh` runs as a pre-commit hook and blocks anything from the internal analysis.
+
+## Security
+
+Report vulnerabilities privately: see [SECURITY.md](SECURITY.md).
+
+## License
+
+Apache License 2.0: see [LICENSE](LICENSE) and [NOTICE](NOTICE). Release binaries and container images ship the licences of the third-party code they include (`/licenses` in the image, `*-licenses.tar.gz` next to the binary).

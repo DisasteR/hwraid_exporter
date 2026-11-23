@@ -1,4 +1,7 @@
-// Commande hwraid-exporter (prototype 0).
+// Copyright 2026 Benjamin Saiz
+// SPDX-License-Identifier: Apache-2.0
+
+// Commande hwraid-exporter : exporter Prometheus pour contrôleurs RAID matériels.
 //
 //	discover : inventaire sysfs en lecture seule, sans privilège.
 //	serve    : préparation des nœuds en root, abandon des privilèges,

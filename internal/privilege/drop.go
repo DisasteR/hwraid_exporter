@@ -1,3 +1,6 @@
+// Copyright 2026 Benjamin Saiz
+// SPDX-License-Identifier: Apache-2.0
+
 // Package privilege abandonne de façon irréversible les privilèges du
 // processus après la phase de préparation (exigence S6 du cahier des charges).
 //

@@ -1,3 +1,5 @@
+# Copyright 2026 Benjamin Saiz
+# SPDX-License-Identifier: Apache-2.0
 # Mises à jour des dépendances épinglées : module Go, image de compilation
 # (version et empreinte) et actions GitHub (empreintes). Les images utilisées
 # dans les étapes de CI (prom/prometheus, alpine) ne sont pas suivies : à

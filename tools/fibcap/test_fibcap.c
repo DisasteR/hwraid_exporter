@@ -1,3 +1,6 @@
+// Copyright 2026 Benjamin Saiz
+// SPDX-License-Identifier: Apache-2.0
+
 /* Programme de test de fibcap : émet des ioctl sur /dev/null (le noyau
  * répond ENOTTY) et vérifie que le résultat et errno sont transmis intacts.
  * Le contenu du journal est vérifié par test.sh. */

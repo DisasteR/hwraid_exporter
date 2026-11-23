@@ -1,3 +1,6 @@
+// Copyright 2026 Benjamin Saiz
+// SPDX-License-Identifier: Apache-2.0
+
 // Package archtest vérifie l'isolement des appels système (exigence S1) :
 // seuls les paquets de transport, de création de nœuds et de gestion des
 // privilèges peuvent importer les paquets d'appel système ou unsafe.

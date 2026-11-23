@@ -1,3 +1,5 @@
+# Copyright 2026 Benjamin Saiz
+# SPDX-License-Identifier: Apache-2.0
 name: release
 
 # Publication sur un tag de version (vX.Y.Z) seulement, après la suite CI
@@ -85,9 +87,14 @@ jobs:
           mkdir -p dist
           id=$(docker create "$IMAGE:$TAG")
           docker cp "$id:/hwraid-exporter" "dist/hwraid-exporter-$TAG-linux-amd64"
+          # Licences de ce qui est compilé dans le binaire (mêmes fichiers
+          # que /licenses dans l'image), distribuées avec lui.
+          docker cp "$id:/licenses" dist/licenses
           docker rm "$id"
+          test -f dist/licenses/hwraid_exporter/LICENSE && test -f dist/licenses/go/LICENSE
+          tar -C dist -czf "dist/hwraid-exporter-$TAG-licenses.tar.gz" licenses
           test "$(dist/hwraid-exporter-$TAG-linux-amd64 version)" = "$TAG"
-          (cd dist && sha256sum hwraid-exporter-*-linux-amd64 > SHA256SUMS && cat SHA256SUMS)
+          (cd dist && sha256sum hwraid-exporter-*-linux-amd64 hwraid-exporter-*-licenses.tar.gz > SHA256SUMS && cat SHA256SUMS)
 
       - name: Publication de l'image
         if: steps.registry.outputs.mode == 'new'
@@ -99,4 +106,4 @@ jobs:
           awk -v t="## $TAG " 'index($0, t) == 1 {f = 1; next} /^## / {f = 0} f' CHANGELOG.md > notes.md
           printf '\nImage : `%s`\n' "$digest" >> notes.md
           gh release create "$TAG" --verify-tag --title "$TAG" --notes-file notes.md \
-            "dist/hwraid-exporter-$TAG-linux-amd64" dist/SHA256SUMS
+            "dist/hwraid-exporter-$TAG-linux-amd64" "dist/hwraid-exporter-$TAG-licenses.tar.gz" dist/SHA256SUMS

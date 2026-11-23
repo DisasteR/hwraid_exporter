@@ -1,3 +1,6 @@
+// Copyright 2026 Benjamin Saiz
+// SPDX-License-Identifier: Apache-2.0
+
 // Package module définit le contrat d'un module de pilote (section 6.10 du
 // cahier des charges) et la planification qui associe chaque carte à son
 // module.

@@ -1,3 +1,6 @@
+// Copyright 2026 Benjamin Saiz
+// SPDX-License-Identifier: Apache-2.0
+
 // Package aacmod est le module du pilote Linux aacraid (Adaptec série 6 et
 // apparentées). Il déclare ses nœuds et ses capacités, puis lit la carte au
 // travers de la couche de transport aacio.

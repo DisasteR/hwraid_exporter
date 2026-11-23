@@ -1,3 +1,6 @@
+// Copyright 2026 Benjamin Saiz
+// SPDX-License-Identifier: Apache-2.0
+
 /*
  * fibcap : bibliothèque LD_PRELOAD qui journalise les ioctl de gestion
  * aacraid d'un processus : capture des commandes émises par l'outil de

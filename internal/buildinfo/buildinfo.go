@@ -1,3 +1,6 @@
+// Copyright 2026 Benjamin Saiz
+// SPDX-License-Identifier: Apache-2.0
+
 // Package buildinfo détermine la version et la révision publiées par
 // hwraid_exporter_build_info.
 package buildinfo

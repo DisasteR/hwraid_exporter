@@ -1,3 +1,5 @@
+# Copyright 2026 Benjamin Saiz
+# SPDX-License-Identifier: Apache-2.0
 name: ci
 
 on:
@@ -23,6 +25,9 @@ jobs:
 
       - name: Contenu publiable
         run: sh scripts/check-public.sh
+
+      - name: En-têtes de licence
+        run: sh scripts/check-license-headers.sh
 
       - name: Format
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
