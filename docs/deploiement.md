@@ -31,7 +31,7 @@ Image : `ghcr.io/disaster/hwraid_exporter:<version>` (par exemple `v0.1.0`). Seu
 ```yaml
 services:
   hwraid-exporter:
-    image: ghcr.io/disaster/hwraid_exporter:v0.1.0
+    image: ghcr.io/disaster/hwraid_exporter:v0.1.1
     read_only: true
     cap_drop: [ALL]
     cap_add: [MKNOD, CHOWN, SETUID, SETGID, SETPCAP, SYS_RAWIO]
@@ -56,7 +56,7 @@ networks:
 
 Chaque ligne du profil est justifiée à la section 6.5 du [cahier des charges](../cdc/cahier-des-charges-aacraid-exporter.md) : les capacités ne servent qu'à la préparation, la règle de périphériques autorise la lecture des nœuds créés dans le `/dev` du conteneur. Ni `userns-remap` ni Docker rootless : le pilote refuserait les commandes (`EPERM`).
 
-**Profil seccomp.** La capacité `SYS_RAWIO`, que l'exporter garde pour le pilote, autorise aussi les appels système `iopl` et `ioperm` (accès direct aux ports d'entrée-sortie de la machine) : le profil seccomp par défaut de Docker les permet dans ce cas. Le profil [`deploy/docker/seccomp.json`](../deploy/docker/seccomp.json) est celui de Docker 29.8.0, moins cette seule autorisation ; copier le fichier à côté du fichier Compose. Il est vérifié en CI : `iopl` refusé, exporter fonctionnel. Sans lui, l'exporter fonctionne aussi, avec le profil par défaut.
+**Profil seccomp.** La capacité `SYS_RAWIO`, que l'exporter garde pour le pilote, autorise aussi les appels système `iopl` et `ioperm` (accès direct aux ports d'entrée-sortie de la machine) : le profil seccomp par défaut de Docker les permet dans ce cas. Le profil [`deploy/docker/seccomp.json`](../deploy/docker/seccomp.json) est celui de Docker 29.8.0, moins cette seule autorisation ; copier le fichier à côté du fichier Compose. Il est vérifié en CI (`iopl` refusé, exporter fonctionnel) et sur l'hôte de référence avec la carte le 2026-11-23 (collecte complète). Sans lui, l'exporter fonctionne aussi, avec le profil par défaut.
 
 **Dépôt privé.** Tant que le dépôt est privé, l'image l'est aussi : se connecter au registre sur l'hôte avec un jeton GitHub limité à `read:packages`.
 

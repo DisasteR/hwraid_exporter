@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.1.1 — 2026-11-23
 
 - Apache License 2.0 (`LICENSE`, `NOTICE`, SPDX headers).
 - Third-party licences shipped with the binaries: `/licenses` in the container image, licence archive next to the release binary.

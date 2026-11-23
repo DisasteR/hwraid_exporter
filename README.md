@@ -48,7 +48,7 @@ No component is needed on the host. Reference Compose profile, validated on the 
 ```yaml
 services:
   hwraid-exporter:
-    image: ghcr.io/disaster/hwraid_exporter:v0.1.0
+    image: ghcr.io/disaster/hwraid_exporter:v0.1.1
     read_only: true
     cap_drop: [ALL]
     cap_add: [MKNOD, CHOWN, SETUID, SETGID, SETPCAP, SYS_RAWIO]
