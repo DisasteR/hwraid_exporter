@@ -109,6 +109,28 @@ Sur l'hôte de référence, le volume visible assemble quatre miroirs, eux-même
 | 88-… | fabricant, modèle, version de firmware, numéro de série (texte) |
 | 288-295 | WWN |
 
+### Statistiques du contrôleur (sous-commande 244, paramètre : 0) [observé]
+
+Transfert paginé (section 4) de 2 788 octets sur l'hôte de référence, quand la collecte des statistiques est activée sur la carte. Compteurs cumulés depuis la dernière remise à zéro, entiers de 8 octets :
+
+| Octets | Champ |
+|---|---|
+| 8-11 | secondes écoulées depuis la dernière remise à zéro |
+| 16-103 | commandes en attente : 11 classes (0, 1, 2, 4 … 512) |
+| 1136 | lectures de l'hôte (volume 0) |
+| 1144 | écritures de l'hôte |
+| 1152 | secteurs lus |
+| 1160 | secteurs écrits |
+| 1184, 1192 | lectures et écritures hors cache |
+| 1200 | lectures servies entièrement par le cache DRAM |
+| 1208 | lectures en attente d'un chargement ou d'un vidage |
+| 1216 | lectures servies en partie par le cache |
+| 1224 | écritures absorbées par le cache DRAM |
+| 1232 | écritures en attente d'un chargement ou d'un vidage |
+| 1240 | vidages du cache DRAM |
+
+Le même transfert porte des histogrammes par volume (temps de complétion, intervalle entre entrées-sorties, taille, déplacement) et des compteurs d'erreurs par disque ; leurs positions restent à établir. Les positions des volumes suivants le premier ne sont pas établies (un seul volume sur l'hôte de référence).
+
 ## 6. État des membres, des volumes et des disques [interopérabilité]
 
 ### État d'un membre
