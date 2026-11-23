@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.2 — 2026-11-23
+
+- aacraid: a paged read whose close is acknowledged with status `0xc5` is now rejected, as the vendor tool does (it only accepts `CT_OK`), and retried once in the same cycle; a second rejection is an error. v0.1.1 published the data of such a read. `hwraid_transfer_close_unconfirmed_total` counts rejected reads.
+
 ## v0.1.1 — 2026-11-23
 
 - Apache License 2.0 (`LICENSE`, `NOTICE`, SPDX headers).

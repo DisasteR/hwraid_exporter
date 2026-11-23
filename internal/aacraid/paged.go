@@ -39,10 +39,10 @@ const (
 	MarkChunk    = 0xc8
 	ChunkRspSize = 496
 	markClosed   = 0xc6
-	// MarkClosedOther : autre confirmation de clôture, observée deux fois en
-	// 23 cycles sur l'hôte de référence pendant que maxView interrogeait la
-	// carte, toujours pour notre transfert et après des morceaux valides.
-	// Sens non établi ; traitée comme une clôture et comptée.
+	// MarkClosedOther : statut de clôture 197, observé quand un autre outil
+	// (maxView) interroge la carte en même temps. Le transfert est clos, mais
+	// l'outil de référence rejette alors la lecture (il n'accepte que le
+	// statut CT_OK) : l'exporter la rejette aussi et la refait une fois.
 	MarkClosedOther = 0xc5
 	markDA          = 0xda
 )

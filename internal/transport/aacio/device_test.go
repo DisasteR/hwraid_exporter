@@ -342,12 +342,13 @@ type fakeFirmware struct {
 	xfer      uint32
 	failAt    int // numéro de morceau en erreur (-1 : aucun)
 	requests  [][]byte
-	openMark  uint32 // marque d'ouverture (0 : 0xc9)
-	total     uint32 // taille annoncée (0 : taille de payload)
-	stopXfer  uint32 // transfert annoncé à la clôture (0 : écho)
-	stopMark  uint32 // marque de la clôture (0 : 0xc6)
-	chunkMark uint32 // marque des réponses de morceau (0 : 0xc8)
-	chunkSize uint16 // champ Size des réponses de morceau (0 : 496)
+	openMark  uint32   // marque d'ouverture (0 : 0xc9)
+	total     uint32   // taille annoncée (0 : taille de payload)
+	stopXfer  uint32   // transfert annoncé à la clôture (0 : écho)
+	stopMark  uint32   // marque de la clôture (0 : 0xc6)
+	stopMarks []uint32 // marques des clôtures successives, prioritaires sur stopMark
+	chunkMark uint32   // marque des réponses de morceau (0 : 0xc8)
+	chunkSize uint16   // champ Size des réponses de morceau (0 : 496)
 }
 
 func (f *fakeFirmware) ioctl(t *testing.T) {
@@ -392,6 +393,10 @@ func (f *fakeFirmware) ioctl(t *testing.T) {
 			le.PutUint32(d[8:], 0xc6)
 			if f.stopMark != 0 {
 				le.PutUint32(d[8:], f.stopMark)
+			}
+			if len(f.stopMarks) > 0 {
+				le.PutUint32(d[8:], f.stopMarks[0])
+				f.stopMarks = f.stopMarks[1:]
 			}
 			if f.stopXfer != 0 {
 				le.PutUint32(d[20:], f.stopXfer)
@@ -544,34 +549,40 @@ func TestReadPagedStopMustMatchTransfer(t *testing.T) {
 	}
 }
 
-// Clôture confirmée par 0xc5 pour le même transfert : lecture acceptée,
-// clôture comptée. Toute autre marque, ou 0xc5 pour un autre transfert, est
-// une erreur.
+// Clôture confirmée par 0xc5 : l'outil de référence rejette la lecture.
+// Elle est rejetée et refaite une fois ; un second rejet est une erreur ;
+// 0xc5 pour un autre transfert, ou une autre marque, est une erreur sans
+// nouvelle tentative.
 func TestReadPagedCloseOtherMark(t *testing.T) {
 	need := func([]byte) int { return aacraid.ContainerInfoNeed }
 	payload := make([]byte, 0x1000)
 	payload[5] = 0x42
 	for _, c := range []struct {
-		name    string
-		mark    uint32
-		xfer    uint32
-		ok      bool
-		counted int
+		name     string
+		marks    []uint32
+		xfer     uint32
+		ok       bool
+		rejected int
+		requests int
 	}{
-		{"0xc6", 0xc6, 0, true, 0},
-		{"0xc5, même transfert", 0xc5, 0, true, 1},
-		{"0xc5, autre transfert", 0xc5, 10, false, 0},
-		{"0xc7", 0xc7, 0, false, 0},
+		{"0xc6", []uint32{0xc6}, 0, true, 0, 3},
+		{"0xc5 puis 0xc6", []uint32{0xc5, 0xc6}, 0, true, 1, 6},
+		{"0xc5 deux fois", []uint32{0xc5, 0xc5}, 0, false, 2, 6},
+		{"0xc5, autre transfert", []uint32{0xc5}, 10, false, 0, 3},
+		{"0xc7", []uint32{0xc7}, 0, false, 0, 3},
 	} {
-		f := &fakeFirmware{payload: payload, xfer: 9, failAt: -1, stopMark: c.mark, stopXfer: c.xfer}
+		f := &fakeFirmware{payload: payload, xfer: 9, failAt: -1, stopMarks: c.marks, stopXfer: c.xfer}
 		f.ioctl(t)
 		d, err := Open("/dev/null", devNull, list(t))
 		if err != nil {
 			t.Fatal(err)
 		}
 		data, err := d.ReadPaged(aacraid.ReadContainerInfo, 0, 0, need)
-		if (err == nil) != c.ok || (c.ok && data[5] != 0x42) || d.CloseUnconfirmed() != c.counted {
-			t.Fatalf("%s : err=%v, comptées=%d", c.name, err, d.CloseUnconfirmed())
+		if (err == nil) != c.ok || (c.ok && data[5] != 0x42) || (!c.ok && data != nil) {
+			t.Fatalf("%s : err=%v, données=%v", c.name, err, data != nil)
+		}
+		if d.CloseUnconfirmed() != c.rejected || len(f.requests) != c.requests {
+			t.Fatalf("%s : %d rejets, %d requêtes", c.name, d.CloseUnconfirmed(), len(f.requests))
 		}
 		d.Close()
 	}

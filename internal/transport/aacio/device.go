@@ -41,12 +41,14 @@ type Device struct {
 	fd   int
 	path string
 	list *allowlist.List
-	// closeOther compte les clôtures confirmées par la marque 0xc5.
+	// closeOther compte les lectures rejetées parce que leur clôture a été
+	// confirmée par 0xc5.
 	closeOther int
 }
 
-// CloseUnconfirmed renvoie le nombre de clôtures confirmées par la marque
-// 0xc5 au lieu de 0xc6 depuis l'ouverture du nœud.
+// CloseUnconfirmed renvoie le nombre de lectures paginées rejetées depuis
+// l'ouverture du nœud parce que leur clôture a été confirmée par 0xc5 au
+// lieu de 0xc6.
 func (d *Device) CloseUnconfirmed() int { return d.closeOther }
 
 // Open ouvre path en lecture seule, sans suivre de lien, et vérifie sur le
@@ -159,27 +161,48 @@ func (d *Device) CacheProtection() (present bool, st aacraid.ZMMStatus, err erro
 	return true, st, err
 }
 
-// stop clôture le transfert après le morceau n et vérifie la confirmation :
-// marque 0xc6 et même transfert. La marque 0xc5, observée quand un autre
-// outil interroge la carte en même temps, est acceptée pour le même
-// transfert et comptée : les morceaux ont déjà été validés.
-func (d *Device) stop(r aacraid.PagedRead, head aacraid.PagedResponse, n uint32) error {
+// stop clôture le transfert après le morceau n et vérifie la confirmation
+// pour le même transfert. 0xc6 : lecture valide. 0xc5 (observé quand un
+// autre outil interroge la carte en même temps) : le transfert est clos
+// mais la lecture n'est pas valide (l'outil de référence la rejette) ;
+// rejected le signale. Toute autre réponse est une erreur.
+func (d *Device) stop(r aacraid.PagedRead, head aacraid.PagedResponse, n uint32) (rejected bool, err error) {
 	req := aacraid.StopRequest(head.Total, head.Xfer, n)
 	rsp, err := d.fib(append([]byte(nil), req...))
 	if err != nil {
-		return fmt.Errorf("read %d: stop: %w", r, err)
+		return false, fmt.Errorf("read %d: stop: %w", r, err)
 	}
 	s, err := aacraid.DecodePagedResponse(req, rsp)
 	if err != nil {
-		return fmt.Errorf("read %d: stop: %w", r, err)
+		return false, fmt.Errorf("read %d: stop: %w", r, err)
 	}
-	if s.Xfer != head.Xfer || (s.Mark != 0xc6 && s.Mark != aacraid.MarkClosedOther) {
-		return fmt.Errorf("read %d: stop not confirmed (mark %#x, transfer %#x)", r, s.Mark, s.Xfer)
-	}
-	if s.Mark == aacraid.MarkClosedOther {
+	switch {
+	case s.Xfer != head.Xfer || (s.Mark != 0xc6 && s.Mark != aacraid.MarkClosedOther):
+		return false, fmt.Errorf("read %d: stop not confirmed (mark %#x, transfer %#x)", r, s.Mark, s.Xfer)
+	case s.Mark == aacraid.MarkClosedOther:
 		d.closeOther++
+		return true, nil
 	}
-	return nil
+	return false, nil
+}
+
+// pagedAttempts : une lecture rejetée à la clôture (0xc5) est refaite une
+// fois dans le même cycle ; un second rejet est une erreur.
+const pagedAttempts = 2
+
+// ReadPaged effectue une lecture paginée qualifiée (readOnce). Une lecture
+// dont la clôture est confirmée par 0xc5 est rejetée, comme le fait l'outil
+// de référence, puis refaite une seule fois.
+func (d *Device) ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error) {
+	for attempt := 1; ; attempt++ {
+		data, rejected, err := d.readOnce(r, param, size, need)
+		if err != nil || !rejected {
+			return data, err
+		}
+		if attempt == pagedAttempts {
+			return nil, fmt.Errorf("read %d: close status %#x on %d attempts, data rejected", r, aacraid.MarkClosedOther, attempt)
+		}
+	}
 }
 
 // maxPagedTotal borne la taille d'un transfert accepté (plus grande taille
@@ -190,26 +213,26 @@ const maxPagedTotal = 0x1004
 // need(données lues) octets, ou tout le transfert. Le transfert est clôturé
 // dès que les données suffisent, et dans tous les cas après son ouverture,
 // même en cas d'erreur : le firmware ne garde pas de transfert ouvert.
-func (d *Device) ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error) {
+func (d *Device) readOnce(r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, bool, error) {
 	open, err := aacraid.OpenRequest(r, param, size)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	rsp, err := d.fib(append([]byte(nil), open...))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	head, err := aacraid.DecodePagedResponse(open, rsp)
 	if err != nil {
 		// Statut d'échec ou écho incorrect : aucun transfert établi.
-		return nil, err
+		return nil, false, err
 	}
 	if head.Mark != 0xc9 || head.Total == 0 || head.Total > maxPagedTotal {
 		// Ouverture non conforme : rien ne prouve qu'un transfert existe
 		// sous cet identifiant. Aucune clôture n'est envoyée, plutôt que de
 		// clore un transfert peut-être étranger ; le firmware garde au plus
 		// un transfert ouvert, que l'erreur signale.
-		return nil, fmt.Errorf("read %d: open refused (mark %#x, size %d); transfer %#x not stopped", r, head.Mark, head.Total, head.Xfer)
+		return nil, false, fmt.Errorf("read %d: open refused (mark %#x, size %d); transfer %#x not stopped", r, head.Mark, head.Total, head.Xfer)
 	}
 	var data []byte
 	last := uint32(0)
@@ -244,8 +267,12 @@ func (d *Device) ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]
 		}
 		return nil
 	}()
-	if err := errors.Join(readErr, d.stop(r, head, last)); err != nil {
-		return nil, err
+	rejected, stopErr := d.stop(r, head, last)
+	if err := errors.Join(readErr, stopErr); err != nil {
+		return nil, false, err
 	}
-	return data, nil
+	if rejected {
+		return nil, true, nil
+	}
+	return data, false, nil
 }
