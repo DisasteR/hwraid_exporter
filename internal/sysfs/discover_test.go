@@ -68,7 +68,7 @@ func TestDiscoverReferenceLayout(t *testing.T) {
 		"proc_name": "aacraid", "unique_id": "0", "serial_number": "ABC123",
 		"model": "6805", "hba_kernel_version": "5.3-0[19204]",
 	})
-	ahci := f.pciFunc("pci0000:00/0000:00:14.0", "ahci", map[string]string{"vendor": "0x8086", "class": "0x010601"})
+	ahci := f.pciFunc("pci0000:00/0000:00:14.0", "ahci", map[string]string{"vendor": "0x8086", "class": "0x010601", "device": "0xa102", "subsystem_vendor": "0x1043", "subsystem_device": "0x8694"})
 	f.host(ahci, "host14", map[string]string{"proc_name": "ahci", "unique_id": "14"})
 
 	hosts, herrs, err := Discover(f.root)
@@ -309,5 +309,42 @@ func TestDiscoverDevicesUnreadable(t *testing.T) {
 	hosts, herrs, err := Discover(f.root)
 	if err != nil || len(hosts) != 1 || hosts[0].Devices != nil || len(herrs) != 1 || herrs[0].Host != "host0" {
 		t.Fatalf("err=%v hôtes=%+v herrs=%v", err, hosts, herrs)
+	}
+}
+
+// Attribut PCI obligatoire absent, illisible ou vide : erreur d'hôte (la
+// carte n'est pas publiée avec un pilote ou des identifiants vides). Lien
+// driver absent : aucun pilote lié, sans erreur.
+func TestDiscoverRequiredPCIAttributes(t *testing.T) {
+	for _, attr := range []string{"class", "vendor", "device", "subsystem_vendor", "subsystem_device"} {
+		for _, mode := range []string{"absent", "vide"} {
+			f := newFixture(t)
+			aac := f.pciFunc("pci0000:00/0000:00:09.0/0000:01:00.0", "aacraid", aacIDs)
+			f.host(aac, "host0", map[string]string{"proc_name": "aacraid", "unique_id": "0"})
+			p := filepath.Join(aac, attr)
+			if mode == "absent" {
+				if err := os.Remove(p); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				mustWrite(t, p, "\n")
+			}
+			hosts, herrs, err := Discover(f.root)
+			if err != nil || len(hosts) != 0 || len(herrs) != 1 || herrs[0].Host != "host0" {
+				t.Fatalf("%s %s : err=%v hôtes=%+v herrs=%v", attr, mode, err, hosts, herrs)
+			}
+		}
+	}
+	// Lien driver illisible (boucle de liens) : erreur ; absent : sans pilote.
+	f := newFixture(t)
+	aac := f.pciFunc("pci0000:00/0000:00:09.0/0000:01:00.0", "", aacIDs)
+	f.host(aac, "host0", map[string]string{"proc_name": "aacraid", "unique_id": "0"})
+	hosts, herrs, err := Discover(f.root)
+	if err != nil || len(herrs) != 0 || len(hosts) != 1 || hosts[0].PCI.Driver != "" {
+		t.Fatalf("sans pilote : err=%v hôtes=%+v herrs=%v", err, hosts, herrs)
+	}
+	mustSymlink(t, "driver", filepath.Join(aac, "driver"))
+	if hosts, herrs, _ := Discover(f.root); len(hosts) != 0 || len(herrs) != 1 {
+		t.Fatalf("lien driver illisible : hôtes=%+v herrs=%v", hosts, herrs)
 	}
 }

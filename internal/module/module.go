@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/DisasteR/hwraid_exporter/internal/nodes"
 	"github.com/DisasteR/hwraid_exporter/internal/sysfs"
@@ -144,8 +145,10 @@ type Module interface {
 	// Collect lit la carte au travers de ses nœuds préparés. Appelé après
 	// l'abandon des privilèges, éventuellement en parallèle pour des cartes
 	// différentes : l'état partagé du module doit être protégé, sans tenir
-	// de verrou pendant un appel au firmware.
-	Collect(c Card, refs []NodeRef) Result
+	// de verrou pendant un appel au firmware. Passé deadline (zéro : aucune),
+	// le module n'envoie plus de nouvelle commande ; un transfert en cours
+	// est mené jusqu'à sa clôture.
+	Collect(c Card, refs []NodeRef, deadline time.Time) Result
 }
 
 // Planned associe une carte à son module.
@@ -283,6 +286,19 @@ func Prepared(pc Planned, majors map[string]uint32, prepared []nodes.Spec) bool 
 		}
 	}
 	return true
+}
+
+// KeepPrepared renvoie l'union des capacités des modules dont au moins une
+// carte a tous ses nœuds préparés : aucune capacité n'est conservée pour
+// une carte qui ne pourra pas être collectée.
+func (p *Plan) KeepPrepared(majors map[string]uint32, prepared []nodes.Spec) uint64 {
+	var keep uint64
+	for _, pc := range p.Cards {
+		if pc.Module != nil && Prepared(pc, majors, prepared) {
+			keep |= pc.Module.Capabilities()
+		}
+	}
+	return keep
 }
 
 // Refs renvoie les nœuds préparés d'une carte, pour Collect.

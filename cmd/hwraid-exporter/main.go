@@ -165,8 +165,9 @@ func serve(args []string) int {
 	log.Info("nodes prepared", "created", rep.Created, "replaced", rep.Replaced, "fixed", rep.Fixed, "removed", rep.Removed)
 
 	// --- Abandon des privilèges ------------------------------------------
-	// Union des capacités des modules ayant une carte : aucune sans carte.
-	keep := plan.Keep
+	// Union des capacités des modules dont une carte est préparée : aucune
+	// sans carte collectable.
+	keep := plan.KeepPrepared(majors, specs)
 	if err := privilege.Drop(uint32(*uid), uint32(*gid), keep); err != nil {
 		log.Error("privilege drop", "err", err)
 		return 1
@@ -236,13 +237,16 @@ func serve(args []string) int {
 			}
 		}
 		jobs := map[string]func() module.Result{}
+		// Échéance commune du cycle, transmise aux modules : passé ce
+		// délai, plus aucune nouvelle commande n'est envoyée.
+		deadline := time.Now().Add(*timeout)
 		collectors := map[string][]string{}
 		for _, pc := range cur.Cards {
 			if !collectOK || pc.Module == nil || !module.Prepared(pc, majors, specs) {
 				continue
 			}
 			addr := pc.Card.PCI.Address
-			jobs[addr] = func() module.Result { return pc.Module.Collect(pc.Card, module.Refs(nodesDir, pc, specs)) }
+			jobs[addr] = func() module.Result { return pc.Module.Collect(pc.Card, module.Refs(nodesDir, pc, specs), deadline) }
 			collectors[addr] = pc.Module.Collectors()
 		}
 		results := runner.Run(jobs, collectors, *timeout)

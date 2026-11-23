@@ -171,21 +171,21 @@ func TestCollect(t *testing.T) {
 	c := card("0000:01:00.0", "0")
 
 	ok := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, Device: 0, Function: 0, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}, sup: arcIo}
-	if r := withDev(ok, nil).Collect(c, ref); !r.NodeValid || r.Err != nil || !ok.closed {
+	if r := withDev(ok, nil).Collect(c, ref, time.Time{}); !r.NodeValid || r.Err != nil || !ok.closed {
 		t.Fatalf("carte cohérente : %+v (fermé=%v)", r, ok.closed)
 	}
 	other := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 1, Bus: 2, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}}
-	if r := withDev(other, nil).Collect(c, ref); r.NodeValid || r.Err == nil || !other.closed {
+	if r := withDev(other, nil).Collect(c, ref, time.Time{}); r.NodeValid || r.Err == nil || !other.closed {
 		t.Fatalf("nœud d'une autre carte jugé valide : %+v", r)
 	}
 	failing := &fakeDev{err: errors.New("EPERM")}
-	if r := withDev(failing, nil).Collect(c, ref); r.NodeValid || r.Err == nil || !failing.closed {
+	if r := withDev(failing, nil).Collect(c, ref, time.Time{}); r.NodeValid || r.Err == nil || !failing.closed {
 		t.Fatalf("échec de lecture non remonté : %+v", r)
 	}
-	if r := withDev(nil, errors.New("nœud incohérent")).Collect(c, ref); r.NodeValid || r.Err == nil {
+	if r := withDev(nil, errors.New("nœud incohérent")).Collect(c, ref, time.Time{}); r.NodeValid || r.Err == nil {
 		t.Fatalf("échec d'ouverture non remonté : %+v", r)
 	}
-	if r := withDev(ok, nil).Collect(c, nil); r.NodeValid || r.Err == nil {
+	if r := withDev(ok, nil).Collect(c, nil, time.Time{}); r.NodeValid || r.Err == nil {
 		t.Fatal("collecte sans nœud préparé acceptée")
 	}
 }
@@ -213,7 +213,7 @@ func TestCollectSupplementGate(t *testing.T) {
 	d := &fakeDev{info: hba, sup: arcIo}
 	m := withDev(d, nil)
 	for i := 0; i < 3; i++ {
-		r := m.Collect(c, ref)
+		r := m.Collect(c, ref, time.Time{})
 		if !r.NodeValid || r.CollectErr != nil || len(r.Unsupported) != 0 {
 			t.Fatalf("cycle %d : %+v", i, r)
 		}
@@ -230,7 +230,7 @@ func TestCollectSupplementGate(t *testing.T) {
 		"bit absent": {Version: 15, SupportedOptions2: 0x00c86934},
 		"version 1":  {Version: 1, SupportedOptions2: 0x08},
 	} {
-		r := withDev(&fakeDev{info: hba, sup: sup}, nil).Collect(c, ref)
+		r := withDev(&fakeDev{info: hba, sup: sup}, nil).Collect(c, ref, time.Time{})
 		if !r.NodeValid || len(r.Unsupported) != 4 || r.Unsupported[0] != "volumes" || r.Unsupported[1] != "disks" ||
 			r.Unsupported[2] != DiskInventoryCollector || r.Unsupported[3] != DiskLocationCollector {
 			t.Fatalf("%s : %+v", name, r)
@@ -239,17 +239,17 @@ func TestCollectSupplementGate(t *testing.T) {
 
 	f := &fakeDev{info: hba, supErr: errors.New("EIO")}
 	m = withDev(f, nil)
-	if r := m.Collect(c, ref); !r.NodeValid || r.CollectErr == nil || r.Unsupported != nil {
+	if r := m.Collect(c, ref, time.Time{}); !r.NodeValid || r.CollectErr == nil || r.Unsupported != nil {
 		t.Fatalf("échec 706 : %+v", r)
 	}
 	f.supErr, f.sup = nil, arcIo
-	if r := m.Collect(c, ref); r.CollectErr != nil || f.supCall != 2 {
+	if r := m.Collect(c, ref, time.Time{}); r.CollectErr != nil || f.supCall != 2 {
 		t.Fatalf("échec gardé en cache : %+v (appels=%d)", r, f.supCall)
 	}
 
 	// Nœud d'une autre carte : aucune commande firmware n'est envoyée.
 	other := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 1, Bus: 2, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}, sup: arcIo}
-	withDev(other, nil).Collect(c, ref)
+	withDev(other, nil).Collect(c, ref, time.Time{})
 	if other.supCall != 0 {
 		t.Fatal("706 envoyée sur un nœud qui ne désigne pas la carte")
 	}
@@ -265,17 +265,17 @@ func TestCollectReportsCapabilitiesCollection(t *testing.T) {
 
 	f := &fakeDev{info: hba, supErr: errors.New("EIO")}
 	m := withDev(f, nil)
-	if r := m.Collect(c, ref); len(r.Collected) != 1 || r.Collected[CapabilitiesCollector] {
+	if r := m.Collect(c, ref, time.Time{}); len(r.Collected) != 1 || r.Collected[CapabilitiesCollector] {
 		t.Fatalf("échec : %+v", r.Collected)
 	}
 	f.supErr, f.sup = nil, arcIo
 	for i := 0; i < 2; i++ { // lecture réelle, puis valeur gardée
-		if r := m.Collect(c, ref); !r.Collected[CapabilitiesCollector] {
+		if r := m.Collect(c, ref, time.Time{}); !r.Collected[CapabilitiesCollector] {
 			t.Fatalf("cycle %d : %+v", i, r.Collected)
 		}
 	}
 	other := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 1, Bus: 2, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}, sup: arcIo}
-	if r := withDev(other, nil).Collect(c, ref); r.Collected != nil {
+	if r := withDev(other, nil).Collect(c, ref, time.Time{}); r.Collected != nil {
 		t.Fatalf("lecture non tentée rapportée : %+v", r.Collected)
 	}
 }
@@ -289,7 +289,7 @@ func TestCollectCacheProtection(t *testing.T) {
 	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
 	run := func(a *cpAnswer) (module.Result, *fakeDev) {
 		d := &fakeDev{info: hba, sup: arcIo, cp: a}
-		return withDev(d, nil).Collect(c, ref), d
+		return withDev(d, nil).Collect(c, ref, time.Time{}), d
 	}
 
 	r, d := run(nil) // état de l'hôte de référence
@@ -297,8 +297,8 @@ func TestCollectCacheProtection(t *testing.T) {
 		t.Fatalf("référence : %+v", r)
 	}
 	m := withDev(d, nil)
-	m.Collect(c, ref)
-	m.Collect(c, ref)
+	m.Collect(c, ref, time.Time{})
+	m.Collect(c, ref, time.Time{})
 	if d.cpCall != 3 {
 		t.Fatalf("protection du cache lue %d fois en 3 cycles, attendu 3", d.cpCall)
 	}
@@ -336,7 +336,7 @@ func TestCollectCacheProtection(t *testing.T) {
 
 	// Lecture des capacités en échec : pas de lecture du cache non plus.
 	f := &fakeDev{info: hba, supErr: errors.New("EIO")}
-	withDev(f, nil).Collect(c, ref)
+	withDev(f, nil).Collect(c, ref, time.Time{})
 	if f.cpCall != 0 {
 		t.Fatal("protection du cache lue alors que la carte n'a pas répondu à 706")
 	}
@@ -350,7 +350,7 @@ func TestCollectVolumesReference(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
 	c := card("0000:01:00.0", "0")
 	d := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}, sup: arcIo}
-	r := withDev(d, nil).Collect(c, ref)
+	r := withDev(d, nil).Collect(c, ref, time.Time{})
 	// Type non observé : niveau inconnu, jamais deviné.
 	d2 := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}, sup: arcIo, paged: func(rd aacraid.PagedRead, p, size uint32) ([]byte, error) {
 		b, err := referencePaged(rd, p, size)
@@ -359,7 +359,7 @@ func TestCollectVolumesReference(t *testing.T) {
 		}
 		return b, err
 	}}
-	if r2 := withDev(d2, nil).Collect(c, ref); r2.Volumes[1].RaidLevel != "unknown" || r2.Volumes[1].State != "unknown" {
+	if r2 := withDev(d2, nil).Collect(c, ref, time.Time{}); r2.Volumes[1].RaidLevel != "unknown" || r2.Volumes[1].State != "unknown" {
 		t.Fatalf("type non observé : %+v", r2.Volumes[1])
 	}
 	if !r.Collected["volumes"] || !r.Collected["disks"] || r.CollectErr != nil {
@@ -423,7 +423,7 @@ func TestCollectDiskInventoryFailure(t *testing.T) {
 	}
 	for name, paged := range cases {
 		d := &fakeDev{info: hba, sup: arcIo, paged: paged}
-		r := withDev(d, nil).Collect(c, ref)
+		r := withDev(d, nil).Collect(c, ref, time.Time{})
 		if r.DiskInventory != nil || r.Collected[DiskInventoryCollector] || r.CollectErr == nil {
 			t.Fatalf("%s : %+v", name, r)
 		}
@@ -437,7 +437,7 @@ func TestCollectDiskInventoryFailure(t *testing.T) {
 		}
 		return referencePaged(r, p, size)
 	}}
-	r := withDev(d, nil).Collect(c, ref)
+	r := withDev(d, nil).Collect(c, ref, time.Time{})
 	got, tried := r.Collected[DiskInventoryCollector]
 	if !tried || got || r.DiskInventory != nil {
 		t.Fatalf("échec de configuration : %+v", r)
@@ -462,13 +462,13 @@ func TestCollectVolumesFailureAndGate(t *testing.T) {
 			}
 			return referencePaged(r, p, size)
 		}}
-		r := withDev(d, nil).Collect(c, ref)
+		r := withDev(d, nil).Collect(c, ref, time.Time{})
 		if r.Volumes != nil || r.Disks != nil || r.Collected["volumes"] || r.Collected["disks"] || r.CollectErr == nil || !r.NodeValid {
 			t.Fatalf("échec sur %s : %+v", failing, r)
 		}
 	}
 	d := &fakeDev{info: hba, sup: aacraid.SupplementInfo{Version: 15, SupportedOptions2: 0}}
-	r := withDev(d, nil).Collect(c, ref)
+	r := withDev(d, nil).Collect(c, ref, time.Time{})
 	if len(d.reads) != 0 || r.Volumes != nil {
 		t.Fatalf("carte sans interface interrogée : %v", d.reads)
 	}
@@ -497,7 +497,7 @@ func TestCollectRequiresQualification(t *testing.T) {
 		}
 		h.VendorID, h.DeviceID, h.SubVendorID, h.SubSystemID = id.Vendor, id.Device, id.SubVendor, id.SubDevice
 		d := &fakeDev{info: h, sup: arcIo}
-		r := withDev(d, nil).Collect(c, ref)
+		r := withDev(d, nil).Collect(c, ref, time.Time{})
 		if !r.NodeValid {
 			t.Fatalf("%s : nœud refusé : %+v", name, r)
 		}
@@ -527,7 +527,7 @@ func TestCollectRejectsDuplicateUID(t *testing.T) {
 		}
 		return referencePaged(r, p, size)
 	}}
-	r := withDev(d, nil).Collect(card("0000:01:00.0", "0"), ref)
+	r := withDev(d, nil).Collect(card("0000:01:00.0", "0"), ref, time.Time{})
 	if r.Volumes != nil || r.Collected["volumes"] || r.CollectErr == nil {
 		t.Fatalf("%+v", r)
 	}
@@ -542,12 +542,14 @@ func TestBlockedCardDoesNotBlockOthers(t *testing.T) {
 		"/n/aac1": {info: aacraid.HBAInfo{AdapterNumber: 1, Bus: 2, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}, sup: arcIo},
 	}
 	m := &Module{open: func(path string, _ uint64) (device, error) { return devs[path], nil }}
-	go m.Collect(card("0000:01:00.0", "0"), []module.NodeRef{{Path: "/n/aac0", Dev: 1}})
+	go m.Collect(card("0000:01:00.0", "0"), []module.NodeRef{{Path: "/n/aac0", Dev: 1}}, time.Time{})
 	for i := 0; i < 1000 && devs["/n/aac0"].started.Load() == 0; i++ {
 		time.Sleep(time.Millisecond)
 	}
 	done := make(chan module.Result, 1)
-	go func() { done <- m.Collect(card("0000:02:00.0", "1"), []module.NodeRef{{Path: "/n/aac1", Dev: 2}}) }()
+	go func() {
+		done <- m.Collect(card("0000:02:00.0", "1"), []module.NodeRef{{Path: "/n/aac1", Dev: 2}}, time.Time{})
+	}()
 	select {
 	case r := <-done:
 		if !r.NodeValid || !r.Collected[CapabilitiesCollector] {
@@ -569,7 +571,7 @@ func TestCollectDiskLocations(t *testing.T) {
 	m := withDev(d, nil)
 	var r module.Result
 	for i := 0; i < 3; i++ {
-		r = m.Collect(c, ref)
+		r = m.Collect(c, ref, time.Time{})
 	}
 	if d.cmCall != 1 {
 		t.Fatalf("carte des connecteurs lue %d fois en 3 cycles", d.cmCall)
@@ -602,12 +604,12 @@ func TestCollectDiskLocationFailures(t *testing.T) {
 		return referenceConnectorMap()
 	}}
 	m := withDev(d, nil)
-	r := m.Collect(c, ref)
+	r := m.Collect(c, ref, time.Time{})
 	if r.Collected[DiskLocationCollector] || r.DiskLocations != nil || len(r.DiskInventory) != 8 || r.CollectErr == nil {
 		t.Fatalf("échec de lecture : %+v", r)
 	}
 	fail = false
-	if r = m.Collect(c, ref); !r.Collected[DiskLocationCollector] || d.cmCall != 2 {
+	if r = m.Collect(c, ref, time.Time{}); !r.Collected[DiskLocationCollector] || d.cmCall != 2 {
 		t.Fatalf("pas de nouvelle lecture après échec (%d) : %+v", d.cmCall, r)
 	}
 
@@ -618,11 +620,11 @@ func TestCollectDiskLocationFailures(t *testing.T) {
 	}
 	d = &fakeDev{info: hba, sup: arcIo, cmap: bad}
 	m = withDev(d, nil)
-	r = m.Collect(c, ref)
+	r = m.Collect(c, ref, time.Time{})
 	if r.Collected[DiskLocationCollector] || r.DiskLocations != nil || len(r.DiskInventory) != 8 {
 		t.Fatalf("phy incohérent : %+v", r)
 	}
-	m.Collect(c, ref)
+	m.Collect(c, ref, time.Time{})
 	if d.cmCall != 2 {
 		t.Fatalf("carte incohérente gardée (%d lectures)", d.cmCall)
 	}
@@ -633,7 +635,7 @@ func TestCollectDiskLocationFailures(t *testing.T) {
 		return cm, err
 	}
 	d = &fakeDev{info: hba, sup: arcIo, cmap: partial}
-	r = withDev(d, nil).Collect(c, ref)
+	r = withDev(d, nil).Collect(c, ref, time.Time{})
 	if !r.Collected[DiskLocationCollector] || len(r.DiskLocations) != 7 {
 		t.Fatalf("disque sans entrée : %+v", r)
 	}
@@ -662,7 +664,7 @@ func TestCollectDiskOSDevices(t *testing.T) {
 	run := func(devs []sysfs.SCSIDevice) map[string]module.DiskOSDevice {
 		c := card("0000:01:00.0", "0")
 		c.Hosts[0].Devices = devs
-		r := withDev(&fakeDev{info: hba, sup: arcIo}, nil).Collect(c, ref)
+		r := withDev(&fakeDev{info: hba, sup: arcIo}, nil).Collect(c, ref, time.Time{})
 		got := map[string]module.DiskOSDevice{}
 		for _, o := range r.DiskOSDevices {
 			got[o.ID] = o
@@ -706,7 +708,7 @@ func TestCollectMemberCountMismatch(t *testing.T) {
 		}
 		return referencePaged(r, p, size)
 	}}
-	r := withDev(d, nil).Collect(card("0000:01:00.0", "0"), ref)
+	r := withDev(d, nil).Collect(card("0000:01:00.0", "0"), ref, time.Time{})
 	if r.Volumes != nil || r.Collected["volumes"] || r.Collected["disks"] || r.CollectErr == nil {
 		t.Fatalf("%+v", r)
 	}
@@ -726,14 +728,14 @@ func TestConnectorMapRereadOnDiskChange(t *testing.T) {
 		return b, err
 	}}
 	m := withDev(d, nil)
-	m.Collect(c, ref)
-	m.Collect(c, ref)
+	m.Collect(c, ref, time.Time{})
+	m.Collect(c, ref, time.Time{})
 	if d.cmCall != 1 {
 		t.Fatalf("%d lectures pour une liste inchangée", d.cmCall)
 	}
 	seven = false
-	r := m.Collect(c, ref)
-	m.Collect(c, ref)
+	r := m.Collect(c, ref, time.Time{})
+	m.Collect(c, ref, time.Time{})
 	if d.cmCall != 2 || len(r.DiskLocations) != 8 {
 		t.Fatalf("%d lectures, %d emplacements après l'ajout de d7", d.cmCall, len(r.DiskLocations))
 	}
@@ -745,7 +747,7 @@ func TestConnectorMapRereadOnDiskChange(t *testing.T) {
 func TestCollectRequiresPCIIdentifiers(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
 	good := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
-	if r := withDev(&fakeDev{info: good, sup: arcIo}, nil).Collect(card("0000:01:00.0", "0"), ref); !r.NodeValid {
+	if r := withDev(&fakeDev{info: good, sup: arcIo}, nil).Collect(card("0000:01:00.0", "0"), ref, time.Time{}); !r.NodeValid {
 		t.Fatalf("carte de référence refusée : %+v", r)
 	}
 	for name, mod := range map[string]func(h *aacraid.HBAInfo){
@@ -757,7 +759,7 @@ func TestCollectRequiresPCIIdentifiers(t *testing.T) {
 		h := good
 		mod(&h)
 		d := &fakeDev{info: h, sup: arcIo}
-		r := withDev(d, nil).Collect(card("0000:01:00.0", "0"), ref)
+		r := withDev(d, nil).Collect(card("0000:01:00.0", "0"), ref, time.Time{})
 		if r.NodeValid || r.Err == nil || d.supCall != 0 || d.cpCall != 0 || len(d.reads) != 0 || d.cmCall != 0 {
 			t.Fatalf("%s différent : %+v (706 %d, ZMM %d, paginées %v)", name, r, d.supCall, d.cpCall, d.reads)
 		}
@@ -767,7 +769,7 @@ func TestCollectRequiresPCIIdentifiers(t *testing.T) {
 		c := card("0000:01:00.0", "0")
 		c.PCI.SubsystemDevice = v
 		d := &fakeDev{info: good, sup: arcIo}
-		if r := withDev(d, nil).Collect(c, ref); r.Err == nil || d.supCall != 0 {
+		if r := withDev(d, nil).Collect(c, ref, time.Time{}); r.Err == nil || d.supCall != 0 {
 			t.Fatalf("identifiant sysfs %q accepté : %+v", v, r)
 		}
 	}
@@ -786,8 +788,48 @@ func TestCollectDuplicateMember(t *testing.T) {
 			}
 			return b, err
 		}}
-	r := withDev(d, nil).Collect(card("0000:01:00.0", "0"), ref)
+	r := withDev(d, nil).Collect(card("0000:01:00.0", "0"), ref, time.Time{})
 	if r.Volumes != nil || r.Collected["volumes"] || r.CollectErr == nil {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// Échéance : passé ce délai, plus aucune commande firmware n'est envoyée ;
+// les lectures commencées ont été closes (ReadPaged), les collecteurs
+// concernés sont en échec.
+func TestCollectStopsAtDeadline(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
+	t0 := time.Unix(1_000_000, 0)
+	clock := t0
+	d := &fakeDev{info: hba, sup: arcIo, paged: func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
+		clock = clock.Add(time.Second) // chaque lecture paginée dure 1 s
+		return referencePaged(r, p, size)
+	}}
+	m := withDev(d, nil)
+	m.now = func() time.Time { return clock }
+	r := m.Collect(card("0000:01:00.0", "0"), ref, t0.Add(3500*time.Millisecond))
+	// 229 puis trois 234 (fin à 4 s) ; la quatrième 234 n'est pas envoyée.
+	if len(d.reads) != 4 || d.cmCall != 0 {
+		t.Fatalf("lectures après l'échéance : %v (708 : %d)", d.reads, d.cmCall)
+	}
+	if !errors.Is(r.CollectErr, ErrDeadline) || r.Collected["volumes"] || r.Volumes != nil || r.DiskInventory != nil {
+		t.Fatalf("%+v", r)
+	}
+	if !r.Collected[CacheProtectionCollector] || !r.NodeValid {
+		t.Fatalf("lectures faites avant l'échéance perdues : %+v", r)
+	}
+
+	// Échéance déjà passée : aucune commande firmware, pas même 706.
+	clock = t0
+	d = &fakeDev{info: hba, sup: arcIo}
+	m = withDev(d, nil)
+	m.now = func() time.Time { return clock }
+	r = m.Collect(card("0000:01:00.0", "0"), ref, t0.Add(-time.Second))
+	if d.supCall != 0 || d.cpCall != 0 || len(d.reads) != 0 || d.cmCall != 0 {
+		t.Fatalf("commandes après l'échéance (706 %d, ZMM %d, paginées %v)", d.supCall, d.cpCall, d.reads)
+	}
+	if !r.NodeValid || !errors.Is(r.CollectErr, ErrDeadline) || r.Collected[CapabilitiesCollector] {
 		t.Fatalf("%+v", r)
 	}
 }

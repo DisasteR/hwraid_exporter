@@ -8,6 +8,7 @@ package sysfs
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -139,16 +140,27 @@ func readHostAttrs(root, classDir, name string) (SCSIHost, string, error) {
 	if err != nil {
 		return h, "", err
 	}
-	h.PCI = PCIFunction{
-		Address:         filepath.Base(pciDir),
-		Class:           readAttr(pciDir, "class"),
-		Vendor:          readAttr(pciDir, "vendor"),
-		Device:          readAttr(pciDir, "device"),
-		SubsystemVendor: readAttr(pciDir, "subsystem_vendor"),
-		SubsystemDevice: readAttr(pciDir, "subsystem_device"),
+	// Attributs obligatoires d'une fonction PCI : toujours publiés par le
+	// noyau. Une lecture ratée est une erreur d'hôte, pas une valeur vide
+	// qui ferait perdre le module ou la qualification de la carte.
+	h.PCI.Address = filepath.Base(pciDir)
+	for _, a := range []struct {
+		name string
+		dst  *string
+	}{{"class", &h.PCI.Class}, {"vendor", &h.PCI.Vendor}, {"device", &h.PCI.Device},
+		{"subsystem_vendor", &h.PCI.SubsystemVendor}, {"subsystem_device", &h.PCI.SubsystemDevice}} {
+		if *a.dst, err = readRequired(pciDir, a.name); err != nil {
+			return h, "", err
+		}
 	}
-	if drv, err := filepath.EvalSymlinks(filepath.Join(pciDir, "driver")); err == nil {
+	// Pilote : un lien absent signifie qu'aucun pilote n'est lié ; toute
+	// autre erreur est une lecture ratée.
+	drv, err := filepath.EvalSymlinks(filepath.Join(pciDir, "driver"))
+	switch {
+	case err == nil:
 		h.PCI.Driver = filepath.Base(drv)
+	case !errors.Is(err, fs.ErrNotExist):
+		return h, "", fmt.Errorf("%s: driver link: %w", h.PCI.Address, err)
 	}
 	return h, real, nil
 }
@@ -179,6 +191,20 @@ func pciParent(root, start string) (string, error) {
 
 // readAttr lit un attribut sysfs et retire les blancs finaux.
 // Un attribut absent ou illisible donne une chaîne vide.
+// readRequired lit un attribut sysfs obligatoire : absent, illisible ou vide
+// est une erreur.
+func readRequired(dir, name string) (string, error) {
+	b, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		return "", fmt.Errorf("%s: %s: %w", filepath.Base(dir), name, err)
+	}
+	v := strings.TrimSpace(string(b))
+	if v == "" {
+		return "", fmt.Errorf("%s: %s: empty", filepath.Base(dir), name)
+	}
+	return v, nil
+}
+
 func readAttr(dir, name string) string {
 	b, err := os.ReadFile(filepath.Join(dir, name))
 	if err != nil {

@@ -10,6 +10,9 @@ described by a public source were established for interoperability purposes unde
 Directive 2009/24/EC (docs/base-legale-interoperabilite.md); only the information needed to
 interoperate is published, without code or tooling from the vendor.
 
+deploy/docker/seccomp.json is the default seccomp profile of Docker 29.8.0 (moby/profiles, Apache
+License 2.0), with the rule allowing iopl and ioperm to CAP_SYS_RAWIO holders removed.
+
 Binaries and container images include third-party Go code under its own licence (the Go standard
 library and golang.org/x/sys, BSD-3-Clause); the container image ships their licence files under
 /licenses.

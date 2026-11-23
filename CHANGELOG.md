@@ -6,6 +6,10 @@
 - Third-party licences shipped with the binaries: `/licenses` in the container image, licence archive next to the release binary.
 - Security policy (`SECURITY.md`).
 - CI: `actions/checkout` 7.0.1 and `actions/setup-go` 7.1.0, pinned by commit.
+- Docker seccomp profile (`deploy/docker/seccomp.json`): Docker's default profile without `iopl`/`ioperm`, which `SYS_RAWIO` otherwise allows.
+- Collection stops sending controller commands once the cycle deadline has passed (a paged read in progress is still closed).
+- Capabilities are kept only for modules with a card whose nodes were prepared.
+- Discovery: unreadable or empty mandatory PCI attributes and an unreadable `driver` link are host errors instead of empty values.
 
 ## v0.1.0 — 2026-11-23
 

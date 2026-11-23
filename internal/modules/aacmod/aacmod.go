@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/DisasteR/hwraid_exporter/internal/aacraid"
 	"github.com/DisasteR/hwraid_exporter/internal/allowlist"
@@ -55,6 +56,7 @@ const CacheProtectionCollector = "cache_protection"
 // Module implémente module.Module pour aacraid.
 type Module struct {
 	open func(path string, dev uint64) (device, error)
+	now  func() time.Time // horloge de l'échéance (nil : time.Now)
 
 	mu sync.Mutex
 	// supplement garde, par carte et par nœud, la réponse à
@@ -118,7 +120,47 @@ func (*Module) Nodes(c module.Card) ([]module.NodeRequest, error) {
 // ensuite, une fois par carte, RequestSupplementAdapterInfo : si la carte
 // n'annonce pas l'interface des lectures d'état, les collecteurs d'état sont
 // déclarés non pris en charge et aucune autre lecture n'est tentée.
-func (m *Module) Collect(c module.Card, refs []module.NodeRef) module.Result {
+// ErrDeadline : l'échéance du cycle est passée, aucune nouvelle commande
+// n'est envoyée à la carte.
+var ErrDeadline = errors.New("collection deadline exceeded")
+
+// bounded enveloppe le périphérique : chaque commande firmware est refusée
+// une fois l'échéance passée. Une lecture paginée déjà commencée n'est pas
+// concernée : ReadPaged la mène jusqu'à sa clôture.
+type bounded struct {
+	device
+	expired func() bool
+}
+
+func (b bounded) SupplementInfo() (aacraid.SupplementInfo, error) {
+	if b.expired() {
+		return aacraid.SupplementInfo{}, ErrDeadline
+	}
+	return b.device.SupplementInfo()
+}
+
+func (b bounded) CacheProtection() (bool, aacraid.ZMMStatus, error) {
+	if b.expired() {
+		return false, aacraid.ZMMStatus{}, ErrDeadline
+	}
+	return b.device.CacheProtection()
+}
+
+func (b bounded) ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error) {
+	if b.expired() {
+		return nil, ErrDeadline
+	}
+	return b.device.ReadPaged(r, param, size, need)
+}
+
+func (b bounded) ConnectorMap() (aacraid.ConnectorMap, error) {
+	if b.expired() {
+		return aacraid.ConnectorMap{}, ErrDeadline
+	}
+	return b.device.ConnectorMap()
+}
+
+func (m *Module) Collect(c module.Card, refs []module.NodeRef, deadline time.Time) module.Result {
 	if len(refs) != 1 {
 		return module.Result{Err: fmt.Errorf("%d prepared node(s), 1 expected", len(refs))}
 	}
@@ -130,11 +172,16 @@ func (m *Module) Collect(c module.Card, refs []module.NodeRef) module.Result {
 	if err != nil {
 		return module.Result{Err: err}
 	}
-	d, err := m.open(refs[0].Path, refs[0].Dev)
+	raw, err := m.open(refs[0].Path, refs[0].Dev)
 	if err != nil {
 		return module.Result{Err: err}
 	}
-	defer d.Close()
+	defer raw.Close()
+	now := m.now
+	if now == nil {
+		now = time.Now
+	}
+	d := bounded{device: raw, expired: func() bool { return !deadline.IsZero() && now().After(deadline) }}
 	info, err := d.HBAInfo()
 	if err != nil {
 		return module.Result{Err: err}

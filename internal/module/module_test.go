@@ -6,6 +6,7 @@ package module
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/DisasteR/hwraid_exporter/internal/nodes"
 	"github.com/DisasteR/hwraid_exporter/internal/sysfs"
@@ -19,12 +20,12 @@ type fake struct {
 	nodes  func(Card) ([]NodeRequest, error)
 }
 
-func (f fake) Name() string                        { return f.name }
-func (f fake) Match(c Card) bool                   { return c.PCI.Driver == f.driver }
-func (f fake) Capabilities() uint64                { return f.caps }
-func (fake) Collectors() []string                  { return nil }
-func (f fake) Collect(Card, []NodeRef) Result      { return Result{NodeValid: true} }
-func (f fake) Nodes(c Card) ([]NodeRequest, error) { return f.nodes(c) }
+func (f fake) Name() string                              { return f.name }
+func (f fake) Match(c Card) bool                         { return c.PCI.Driver == f.driver }
+func (f fake) Capabilities() uint64                      { return f.caps }
+func (fake) Collectors() []string                        { return nil }
+func (f fake) Collect(Card, []NodeRef, time.Time) Result { return Result{NodeValid: true} }
+func (f fake) Nodes(c Card) ([]NodeRequest, error)       { return f.nodes(c) }
 
 func perCard(prefix, majorOf string) func(Card) ([]NodeRequest, error) {
 	return func(c Card) ([]NodeRequest, error) {
@@ -158,5 +159,33 @@ func TestPrepared(t *testing.T) {
 	bad.Err = errors.New("x")
 	if Prepared(bad, majors, prepared) {
 		t.Fatal("carte en erreur acceptée")
+	}
+}
+
+// Capacités conservées : seulement pour un module dont une carte a ses
+// nœuds préparés.
+func TestKeepPrepared(t *testing.T) {
+	mods := []Module{
+		fake{name: "A", driver: "drvA", nodes: perCard("a", "majA"), caps: 1 << 17},
+		fake{name: "B", driver: "drvB", nodes: perCard("b", "majB"), caps: 1 << 21},
+	}
+	p := Build([]sysfs.SCSIHost{h("host0", 0, "0000:01:00.0", "drvA", raid), h("host1", 1, "0000:02:00.0", "drvB", raid)}, mods)
+	majors := map[string]uint32{"majA": 240, "majB": 241}
+	specs := p.Specs(majors)
+	if got := p.KeepPrepared(majors, specs); got != 1<<17|1<<21 {
+		t.Fatalf("deux cartes préparées : %#x", got)
+	}
+	// Carte B non préparée (nœud absent) : sa capacité n'est pas gardée.
+	var onlyA []nodes.Spec
+	for _, s := range specs {
+		if s.MajorOf == "majA" {
+			onlyA = append(onlyA, s)
+		}
+	}
+	if got := p.KeepPrepared(majors, onlyA); got != 1<<17 {
+		t.Fatalf("carte B non préparée : %#x", got)
+	}
+	if got := p.KeepPrepared(majors, nil); got != 0 {
+		t.Fatalf("aucune carte préparée : %#x", got)
 	}
 }

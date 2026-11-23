@@ -39,6 +39,8 @@ services:
       - "c *:* r"
     security_opt:
       - no-new-privileges:true
+      # Profil seccomp de l'exporter, à côté du fichier Compose (voir plus bas).
+      - seccomp=./seccomp.json
     restart: unless-stopped
     stop_grace_period: 30s
     # L'image écoute sur 0.0.0.0:9799 dans le conteneur. Rattacher le
@@ -53,6 +55,8 @@ networks:
 ```
 
 Chaque ligne du profil est justifiée à la section 6.5 du [cahier des charges](../cdc/cahier-des-charges-aacraid-exporter.md) : les capacités ne servent qu'à la préparation, la règle de périphériques autorise la lecture des nœuds créés dans le `/dev` du conteneur. Ni `userns-remap` ni Docker rootless : le pilote refuserait les commandes (`EPERM`).
+
+**Profil seccomp.** La capacité `SYS_RAWIO`, que l'exporter garde pour le pilote, autorise aussi les appels système `iopl` et `ioperm` (accès direct aux ports d'entrée-sortie de la machine) : le profil seccomp par défaut de Docker les permet dans ce cas. Le profil [`deploy/docker/seccomp.json`](../deploy/docker/seccomp.json) est celui de Docker 29.8.0, moins cette seule autorisation ; copier le fichier à côté du fichier Compose. Il est vérifié en CI : `iopl` refusé, exporter fonctionnel. Sans lui, l'exporter fonctionne aussi, avec le profil par défaut.
 
 **Dépôt privé.** Tant que le dépôt est privé, l'image l'est aussi : se connecter au registre sur l'hôte avec un jeton GitHub limité à `read:packages`.
 

@@ -117,6 +117,28 @@ jobs:
           sudo systemctl stop hwraid-exporter
           test "$(systemctl show -p Result --value hwraid-exporter)" = success
 
+      - name: Profil seccomp Docker (iopl refusé, exporter fonctionnel)
+        run: |
+          CGO_ENABLED=0 go build -o dist/ioplprobe ./tools/ioplprobe
+          prof="$PWD/deploy/docker/seccomp.json"
+          img=alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+          echo "profil par défaut : $(docker run --rm --cap-drop ALL --cap-add SYS_RAWIO -v "$PWD/dist/ioplprobe:/p:ro" $img /p)"
+          out=$(docker run --rm --cap-drop ALL --cap-add SYS_RAWIO --security-opt seccomp="$prof" -v "$PWD/dist/ioplprobe:/p:ro" $img /p)
+          echo "profil de l'exporter : $out"
+          case "$out" in denied*) ;; *) echo "iopl permis sous le profil de l'exporter" >&2; exit 1 ;; esac
+          docker run -d --name hwsc --read-only \
+            --cap-drop ALL --cap-add MKNOD --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add SYS_RAWIO \
+            --device-cgroup-rule 'c *:* r' --security-opt no-new-privileges --security-opt seccomp="$prof" \
+            -p 127.0.0.1:9801:9799 -v "$PWD/dist/hwraid-exporter:/hwraid-exporter:ro" \
+            $img /hwraid-exporter serve --listen 0.0.0.0:9799 --interval 2s
+          for i in $(seq 1 20); do curl -fsS http://127.0.0.1:9801/metrics > sc.txt 2>/dev/null && grep -q '^hwraid_snapshot_ready 1$' sc.txt && break; sleep 0.5; done
+          docker logs hwsc
+          grep -qx 'hwraid_snapshot_ready 1' sc.txt
+          pid=$(docker inspect -f '{{.State.Pid}}' hwsc)
+          grep -qE '^Seccomp:\s+2$' /proc/$pid/status
+          grep -qE '^Uid:\s+65534\s+65534\s+65534\s+65534$' /proc/$pid/status
+          docker rm -f hwsc
+
       - name: Conteneur Docker au profil du NAS (sans carte)
         run: |
           docker run -d --name hw --read-only \

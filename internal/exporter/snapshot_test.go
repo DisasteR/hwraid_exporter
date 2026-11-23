@@ -21,7 +21,7 @@ func (fakeMod) Match(c module.Card) bool                        { return c.PCI.D
 func (fakeMod) Capabilities() uint64                            { return 1 << 17 }
 func (fakeMod) Collectors() []string                            { return []string{"volumes"} }
 func (fakeMod) Nodes(module.Card) ([]module.NodeRequest, error) { return nil, nil }
-func (fakeMod) Collect(module.Card, []module.NodeRef) module.Result {
+func (fakeMod) Collect(module.Card, []module.NodeRef, time.Time) module.Result {
 	return module.Result{NodeValid: true}
 }
 
