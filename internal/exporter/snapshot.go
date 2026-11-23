@@ -29,6 +29,8 @@ type Controller struct {
 	CollectError           string   // échec d'une lecture firmware
 	Collected              map[string]bool
 	CacheProtection        *module.CacheProtection
+	Volumes                []module.Volume
+	Disks                  []module.Disk
 }
 
 // Snapshot est une vue complète et immuable.
@@ -77,6 +79,7 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result) Sn
 				c.Unsupported = r.Unsupported
 				c.Collected = r.Collected
 				c.CacheProtection = r.CacheProtection
+				c.Volumes, c.Disks = r.Volumes, r.Disks
 				if r.CollectErr != nil {
 					c.CollectError = r.CollectErr.Error()
 				}
@@ -130,6 +133,38 @@ func Render(s Snapshot) string {
 	for _, c := range s.Controllers {
 		for _, col := range c.Unsupported {
 			fmt.Fprintf(&b, "hwraid_collector_supported{%s} 0\n", labels("controller", c.Label, "collector", col))
+		}
+	}
+	gauge("hwraid_volume_info", "Inventaire des volumes (conteneurs) de la carte.")
+	for _, c := range s.Controllers {
+		for _, v := range c.Volumes {
+			fmt.Fprintf(&b, "hwraid_volume_info{%s} 1\n", labels("controller", c.Label, "volume", v.ID, "name", v.Name, "type", v.Type, "parent", v.Parent))
+		}
+	}
+	gauge("hwraid_volume_state", "État calculé du volume, valeur 1.")
+	for _, c := range s.Controllers {
+		for _, v := range c.Volumes {
+			fmt.Fprintf(&b, "hwraid_volume_state{%s} 1\n", labels("controller", c.Label, "volume", v.ID, "state", v.State))
+		}
+	}
+	gauge("hwraid_volume_capacity_bytes", "Taille du volume en octets.")
+	for _, c := range s.Controllers {
+		for _, v := range c.Volumes {
+			fmt.Fprintf(&b, "hwraid_volume_capacity_bytes{%s} %d\n", labels("controller", c.Label, "volume", v.ID), v.CapacityBytes)
+		}
+	}
+	gauge("hwraid_volume_member", "Membres de chaque volume (disque ou volume), valeur 1.")
+	for _, c := range s.Controllers {
+		for _, v := range c.Volumes {
+			for _, m := range v.Members {
+				fmt.Fprintf(&b, "hwraid_volume_member{%s} 1\n", labels("controller", c.Label, "volume", v.ID, "member", m))
+			}
+		}
+	}
+	gauge("hwraid_disk_state", "État calculé des disques membres, valeur 1.")
+	for _, c := range s.Controllers {
+		for _, d := range c.Disks {
+			fmt.Fprintf(&b, "hwraid_disk_state{%s} 1\n", labels("controller", c.Label, "disk", d.ID, "state", d.State))
 		}
 	}
 	gauge("hwraid_cache_protection_present", "1 si un module de protection du cache est installé.")

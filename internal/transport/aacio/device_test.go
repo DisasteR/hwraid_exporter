@@ -284,3 +284,105 @@ func TestCacheProtectionSequence(t *testing.T) {
 		}
 	}
 }
+
+// fakeFirmware sert un transfert paginé de payload, comme le firmware de
+// l'hôte de référence (marques 0xc9 / 0xc8 / 0xc6, 448 octets par morceau),
+// et journalise les requêtes reçues.
+type fakeFirmware struct {
+	payload  []byte
+	xfer     uint32
+	failAt   int // numéro de morceau en erreur (-1 : aucun)
+	requests [][]byte
+}
+
+func (f *fakeFirmware) ioctl(t *testing.T) {
+	fakeIoctl(t, func(req uint32, buf []byte) error {
+		f.requests = append(f.requests, append([]byte(nil), buf...))
+		le := binary.LittleEndian
+		d := buf[aacraid.FIBHeaderSize:]
+		sub, n := le.Uint32(d[4:]), le.Uint32(d[24:])
+		le.PutUint32(d[0:], 0)
+		total := uint32(len(f.payload))
+		switch sub {
+		case 83:
+			if int(n) == f.failAt {
+				return syscall.EIO
+			}
+			le.PutUint32(d[8:], 0xc8)
+			off := int(n) * aacraid.ChunkData
+			chunk := make([]byte, aacraid.ChunkData)
+			if off < len(f.payload) {
+				copy(chunk, f.payload[off:])
+			}
+			copy(d[32:], chunk)
+		case 84:
+			le.PutUint32(d[8:], 0xc6)
+		default: // ouverture
+			le.PutUint32(d[8:], 0xc9)
+			le.PutUint32(d[12:], total)
+			le.PutUint32(d[16:], 0xda)
+			le.PutUint32(d[20:], f.xfer)
+			le.PutUint32(d[28:], total)
+		}
+		return nil
+	})
+}
+
+func (f *fakeFirmware) subs() []uint32 {
+	var out []uint32
+	for _, r := range f.requests {
+		out = append(out, binary.LittleEndian.Uint32(r[aacraid.FIBHeaderSize+4:]))
+	}
+	return out
+}
+
+// La lecture s'arrête dès que les données suffisent et clôture toujours le
+// transfert ; chaque requête passe la liste blanche.
+func TestReadPagedStopsWhenEnough(t *testing.T) {
+	payload := make([]byte, 0x1000)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+	f := &fakeFirmware{payload: payload, xfer: 0x2061e, failAt: -1}
+	f.ioctl(t)
+	d, err := Open("/dev/null", devNull, list(t))
+	if err != nil {
+		t.Skip(err)
+	}
+	defer d.Close()
+	data, err := d.ReadPaged(aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return aacraid.ContainerInfoNeed })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != aacraid.ChunkData || !bytes.Equal(data, payload[:aacraid.ChunkData]) {
+		t.Fatalf("%d octets lus", len(data))
+	}
+	if got := f.subs(); len(got) != 3 || got[0] != 234 || got[1] != 83 || got[2] != 84 {
+		t.Fatalf("séquence %v, attendu ouverture, morceau 0, clôture", got)
+	}
+	// Tout le transfert quand la fonction le demande.
+	f.requests = nil
+	data, err = d.ReadPaged(aacraid.ReadContainerInfo, 0, 0, func(b []byte) int { return 0x1000 })
+	if err != nil || !bytes.Equal(data, payload) || len(f.requests) != 12 {
+		t.Fatalf("lecture complète : %d octets, %d requêtes, %v", len(data), len(f.requests), err)
+	}
+}
+
+// Une erreur au milieu du transfert est remontée, et la clôture est envoyée
+// malgré tout.
+func TestReadPagedClosesOnError(t *testing.T) {
+	f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 7, failAt: 1}
+	f.ioctl(t)
+	d, err := Open("/dev/null", devNull, list(t))
+	if err != nil {
+		t.Skip(err)
+	}
+	defer d.Close()
+	if _, err := d.ReadPaged(aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return 0x1000 }); err == nil {
+		t.Fatal("erreur de morceau non remontée")
+	}
+	got := f.subs()
+	if got[len(got)-1] != 84 {
+		t.Fatalf("pas de clôture après l'erreur : %v", got)
+	}
+}

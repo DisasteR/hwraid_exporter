@@ -6,6 +6,7 @@ package aacmod
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"sync"
 
@@ -21,6 +22,7 @@ type device interface {
 	HBAInfo() (aacraid.HBAInfo, error)
 	SupplementInfo() (aacraid.SupplementInfo, error)
 	CacheProtection() (bool, aacraid.ZMMStatus, error)
+	ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error)
 	Close() error
 }
 
@@ -130,7 +132,117 @@ func (m *Module) Collect(c module.Card, refs []module.NodeRef) module.Result {
 		r.Unsupported = append([]string(nil), StateCollectors...)
 	}
 	collectCacheProtection(&r, d)
+	if sup.ArcIoReads() {
+		collectVolumes(&r, d)
+	}
 	return r
+}
+
+// collectVolumes lit la configuration (conteneurs, membres, disques
+// présents) et calcule les états. Toute erreur annule la publication des
+// volumes et des disques pour ce cycle : jamais de configuration partielle.
+func collectVolumes(r *module.Result, d device) {
+	vols, disks, err := readConfiguration(d)
+	for _, col := range StateCollectors {
+		r.Collected[col] = err == nil
+	}
+	if err != nil {
+		if r.CollectErr == nil {
+			r.CollectErr = fmt.Errorf("configuration : %w", err)
+		}
+		return
+	}
+	r.Volumes, r.Disks = vols, disks
+}
+
+func readConfiguration(d device) ([]module.Volume, []module.Disk, error) {
+	raw, err := d.ReadPaged(aacraid.ReadContainerList, 0, 0, aacraid.ContainerListNeed)
+	if err != nil {
+		return nil, nil, err
+	}
+	nums, err := aacraid.DecodeContainerList(raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	var cs []aacraid.Container
+	for _, n := range nums {
+		raw, err := d.ReadPaged(aacraid.ReadContainerInfo, n, 0, func([]byte) int { return aacraid.ContainerInfoNeed })
+		if err != nil {
+			return nil, nil, err
+		}
+		info, err := aacraid.DecodeContainerInfo(raw)
+		if err != nil {
+			return nil, nil, err
+		}
+		cs = append(cs, aacraid.Container{Number: n, Info: info})
+	}
+	raw, err = d.ReadPaged(aacraid.ReadDiskList, 0, 0, aacraid.DiskListNeed)
+	if err != nil {
+		return nil, nil, err
+	}
+	disks, err := aacraid.DecodeDiskList(raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	for i := range cs {
+		size := aacraid.MemberListSize(cs[i].Info.Members)
+		raw, err := d.ReadPaged(aacraid.ReadMemberList, cs[i].Info.UID, size, func([]byte) int { return int(size) })
+		if err != nil {
+			return nil, nil, err
+		}
+		if cs[i].Members, err = aacraid.DecodeMemberList(raw); err != nil {
+			return nil, nil, err
+		}
+	}
+	ev := aacraid.Evaluate(cs, disks)
+	return volumesOf(cs, ev), disksOf(ev), nil
+}
+
+func uidID(uid uint32) string { return fmt.Sprintf("%08x", uid) }
+
+func volumesOf(cs []aacraid.Container, ev aacraid.Evaluation) []module.Volume {
+	out := make([]module.Volume, 0, len(cs))
+	for _, c := range cs {
+		v := module.Volume{
+			ID:            uidID(c.Info.UID),
+			Name:          c.Info.Name,
+			CapacityBytes: c.Info.Blocks * 512,
+			State:         string(ev.Volumes[c.Info.UID]),
+		}
+		switch c.Info.Type {
+		case aacraid.TypeMirror:
+			v.Type = "mirror"
+		case aacraid.TypeAssembly:
+			v.Type = "assembly"
+		default:
+			v.Type = fmt.Sprintf("type%d", c.Info.Type)
+		}
+		if c.Info.Parent != aacraid.NoUID {
+			v.Parent = uidID(c.Info.Parent)
+		}
+		for _, m := range c.Members {
+			if m.Disk != aacraid.NoUID {
+				v.Members = append(v.Members, fmt.Sprintf("d%d", m.Disk))
+			} else {
+				v.Members = append(v.Members, uidID(m.ChildUID))
+			}
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+func disksOf(ev aacraid.Evaluation) []module.Disk {
+	nums := make([]uint32, 0, len(ev.Disks))
+	for n := range ev.Disks {
+		nums = append(nums, n)
+	}
+	sort.Slice(nums, func(i, j int) bool { return nums[i] < nums[j] })
+	out := make([]module.Disk, 0, len(nums))
+	for _, n := range nums {
+		out = append(out, module.Disk{ID: fmt.Sprintf("d%d", n), State: string(ev.Disks[n])})
+	}
+	return out
 }
 
 // collectCacheProtection lit l'état du module de protection du cache, à

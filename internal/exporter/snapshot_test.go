@@ -185,3 +185,26 @@ func TestCacheProtectionRender(t *testing.T) {
 		t.Fatalf("présence publiée sans lecture :\n%s", out)
 	}
 }
+
+func TestVolumeRender(t *testing.T) {
+	p := plan(aacHost("host0", "0000:01:00.0", "S1"))
+	res := map[string]module.Result{"0000:01:00.0": {NodeValid: true,
+		Volumes: []module.Volume{
+			{ID: "410734af", Name: "Array0", Type: "assembly", CapacityBytes: 1024, State: "unknown", Members: []string{"410734b3"}},
+			{ID: "410734b3", Name: "Array0", Type: "mirror", Parent: "410734af", CapacityBytes: 512, State: "degraded", Members: []string{"d3", "d7"}},
+		},
+		Disks: []module.Disk{{ID: "d3", State: "online"}, {ID: "d7", State: "failed"}}}}
+	out := Render(Build(p, true, res))
+	for _, line := range []string{
+		`hwraid_volume_info{controller="serial:S1",volume="410734af",name="Array0",type="assembly",parent=""} 1`,
+		`hwraid_volume_info{controller="serial:S1",volume="410734b3",name="Array0",type="mirror",parent="410734af"} 1`,
+		`hwraid_volume_state{controller="serial:S1",volume="410734b3",state="degraded"} 1`,
+		`hwraid_volume_capacity_bytes{controller="serial:S1",volume="410734af"} 1024`,
+		`hwraid_volume_member{controller="serial:S1",volume="410734b3",member="d7"} 1`,
+		`hwraid_disk_state{controller="serial:S1",disk="d7",state="failed"} 1`,
+	} {
+		if !strings.Contains(out, line+"\n") {
+			t.Fatalf("ligne absente : %s\n%s", line, out)
+		}
+	}
+}

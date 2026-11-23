@@ -49,10 +49,31 @@ type Result struct {
 	// CacheProtection est l'état du module de protection du cache lu
 	// pendant le cycle ; nil si la lecture n'a pas abouti ou n'a pas eu lieu.
 	CacheProtection *CacheProtection
+	// Volumes et Disks : configuration lue pendant le cycle ; publiés
+	// seulement si la lecture complète a abouti.
+	Volumes []Volume
+	Disks   []Disk
 	// Collected donne, pour chaque collecteur tenté pendant le cycle, le
 	// résultat de sa lecture (hwraid_collection_success). Un collecteur
 	// absent n'a pas été tenté.
 	Collected map[string]bool
+}
+
+// Volume est un conteneur RAID et son état.
+type Volume struct {
+	ID            string // identifiant stable sur la carte (UID en hexadécimal)
+	Name          string
+	Type          string // « mirror », « assembly » ou « type<N> » si non qualifié
+	Parent        string // ID du conteneur qui l'assemble, vide sinon
+	CapacityBytes uint64
+	State         string
+	Members       []string // ID des conteneurs membres ou « d<N> » des disques
+}
+
+// Disk est un disque membre d'un conteneur et son état.
+type Disk struct {
+	ID    string // « d<N> », numéro de disque de la carte
+	State string
 }
 
 // CacheProtection décrit le module de protection du cache (ZMM, batterie).
