@@ -10,7 +10,7 @@ Les métriques sont **les mêmes quel que soit le pilote, le contrôleur ou le c
 - **Objets locaux.** `volume` et `disk` sont des identifiants propres à la carte, stables tant que la configuration ne change pas : UID du conteneur en hexadécimal pour `volume` (aacraid), `d<numéro>` pour `disk`. Ils n'ont de sens qu'avec `controller`.
 - **États.** Une série d'état vaut 1 et porte l'état observé dans le label `state`, pris dans un vocabulaire fermé (ci-dessous). Une seule série par objet à un instant donné.
 - **Absence.** Une valeur non observée n'est pas publiée : lecture en échec, état non établi ou fonction non prise en charge. L'absence d'une série ne signifie jamais « tout va bien » : elle se surveille avec `hwraid_collection_success` et `hwraid_collector_supported`.
-- **Identifiants matériels.** Seul `controller` peut porter un numéro de série (celui de la carte). Les numéros de série et WWN des disques ne sont pas publiés.
+- **Identifiants matériels.** Les numéros de série et WWN sont publiés comme labels d'inventaire (`controller` pour la carte, `hwraid_disk_info` pour les disques, à venir) : ils permettent de corréler l'inventaire de la carte avec celui d'autres outils, par exemple smartctl_exporter. Ils n'apparaissent pas dans les journaux de l'exporter, et la documentation du dépôt n'utilise que des valeurs fictives.
 
 ## Vocabulaires normalisés
 
@@ -92,7 +92,7 @@ Prévues au cahier des charges, pas encore publiées :
 |---|---|
 | `hwraid_task_progress_ratio` (reconstruction, vérification…) | décodage de la réponse aux requêtes de tâches (à capturer pendant une reconstruction) |
 | `hwraid_controller_state`, `hwraid_controller_temperature_celsius` | lecture d'état et des capteurs de la carte |
-| `hwraid_disk_info` | lecture d'inventaire des disques, sans numéro de série ni WWN |
+| `hwraid_disk_info` (fabricant, modèle, firmware, numéro de série, WWN, emplacement) | lecture d'inventaire des disques (sous-commande 248) : capture de référence et découpage des champs texte à établir |
 | `hwraid_volume_write_cache_enabled` | position de l'état du cache d'écriture dans la lecture de volume |
 
 ## Exemple
