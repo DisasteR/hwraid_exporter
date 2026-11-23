@@ -5,6 +5,7 @@
 - Apache License 2.0 (`LICENSE`, `NOTICE`, SPDX headers).
 - Third-party licences shipped with the binaries: `/licenses` in the container image, licence archive next to the release binary.
 - Security policy (`SECURITY.md`).
+- CI: `actions/checkout` 7.0.1 and `actions/setup-go` 7.1.0, pinned by commit.
 
 ## v0.1.0 — 2026-11-23
 
