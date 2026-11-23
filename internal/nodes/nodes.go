@@ -15,22 +15,23 @@ import (
 	"strings"
 
 	"golang.org/x/sys/unix"
-
-	"github.com/DisasteR/hwraid_exporter/internal/sysfs"
 )
 
-// Spec décrit un nœud caractère attendu.
+// Spec décrit un nœud caractère attendu. MajorOf est le nom du pilote dans
+// /proc/devices dont Major doit être le major : Sync le vérifie.
 type Spec struct {
 	Name         string
+	MajorOf      string
 	Major, Minor uint32
 }
 
 // Dev renvoie le numéro de périphérique au format du noyau.
 func (s Spec) Dev() uint64 { return unix.Mkdev(s.Major, s.Minor) }
 
-// schema reconnaît les seuls noms que l'exporter crée. Toute autre entrée du
-// répertoire est refusée sans modification.
-var schema = regexp.MustCompile(`^(aac[0-9]{1,3}|megaraid_sas_ioctl|(hpsa|smartpqi)-[0-9a-f]{4}_[0-9a-f]{2}_[0-9a-f]{2}\.[0-7])$`)
+// schema est la règle générique des noms de nœuds déclarés par les modules :
+// minuscules, chiffres, « _ », « . » et « - », sans barre oblique ni point
+// initial. Toute autre entrée du répertoire est refusée sans modification.
+var schema = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,62}$`)
 
 const tmpPrefix = ".hwraid-tmp-"
 
@@ -64,31 +65,6 @@ func CharMajors(r io.Reader) (map[string]uint32, error) {
 	return out, sc.Err()
 }
 
-// Desired calcule les nœuds attendus pour les hôtes pris en charge.
-// Seul aacraid est géré dans le prototype : major « aac », minor = unique_id.
-func Desired(hosts []sysfs.SCSIHost, majors map[string]uint32) ([]Spec, []error) {
-	var specs []Spec
-	var errs []error
-	for _, h := range hosts {
-		if h.ProcName != "aacraid" {
-			continue
-		}
-		major, ok := majors["aac"]
-		if !ok {
-			errs = append(errs, fmt.Errorf("%s : major « aac » absent de /proc/devices", h.Name))
-			continue
-		}
-		minor, err := strconv.ParseUint(h.UniqueID, 10, 8)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("%s : unique_id %q invalide", h.Name, h.UniqueID))
-			continue
-		}
-		specs = append(specs, Spec{Name: "aac" + h.UniqueID, Major: major, Minor: uint32(minor)})
-	}
-	sort.Slice(specs, func(i, j int) bool { return specs[i].Name < specs[j].Name })
-	return specs, errs
-}
-
 // Report liste les actions réalisées, pour la journalisation.
 type Report struct {
 	Created, Replaced, Fixed, Removed []string
@@ -96,19 +72,6 @@ type Report struct {
 
 // ErrForeignEntry : une entrée étrangère au schéma a été trouvée ; rien n'a été modifié.
 var ErrForeignEntry = errors.New("entrée étrangère dans le répertoire des nœuds")
-
-// driverMajor associe un nom de nœud au nom de pilote dont le major doit
-// être lu dans /proc/devices.
-func driverMajor(name string) string {
-	switch {
-	case strings.HasPrefix(name, "aac"):
-		return "aac"
-	case name == "megaraid_sas_ioctl":
-		return "megaraid_sas_ioctl"
-	default: // hpsa-*, smartpqi-* : nœud sg du contrôleur
-		return "sg"
-	}
-}
 
 // Sync met le répertoire dir en conformité avec specs. Les nœuds sont créés
 // en 0600 pour uid:gid ; le répertoire appartient à root:gid en 0750.
@@ -121,8 +84,8 @@ func Sync(dir string, specs []Spec, majors map[string]uint32, uid, gid int) (Rep
 		if !schema.MatchString(s.Name) {
 			return rep, fmt.Errorf("nom de nœud hors schéma : %q", s.Name)
 		}
-		if m, ok := majors[driverMajor(s.Name)]; !ok || m == 0 || s.Major != m {
-			return rep, fmt.Errorf("major %d refusé pour %s (pilote %s : %d)", s.Major, s.Name, driverMajor(s.Name), m)
+		if m, ok := majors[s.MajorOf]; !ok || m == 0 || s.Major != m {
+			return rep, fmt.Errorf("major %d refusé pour %s (pilote %q : %d)", s.Major, s.Name, s.MajorOf, m)
 		}
 		if _, dup := want[s.Name]; dup {
 			return rep, fmt.Errorf("nœud en double : %q", s.Name)

@@ -10,8 +10,6 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
-
-	"github.com/DisasteR/hwraid_exporter/internal/sysfs"
 )
 
 const requireRoot = "HWRAID_REQUIRE_ROOT_TESTS"
@@ -48,41 +46,15 @@ func TestCharMajors(t *testing.T) {
 	}
 }
 
-func TestDesired(t *testing.T) {
-	majors := map[string]uint32{"aac": 247}
-	hosts := []sysfs.SCSIHost{
-		{Name: "host2", ProcName: "aacraid", UniqueID: "1"},
-		{Name: "host0", ProcName: "aacraid", UniqueID: "0"},
-		{Name: "host14", ProcName: "ahci", UniqueID: "14"},
-	}
-	specs, errs := Desired(hosts, majors)
-	if len(errs) != 0 {
-		t.Fatal(errs)
-	}
-	want := []Spec{{"aac0", 247, 0}, {"aac1", 247, 1}}
-	if len(specs) != 2 || specs[0] != want[0] || specs[1] != want[1] {
-		t.Fatalf("specs : %+v", specs)
-	}
-	// Major absent et unique_id invalide : erreurs par hôte, aucun nœud.
-	_, errs = Desired(hosts[:1], map[string]uint32{})
-	if len(errs) != 1 {
-		t.Fatalf("major absent non signalé : %v", errs)
-	}
-	specs, errs = Desired([]sysfs.SCSIHost{{Name: "host3", ProcName: "aacraid", UniqueID: "x"}}, majors)
-	if len(specs) != 0 || len(errs) != 1 {
-		t.Fatalf("unique_id invalide : specs=%v errs=%v", specs, errs)
-	}
-}
-
 func TestSchema(t *testing.T) {
 	for _, ok := range []string{"aac0", "aac15", "megaraid_sas_ioctl", "hpsa-0000_05_00.0", "smartpqi-0001_3b_00.1"} {
 		if !schema.MatchString(ok) {
 			t.Errorf("%s refusé", ok)
 		}
 	}
-	for _, bad := range []string{"aac", "aac0x", "sda", "../aac0", "aac0/..", "hpsa-0000:05:00.0", "null"} {
+	for _, bad := range []string{"", "../aac0", "aac0/..", "a/b", ".cache", tmpPrefix + "aac0", "Aac0", "hpsa-0000:05:00.0", strings.Repeat("a", 64)} {
 		if schema.MatchString(bad) {
-			t.Errorf("%s accepté", bad)
+			t.Errorf("%q accepté", bad)
 		}
 	}
 }
@@ -104,7 +76,7 @@ func TestSyncRefusesForeignEntries(t *testing.T) {
 			must(t, os.Chmod(dir, 0o750)) // répertoire sûr : seul le cas testé doit provoquer le refus
 			tc.setup(dir)
 			before := snapshot(t, dir)
-			_, err := Sync(dir, []Spec{{"aac0", 1, 3}}, testMajors, 65534, 65534)
+			_, err := Sync(dir, []Spec{{"aac0", "aac", 1, 3}}, testMajors, 65534, 65534)
 			if !errors.Is(err, ErrForeignEntry) {
 				t.Fatalf("ErrForeignEntry attendu, obtenu %v", err)
 			}
@@ -150,11 +122,11 @@ func TestSyncRejectsInvalidSpecs(t *testing.T) {
 	dir := t.TempDir()
 	must(t, os.Chmod(dir, 0o750))
 	for _, specs := range [][]Spec{
-		{{"../evil", 1, 3}},
-		{{"sda", 8, 0}},
-		{{"aac0", 1, 3}, {"aac0", 1, 5}},
-		{{"aac0", 8, 0}},               // major différent de celui du pilote
-		{{"megaraid_sas_ioctl", 1, 0}}, // pilote absent de la table
+		{{"../evil", "aac", 1, 3}},
+		{{"sda", "sd", 8, 0}},
+		{{"aac0", "aac", 1, 3}, {"aac0", "aac", 1, 5}},
+		{{"aac0", "aac", 8, 0}},                              // major différent de celui du pilote
+		{{"megaraid_sas_ioctl", "megaraid_sas_ioctl", 1, 0}}, // pilote absent de la table
 	} {
 		if _, err := Sync(dir, specs, testMajors, 65534, 65534); err == nil {
 			t.Fatalf("specs acceptées : %+v", specs)
@@ -172,7 +144,7 @@ func TestSyncLifecycleAsRoot(t *testing.T) {
 		t.Skip("exige root")
 	}
 	dir := filepath.Join(t.TempDir(), "hwraid_exporter")
-	null, zero := Spec{"aac0", 1, 3}, Spec{"aac0", 1, 5} // /dev/null puis /dev/zero
+	null, zero := Spec{"aac0", "aac", 1, 3}, Spec{"aac0", "aac", 1, 5} // /dev/null puis /dev/zero
 
 	// Création pour root d'abord : le test, root sans CAP_DAC_OVERRIDE dans le
 	// profil du conteneur, ne peut ouvrir qu'un nœud qui lui appartient.

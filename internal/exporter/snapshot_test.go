@@ -5,32 +5,46 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/DisasteR/hwraid_exporter/internal/aacraid"
+	"github.com/DisasteR/hwraid_exporter/internal/module"
 	"github.com/DisasteR/hwraid_exporter/internal/sysfs"
 )
 
-func aacHost(name, addr, uid, serial string) sysfs.SCSIHost {
-	return sysfs.SCSIHost{Name: name, ProcName: "aacraid", UniqueID: uid, SerialNumber: serial,
-		Model: "6805", Firmware: "5.3-0[19204]", PCI: sysfs.PCIFunction{Address: addr, Driver: "aacraid"}}
+type fakeMod struct{}
+
+func (fakeMod) Name() string                                    { return "aacraid" }
+func (fakeMod) Match(c module.Card) bool                        { return c.PCI.Driver == "aacraid" }
+func (fakeMod) Capabilities() uint64                            { return 1 << 17 }
+func (fakeMod) Nodes(module.Card) ([]module.NodeRequest, error) { return nil, nil }
+func (fakeMod) Collect(module.Card, []module.NodeRef) module.Result {
+	return module.Result{NodeValid: true}
 }
 
-func okChecker(h sysfs.SCSIHost) (aacraid.HBAInfo, error) {
-	bus, slot, fn, _ := ParsePCI(h.PCI.Address)
-	uid := h.UniqueID[0] - '0'
-	return aacraid.HBAInfo{AdapterNumber: uid, Bus: bus, Device: slot, Function: uint32(fn)}, nil
+func aacHost(name, addr, serial string) sysfs.SCSIHost {
+	return sysfs.SCSIHost{Name: name, ProcName: "aacraid", SerialNumber: serial, Model: "6805", Firmware: "5.3-0[19204]",
+		PCI: sysfs.PCIFunction{Address: addr, Driver: "aacraid", Class: "0x010400"}}
+}
+
+func plan(hosts ...sysfs.SCSIHost) module.Plan {
+	return module.Build(hosts, []module.Module{fakeMod{}})
+}
+
+func valid(p module.Plan) map[string]module.Result {
+	r := map[string]module.Result{}
+	for _, c := range p.Cards {
+		r[c.Card.PCI.Address] = module.Result{NodeValid: true}
+	}
+	return r
 }
 
 func TestIdentityPolicy(t *testing.T) {
-	hosts := []sysfs.SCSIHost{
-		aacHost("host0", "0000:01:00.0", "0", "AAA"),
-		aacHost("host1", "0000:02:00.0", "1", "DUP"),
-		aacHost("host2", "0000:03:00.0", "2", "DUP"),
-		aacHost("host3", "0000:04:00.0", "3", ""),
-		{Name: "host9", ProcName: "ahci", PCI: sysfs.PCIFunction{Address: "0000:00:14.0"}},
-	}
-	s := Build(hosts, true, nil)
+	p := plan(
+		aacHost("host0", "0000:01:00.0", "AAA"),
+		aacHost("host1", "0000:02:00.0", "DUP"),
+		aacHost("host2", "0000:03:00.0", "DUP"),
+		aacHost("host3", "0000:04:00.0", ""),
+	)
 	got := map[string]string{}
-	for _, c := range s.Controllers {
+	for _, c := range Build(p, true, valid(p)).Controllers {
 		got[c.PCIAddress] = c.Label
 	}
 	want := map[string]string{
@@ -39,38 +53,45 @@ func TestIdentityPolicy(t *testing.T) {
 		"0000:03:00.0": "pci:0000:03:00.0",
 		"0000:04:00.0": "pci:0000:04:00.0", // série vide
 	}
-	if len(got) != len(want) {
-		t.Fatalf("contrôleurs : %v", got)
-	}
 	for k, v := range want {
 		if got[k] != v {
-			t.Fatalf("%s : label %q, attendu %q", k, got[k], v)
+			t.Fatalf("%s : label %q, attendu %q (tous : %v)", k, got[k], v, got)
 		}
 	}
 }
 
-// Deux hôtes SCSI de la même carte ne donnent qu'un contrôleur.
-func TestHostsDeduplicatedByPCI(t *testing.T) {
-	s := Build([]sysfs.SCSIHost{aacHost("host0", "0000:01:00.0", "0", "A"), aacHost("host5", "0000:01:00.0", "0", "A")}, true, nil)
-	if len(s.Controllers) != 1 {
-		t.Fatalf("%d contrôleurs", len(s.Controllers))
+// Une carte RAID sans module est inventoriée, sans vérification de nœud.
+func TestUnsupportedRAIDCard(t *testing.T) {
+	p := plan(sysfs.SCSIHost{Name: "host7", ProcName: "inconnu", PCI: sysfs.PCIFunction{Address: "0000:05:00.0", Driver: "inconnu", Class: "0x010400"}})
+	out := Render(Build(p, true, nil))
+	if !strings.Contains(out, `hwraid_controller_backend_supported{controller="pci:0000:05:00.0"} 0`+"\n") {
+		t.Fatalf("carte non prise en charge absente :\n%s", out)
+	}
+	if strings.Contains(out, "hwraid_management_node_valid{") {
+		t.Fatalf("validité de nœud publiée pour une carte sans module :\n%s", out)
 	}
 }
 
-func TestNodeVerification(t *testing.T) {
-	h := aacHost("host0", "0000:01:00.0", "0", "A")
-	if c := Build([]sysfs.SCSIHost{h}, true, okChecker).Controllers[0]; !c.NodeChecked || !c.NodeValid {
-		t.Fatalf("nœud cohérent jugé invalide : %+v", c)
+func TestNodeValidity(t *testing.T) {
+	p := plan(aacHost("host0", "0000:01:00.0", "A"))
+	cases := map[string]struct {
+		res   map[string]module.Result
+		valid bool
+	}{
+		"valide":           {valid(p), true},
+		"échec de lecture": {map[string]module.Result{"0000:01:00.0": {Err: errors.New("EPERM")}}, false},
+		"aucune collecte":  {nil, false},
 	}
-	wrongCard := func(sysfs.SCSIHost) (aacraid.HBAInfo, error) {
-		return aacraid.HBAInfo{AdapterNumber: 1, Bus: 1}, nil
+	for name, tc := range cases {
+		c := Build(p, true, tc.res).Controllers[0]
+		if !c.NodeChecked || c.NodeValid != tc.valid || (!tc.valid && c.NodeError == "") {
+			t.Fatalf("%s : %+v", name, c)
+		}
 	}
-	if c := Build([]sysfs.SCSIHost{h}, true, wrongCard).Controllers[0]; c.NodeValid {
-		t.Fatal("un nœud désignant une autre carte doit être invalide")
-	}
-	failing := func(sysfs.SCSIHost) (aacraid.HBAInfo, error) { return aacraid.HBAInfo{}, errors.New("EPERM") }
-	if c := Build([]sysfs.SCSIHost{h}, true, failing).Controllers[0]; c.NodeValid || c.NodeError == "" {
-		t.Fatalf("échec d'ouverture non signalé : %+v", c)
+	// Une erreur de planification l'emporte sur un résultat valide.
+	p.Cards[0].Err = errors.New("major absent")
+	if c := Build(p, true, valid(p)).Controllers[0]; c.NodeValid {
+		t.Fatalf("carte en erreur de planification jugée valide : %+v", c)
 	}
 }
 
@@ -78,8 +99,8 @@ func TestRenderExposition(t *testing.T) {
 	if out := Render(Snapshot{}); out != "# HELP hwraid_snapshot_ready 1 une fois la première découverte publiée.\n# TYPE hwraid_snapshot_ready gauge\nhwraid_snapshot_ready 0\n" {
 		t.Fatalf("vue initiale :\n%s", out)
 	}
-	h := aacHost("host0", "0000:01:00.0", "0", `A"B\C`)
-	out := Render(Build([]sysfs.SCSIHost{h}, true, okChecker))
+	p := plan(aacHost("host0", "0000:01:00.0", `A"B\C`))
+	out := Render(Build(p, true, valid(p)))
 	for _, line := range []string{
 		"hwraid_snapshot_ready 1",
 		"hwraid_discovery_success 1",
@@ -89,18 +110,6 @@ func TestRenderExposition(t *testing.T) {
 	} {
 		if !strings.Contains(out, line+"\n") {
 			t.Fatalf("ligne absente : %s\n--- sortie ---\n%s", line, out)
-		}
-	}
-}
-
-func TestParsePCI(t *testing.T) {
-	b, s, f, err := ParsePCI("0000:3b:1f.7")
-	if err != nil || b != 0x3b || s != 0x1f || f != 7 {
-		t.Fatalf("%d %d %d %v", b, s, f, err)
-	}
-	for _, bad := range []string{"01:00.0", "0000:01:00.8", "0000:1:00.0", ""} {
-		if _, _, _, err := ParsePCI(bad); err == nil {
-			t.Fatalf("%q accepté", bad)
 		}
 	}
 }

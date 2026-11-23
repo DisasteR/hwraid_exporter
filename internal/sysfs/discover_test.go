@@ -50,7 +50,7 @@ func (f *fixture) host(pciDir, name string, attrs map[string]string) {
 	mustSymlink(f.t, rel, filepath.Join(f.root, "class/scsi_host", name))
 }
 
-var aacIDs = map[string]string{"vendor": "0x9005", "device": "0x028b", "subsystem_vendor": "0x9005", "subsystem_device": "0x0800"}
+var aacIDs = map[string]string{"vendor": "0x9005", "device": "0x028b", "subsystem_vendor": "0x9005", "subsystem_device": "0x0800", "class": "0x010400"}
 
 func TestDiscoverReferenceLayout(t *testing.T) {
 	f := newFixture(t)
@@ -63,7 +63,7 @@ func TestDiscoverReferenceLayout(t *testing.T) {
 		"proc_name": "aacraid", "unique_id": "0", "serial_number": "ABC123",
 		"model": "6805", "hba_kernel_version": "5.3-0[19204]",
 	})
-	ahci := f.pciFunc("pci0000:00/0000:00:14.0", "ahci", map[string]string{"vendor": "0x8086"})
+	ahci := f.pciFunc("pci0000:00/0000:00:14.0", "ahci", map[string]string{"vendor": "0x8086", "class": "0x010601"})
 	f.host(ahci, "host14", map[string]string{"proc_name": "ahci", "unique_id": "14"})
 
 	hosts, herrs, err := Discover(f.root)
@@ -76,7 +76,7 @@ func TestDiscoverReferenceLayout(t *testing.T) {
 	h := hosts[0]
 	want := SCSIHost{
 		Name: "host0", Number: 0, ProcName: "aacraid",
-		PCI: PCIFunction{Address: "0000:01:00.0", Driver: "aacraid", Vendor: "0x9005", Device: "0x028b",
+		PCI: PCIFunction{Address: "0000:01:00.0", Driver: "aacraid", Class: "0x010400", Vendor: "0x9005", Device: "0x028b",
 			SubsystemVendor: "0x9005", SubsystemDevice: "0x0800"},
 		UniqueID: "0", SerialNumber: "ABC123", Model: "6805", Firmware: "5.3-0[19204]",
 	}
@@ -85,6 +85,9 @@ func TestDiscoverReferenceLayout(t *testing.T) {
 	}
 	if hosts[1].PCI.Address != "0000:00:14.0" || hosts[1].PCI.Driver != "ahci" {
 		t.Fatalf("hôte AHCI mal rattaché : %+v", hosts[1].PCI)
+	}
+	if !h.PCI.IsRAIDClass() || hosts[1].PCI.IsRAIDClass() {
+		t.Fatalf("classes : AAC=%s AHCI=%s", h.PCI.Class, hosts[1].PCI.Class)
 	}
 }
 

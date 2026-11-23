@@ -178,7 +178,7 @@ Le signal Prometheus `up` couvre l’accessibilité HTTP de l’exporter. Une r�
 
 ## 6. Architecture et déploiement
 
-Le service d’inventaire recoupe les fonctions PCI, leurs identifiants constructeur et sous-système, les pilotes liés et les hôtes SCSI visibles dans sysfs. Plusieurs hôtes SCSI peuvent dépendre de la même carte. Dédupliquer les chemins par leur parent matériel et conserver une identité non ambiguë sur l’hôte. La classe PCI RAID est un indice parmi d’autres : prévoir les interfaces SAS et les contrôleurs configurables en mode HBA. Un HBA identifié reste visible avec les fonctions RAID déclarées inapplicables lorsque son mode est connu. [Interfaces PCI de Linux](https://docs.kernel.org/PCI/sysfs-pci.html) Isoler transport, décodage et exposition HTTP pour pouvoir rejouer une réponse enregistrée sans accès matériel. Le cœur, les décodeurs et les modules de collecte sont écrits en Go et compilés dans un seul exécutable Linux statique.
+Le service d’inventaire recoupe les fonctions PCI, leurs identifiants constructeur et sous-système, les pilotes liés et les hôtes SCSI visibles dans sysfs. Plusieurs hôtes SCSI peuvent dépendre de la même carte. Dédupliquer les chemins par leur parent matériel et conserver une identité non ambiguë sur l’hôte. Une carte est inventoriée si sa classe PCI est « contrôleur RAID » (`0x0104xx`) ou si un module la revendique : une carte RAID sans module apparaît avec `hwraid_controller_backend_supported 0`, un contrôleur SATA ordinaire n’apparaît pas. La classe PCI RAID reste un indice parmi d’autres : prévoir les interfaces SAS et les contrôleurs configurables en mode HBA. Un HBA identifié reste visible avec les fonctions RAID déclarées inapplicables lorsque son mode est connu. [Interfaces PCI de Linux](https://docs.kernel.org/PCI/sysfs-pci.html) Isoler transport, décodage et exposition HTTP pour pouvoir rejouer une réponse enregistrée sans accès matériel. Le cœur, les décodeurs et les modules de collecte sont écrits en Go et compilés dans un seul exécutable Linux statique.
 
 ### 6.1 Relier la carte découverte à son interface de gestion
 
@@ -199,7 +199,7 @@ Les droits exigés diffèrent par pilote : `CAP_SYS_RAWIO` pour `aacraid`, `hpsa
 
 L’exporter dispose de ses propres nœuds de gestion dans `/dev/hwraid_exporter/`. Les autres nœuds de `/dev` appartiennent au système et aux outils constructeurs, qui peuvent les supprimer et les recréer à leur guise (par exemple `/dev/aacN`). L’exporter ne les utilise pas et ne les modifie jamais. Il crée lui-même ses nœuds au démarrage. Le chemin est fixe et non configurable.
 
-Le principe est le même pour tous les pilotes : chaque nœud dédié est un nœud caractère dont le major/minor est lu dans `/proc/devices` ou sysfs, et dont le nom ne dépend pas de la numérotation `sgN`.
+Le principe est le même pour tous les pilotes : chaque nœud dédié est un nœud caractère déclaré par le module du pilote (section 6.10), dont le major est lu dans `/proc/devices` sous le nom de pilote déclaré, et dont le nom ne dépend pas de la numérotation `sgN`. La phase de préparation vérifie que le major de chaque nœud correspond à ce nom de pilote, et que le nom respecte une règle générique (minuscules, chiffres, `_`, `.`, `-`, sans barre oblique ni point initial).
 
 | Pilote | Ce que publie le pilote | Nœud dédié | Major / minor |
 |---|---|---|---|
@@ -331,10 +331,14 @@ La CI vérifie que la somme SHA-256 de `/hwraid-exporter` dans l’image est ég
 Le registre sélectionne un seul module propriétaire de la collecte pour chaque contrôleur, selon le pilote, les identifiants PCI et, si nécessaire, une identification en lecture seule. Une correspondance ambiguë est publiée comme telle. Le cœur assure découverte, planification, identité des objets et exposition HTTP. Le module assure le transport de lecture (dans les limites de la section 4), le décodage et la traduction des états constructeur. Les identifiants locaux de disque et de volume sont toujours rattachés au contrôleur.
 
 ```text
-Match(identité Linux) → correspondance et justification
-Capabilities(contrôleur) → fonctions prises en charge, inconnues ou inapplicables
-Collect(contrôleur, fonctions, échéance) → instantané et résultat par fonction
+Match(carte) → le module prend-il la carte en charge ?
+Nodes(carte) → nœuds nécessaires : nom, pilote dont lire le major, minor
+Capabilities() → capacités à conserver après l’abandon des privilèges
+Functions(carte) → fonctions prises en charge, inconnues ou inapplicables
+Collect(carte, nœuds préparés, échéance) → instantané et résultat par fonction
 ```
+
+`Match`, `Nodes` et `Capabilities` sont des fonctions pures : un module **déclare** ce dont il a besoin et ne crée jamais lui-même de nœud. Le cœur regroupe les hôtes SCSI par carte, associe chaque carte à son module, puis réalise en une seule passe privilégiée la création des nœuds déclarés par tous les modules, avec les contrôles de la section 6.2. Il abandonne ensuite ses privilèges en conservant l’union des capacités déclarées par les modules qui ont au moins une carte. Les ouvertures qui exigent un privilège absent après l’abandon (cas de `megaraid_sas`) sont elles aussi déclarées et réalisées par le cœur pendant la préparation. `Collect` s’exécute après l’abandon. Une carte revendiquée par plusieurs modules, ou deux cartes déclarant le même nom de nœud, sont signalées en erreur et n’obtiennent aucun nœud.
 
 Les familles communes de métriques utilisent le préfixe `hwraid_`. La protection du cache couvre ZMM, batterie ou autre module identifié. Exposer son type dans l’inventaire et publier l’état normalisé uniquement si la correspondance est établie. Une carte sans module de collecte donne `hwraid_controller_backend_supported=0` avec son identité. Une carte prise en charge mais illisible conserve `backend_supported=1` et signale une collecte en échec. Les fonctions encore inconnues restent indéterminées. Utiliser un module de simulation pour tester cette distinction avant la disponibilité d’un deuxième matériel.
 

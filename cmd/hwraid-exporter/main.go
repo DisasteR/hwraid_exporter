@@ -15,19 +15,17 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"sync/atomic"
 	"time"
 
 	"github.com/DisasteR/hwraid_exporter/internal/aacraid"
-	"github.com/DisasteR/hwraid_exporter/internal/allowlist"
 	"github.com/DisasteR/hwraid_exporter/internal/exporter"
 	"github.com/DisasteR/hwraid_exporter/internal/lifecycle"
+	"github.com/DisasteR/hwraid_exporter/internal/module"
+	"github.com/DisasteR/hwraid_exporter/internal/modules/aacmod"
 	"github.com/DisasteR/hwraid_exporter/internal/nodes"
 	"github.com/DisasteR/hwraid_exporter/internal/privilege"
-	"github.com/DisasteR/hwraid_exporter/internal/procstatus"
 	"github.com/DisasteR/hwraid_exporter/internal/sysfs"
-	"github.com/DisasteR/hwraid_exporter/internal/transport/aacio"
 )
 
 // nodesDir est fixe (section 6.2 du cahier des charges).
@@ -121,9 +119,14 @@ func serve(args []string) int {
 		log.Error("lecture de /proc/devices", "err", err)
 		return 1
 	}
-	specs, serrs := nodes.Desired(hosts, majors)
-	for _, e := range serrs {
-		log.Warn("nœud non calculable", "err", e)
+	// Chaque module déclare ses nœuds et ses capacités ; le cœur crée seul.
+	registry := []module.Module{aacmod.New(list)}
+	plan := module.Build(hosts, registry)
+	specs := plan.Specs(majors)
+	for _, pc := range plan.Cards {
+		if pc.Err != nil {
+			log.Warn("carte non préparée", "pci", pc.Card.PCI.Address, "err", pc.Err)
+		}
 	}
 	rep, err := nodes.Sync(nodesDir, specs, majors, int(*uid), int(*gid))
 	if err != nil {
@@ -133,11 +136,8 @@ func serve(args []string) int {
 	log.Info("nœuds préparés", "créés", rep.Created, "remplacés", rep.Replaced, "corrigés", rep.Fixed, "supprimés", rep.Removed)
 
 	// --- Abandon des privilèges ------------------------------------------
-	// Capacités réduites à celles des pilotes présents : aucune sans carte.
-	var keep uint64
-	if len(specs) > 0 {
-		keep = procstatus.Mask(procstatus.CapSysRawIO)
-	}
+	// Union des capacités des modules ayant une carte : aucune sans carte.
+	keep := plan.Keep
 	if err := privilege.Drop(uint32(*uid), uint32(*gid), keep); err != nil {
 		log.Error("abandon des privilèges", "err", err)
 		return 1
@@ -149,10 +149,6 @@ func serve(args []string) int {
 	log.Info("privilèges abandonnés", "uid", *uid, "gid", *gid, "capacités", fmt.Sprintf("%#x", keep))
 
 	// --- Collecte et service ---------------------------------------------
-	specByUID := map[string]nodes.Spec{}
-	for _, s := range specs {
-		specByUID[s.Name] = s
-	}
 	var snap atomic.Pointer[string]
 	initial := exporter.Render(exporter.Snapshot{})
 	snap.Store(&initial)
@@ -175,19 +171,21 @@ func serve(args []string) int {
 		}
 		// L'ensemble des nœuds attendus a-t-il changé depuis la préparation ?
 		// (carte ajoutée ou retirée, module rechargé, unique_id réattribué)
+		cur := module.Build(hosts, registry)
 		if ok {
-			if cur, cerr := readMajors(); cerr == nil {
-				now, _ := nodes.Desired(hosts, cur)
-				if !sameSpecs(now, specs) {
-					log.Error("les nœuds attendus ont changé depuis la préparation : relance nécessaire")
-					requestExit(exitNodeChanged)
-				}
+			if m, cerr := readMajors(); cerr == nil && !sameSpecs(cur.Specs(m), specs) {
+				log.Error("les nœuds attendus ont changé depuis la préparation : relance nécessaire")
+				requestExit(exitNodeChanged)
 			}
 		}
-		check := func(h sysfs.SCSIHost) (aacraid.HBAInfo, error) {
-			return checkNode(h, specByUID, list)
+		results := map[string]module.Result{}
+		for _, pc := range cur.Cards {
+			if pc.Module == nil || pc.Err != nil {
+				continue
+			}
+			results[pc.Card.PCI.Address] = pc.Module.Collect(pc.Card, module.Refs(nodesDir, pc, specs))
 		}
-		s := exporter.Build(hosts, ok, check)
+		s := exporter.Build(cur, ok, results)
 		for _, c := range s.Controllers {
 			if !c.NodeValid {
 				// Adresse PCI et non label : le label peut contenir la série (S9).
@@ -236,30 +234,6 @@ func serve(args []string) int {
 	defer cancel()
 	_ = srv.Shutdown(shut)
 	return code
-}
-
-// checkNode vérifie le nœud dédié d'un hôte aacraid et lit GET_HBA_INFO.
-// Le major courant est relu dans /proc/devices : un rechargement du module
-// rend le nœud préparé invalide.
-func checkNode(h sysfs.SCSIHost, specs map[string]nodes.Spec, list *allowlist.List) (aacraid.HBAInfo, error) {
-	name := "aac" + h.UniqueID
-	spec, ok := specs[name]
-	if !ok {
-		return aacraid.HBAInfo{}, fmt.Errorf("aucun nœud préparé pour %s", h.Name)
-	}
-	majors, err := readMajors()
-	if err != nil {
-		return aacraid.HBAInfo{}, err
-	}
-	if majors["aac"] != spec.Major {
-		return aacraid.HBAInfo{}, fmt.Errorf("%w : major aac %d, préparé %d", aacio.ErrNodeMismatch, majors["aac"], spec.Major)
-	}
-	d, err := aacio.Open(filepath.Join(nodesDir, name), spec.Dev(), list)
-	if err != nil {
-		return aacraid.HBAInfo{}, err
-	}
-	defer d.Close()
-	return d.HBAInfo()
 }
 
 // sameSpecs compare deux ensembles de nœuds attendus (déjà triés par nom).

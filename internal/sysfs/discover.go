@@ -20,6 +20,7 @@ var pciAddress = regexp.MustCompile(`^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]
 type PCIFunction struct {
 	Address         string // domaine:bus:slot.fonction
 	Driver          string // nom du pilote lié, vide si aucun
+	Class           string // classe PCI (0x010400 : contrôleur RAID)
 	Vendor          string // identifiants tels que publiés par sysfs (0x9005…)
 	Device          string
 	SubsystemVendor string
@@ -104,6 +105,7 @@ func readHost(root, classDir, name string) (SCSIHost, error) {
 	}
 	h.PCI = PCIFunction{
 		Address:         filepath.Base(pciDir),
+		Class:           readAttr(pciDir, "class"),
 		Vendor:          readAttr(pciDir, "vendor"),
 		Device:          readAttr(pciDir, "device"),
 		SubsystemVendor: readAttr(pciDir, "subsystem_vendor"),
@@ -114,6 +116,9 @@ func readHost(root, classDir, name string) (SCSIHost, error) {
 	}
 	return h, nil
 }
+
+// IsRAIDClass indique une classe PCI « contrôleur de stockage RAID » (0x0104xx).
+func (p PCIFunction) IsRAIDClass() bool { return strings.HasPrefix(p.Class, "0x0104") }
 
 // pciParent remonte depuis le répertoire réel de l'hôte jusqu'à la première
 // fonction PCI : un ancêtre dont le nom est une adresse PCI et qui publie
