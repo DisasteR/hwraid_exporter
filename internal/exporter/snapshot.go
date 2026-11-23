@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/DisasteR/hwraid_exporter/internal/module"
 	"github.com/DisasteR/hwraid_exporter/internal/sysfs"
@@ -28,6 +29,7 @@ type Controller struct {
 	Unsupported            []string // collecteurs non pris en charge par la carte
 	CollectError           string   // échec d'une lecture firmware
 	Collected              map[string]bool
+	LastSuccess            map[string]time.Time // collecteur → date du dernier succès
 	CacheProtection        *module.CacheProtection
 	Volumes                []module.Volume
 	Disks                  []module.Disk
@@ -38,12 +40,16 @@ type Snapshot struct {
 	Ready            bool
 	DiscoverySuccess bool
 	Controllers      []Controller
+	// Interval est l'intervalle de collecte effectif.
+	Interval time.Duration
 }
 
 // Build construit l'instantané à partir du plan (cartes et modules) et des
 // résultats de collecte, indexés par adresse PCI. Une carte RAID sans module
 // est inventoriée avec backend_supported à 0.
-func Build(p module.Plan, discoveryOK bool, results map[string]module.Result) Snapshot {
+// Build construit l'instantané d'un cycle. tracker peut être nil (pas de
+// dates de dernier succès).
+func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tracker *Tracker, interval time.Duration) Snapshot {
 	serials := map[string]int{}
 	for _, pc := range p.Cards {
 		if s := firstAttr(pc.Card, func(h sysfs.SCSIHost) string { return h.SerialNumber }); s != "" {
@@ -79,6 +85,9 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result) Sn
 				c.Unsupported = r.Unsupported
 				c.Collected = r.Collected
 				c.CacheProtection = r.CacheProtection
+				if tracker != nil {
+					c.LastSuccess = tracker.Last(addr)
+				}
 				c.Volumes, c.Disks = r.Volumes, r.Disks
 				if r.CollectErr != nil {
 					c.CollectError = r.CollectErr.Error()
@@ -87,7 +96,7 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result) Sn
 		}
 		ctrls = append(ctrls, c)
 	}
-	return Snapshot{Ready: true, DiscoverySuccess: discoveryOK, Controllers: ctrls}
+	return Snapshot{Ready: true, DiscoverySuccess: discoveryOK, Controllers: ctrls, Interval: interval}
 }
 
 func firstAttr(c module.Card, get func(sysfs.SCSIHost) string) string {
@@ -177,6 +186,23 @@ func Render(s Snapshot) string {
 	for _, c := range s.Controllers {
 		if cp := c.CacheProtection; cp != nil && cp.Present {
 			fmt.Fprintf(&b, "hwraid_cache_protection_state{%s} 1\n", labels("controller", c.Label, "state", cp.State))
+		}
+	}
+	gauge("hwraid_collection_interval_seconds", "Intervalle de collecte effectif de la carte.")
+	for _, c := range s.Controllers {
+		if c.Backend != "" && s.Interval > 0 {
+			fmt.Fprintf(&b, "hwraid_collection_interval_seconds{%s} %g\n", labels("controller", c.Label), s.Interval.Seconds())
+		}
+	}
+	gauge("hwraid_collection_last_success_timestamp_seconds", "Date Unix du dernier succès du collecteur.")
+	for _, c := range s.Controllers {
+		names := make([]string, 0, len(c.LastSuccess))
+		for n := range c.LastSuccess {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			fmt.Fprintf(&b, "hwraid_collection_last_success_timestamp_seconds{%s} %d\n", labels("controller", c.Label, "collector", n), c.LastSuccess[n].Unix())
 		}
 	}
 	gauge("hwraid_collection_success", "Résultat de la dernière lecture du collecteur.")

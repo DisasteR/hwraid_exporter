@@ -163,6 +163,7 @@ func serve(args []string) int {
 		}
 	}
 
+	tracker := exporter.NewTracker()
 	collect := func() {
 		hosts, _, err := sysfs.Discover(*root)
 		ok := err == nil
@@ -185,7 +186,10 @@ func serve(args []string) int {
 			}
 			results[pc.Card.PCI.Address] = pc.Module.Collect(pc.Card, module.Refs(nodesDir, pc, specs))
 		}
-		s := exporter.Build(cur, ok, results)
+		if ok {
+			tracker.Update(results, time.Now())
+		}
+		s := exporter.Build(cur, ok, results, tracker, *interval)
 		for _, c := range s.Controllers {
 			if !c.NodeValid {
 				// Adresse PCI et non label : le label peut contenir la série (S9).
