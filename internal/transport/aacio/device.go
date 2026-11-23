@@ -191,12 +191,11 @@ func (d *Device) ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]
 		return nil, err
 	}
 	if head.Mark != 0xc9 || head.Total == 0 || head.Total > maxPagedTotal {
-		openErr := fmt.Errorf("read %d: open refused (mark %#x, size %d)", r, head.Mark, head.Total)
-		if head.Total == 0 || head.Total > maxPagedTotal {
-			// Clôture impossible dans les formes qualifiées : le signaler.
-			return nil, fmt.Errorf("%w; transfer %#x not stopped (size out of bounds)", openErr, head.Xfer)
-		}
-		return nil, errors.Join(openErr, d.stop(r, head, 0))
+		// Ouverture non conforme : rien ne prouve qu'un transfert existe
+		// sous cet identifiant. Aucune clôture n'est envoyée, plutôt que de
+		// clore un transfert peut-être étranger ; le firmware garde au plus
+		// un transfert ouvert, que l'erreur signale.
+		return nil, fmt.Errorf("read %d: open refused (mark %#x, size %d); transfer %#x not stopped", r, head.Mark, head.Total, head.Xfer)
 	}
 	var data []byte
 	last := uint32(0)
@@ -211,8 +210,8 @@ func (d *Device) ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]
 			if err != nil {
 				return err
 			}
-			if c.Xfer != head.Xfer || c.Chunk != n || c.Total != head.Total {
-				return fmt.Errorf("read %d: inconsistent chunk %d (transfer %#x, chunk %d)", r, n, c.Xfer, c.Chunk)
+			if c.Mark != aacraid.MarkChunk || c.Xfer != head.Xfer || c.Chunk != n || c.Total != head.Total {
+				return fmt.Errorf("read %d: inconsistent chunk %d (mark %#x, transfer %#x, chunk %d)", r, n, c.Mark, c.Xfer, c.Chunk)
 			}
 			last = n
 			data = append(data, c.Data...)

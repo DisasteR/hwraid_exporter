@@ -260,3 +260,13 @@ func TestContainerNamePrintable(t *testing.T) {
 		t.Fatalf("%q %v", info.Name, err)
 	}
 }
+
+// Un disque en double dans la liste 247 est refusé : il donnerait deux
+// séries d'inventaire pour un même disque.
+func TestDiskListDuplicate(t *testing.T) {
+	d := fixture(t, "247-0")
+	binary.LittleEndian.PutUint32(d[8:], binary.LittleEndian.Uint32(d[4:]))
+	if _, err := DecodeDiskList(d); err == nil {
+		t.Fatal("disque en double accepté")
+	}
+}

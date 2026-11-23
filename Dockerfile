@@ -6,17 +6,22 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
+# Sans .git dans le contexte, la version et la révision sont passées en
+# arguments (tag et commit en publication, git describe en CI).
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/hwraid-exporter ./cmd/hwraid-exporter
+ARG REVISION=
+RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "-s -w -X main.version=${VERSION} -X main.revision=${REVISION}" -o /out/hwraid-exporter ./cmd/hwraid-exporter
 
 # Aucun shell ni bibliothèque. Le processus démarre en root pour préparer
 # ses nœuds dans le /dev du conteneur, puis abandonne lui-même ses
 # privilèges (UID 65534, CAP_SYS_RAWIO seule) : pas de directive USER.
 FROM scratch
 ARG VERSION=dev
+ARG REVISION=
 LABEL org.opencontainers.image.source="https://github.com/DisasteR/hwraid_exporter" \
       org.opencontainers.image.description="Exporter Prometheus pour contrôleurs RAID matériels" \
-      org.opencontainers.image.version="${VERSION}"
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}"
 COPY --from=build /out/hwraid-exporter /hwraid-exporter
 EXPOSE 9799
 ENTRYPOINT ["/hwraid-exporter"]

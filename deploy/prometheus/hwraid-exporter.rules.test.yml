@@ -303,3 +303,76 @@ tests:
       - eval_time: 15m
         alertname: HwraidControllerDisappeared
         exp_alerts: []
+
+  # Module de protection retiré : l'absence confirmée (present = 0) met fin
+  # à l'alerte de panne sans attendre la fenêtre de 10 minutes.
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_cache_protection_state{controller="serial:A",state="failed"}'
+        values: '1x6 stale _x10'
+      - series: 'hwraid_cache_protection_present{controller="serial:A",type="flash_supercap",vendor_type="zmm"}'
+        values: '1x6 0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: HwraidCacheProtectionFailed
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: "serial:A", state: failed}
+            exp_annotations:
+              summary: "Protection du cache en panne (serial:A)"
+              description: "Le module de protection du cache ne protège plus les données en attente d'écriture. Si le cache d'écriture reste actif, une coupure de courant peut les perdre."
+      - eval_time: 9m
+        alertname: HwraidCacheProtectionFailed
+        exp_alerts: []
+
+  # Carte sans module, nœud invalide, état de volume indéterminé : alerte
+  # après le délai, puis retour à la normale.
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_controller_backend_supported{controller="pci:0000:05:00.0"}'
+        values: '0x70 1x10'
+      - series: 'hwraid_management_node_valid{controller="serial:A"}'
+        values: '0x7 1x80'
+      - series: 'hwraid_volume_state{controller="serial:A",volume="1d000000",state="unknown"}'
+        values: '1x35 stale _x50'
+      - series: 'hwraid_volume_state{controller="serial:A",volume="1d000000",state="optimal"}'
+        values: '_x36 1x50'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: HwraidManagementNodeInvalid
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: HwraidManagementNodeInvalid
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: "serial:A"}
+            exp_annotations:
+              summary: "Nœud de gestion invalide (serial:A)"
+              description: "Le nœud de gestion n'a pas pu être vérifié ou ne désigne pas la carte attendue (erreur de déploiement, carte changée). Aucune lecture n'est faite."
+      - eval_time: 10m
+        alertname: HwraidManagementNodeInvalid
+        exp_alerts: []
+      - eval_time: 29m
+        alertname: HwraidVolumeStateUnknown
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: HwraidVolumeStateUnknown
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: "serial:A", volume: "1d000000", state: unknown}
+            exp_annotations:
+              summary: "État du volume 1d000000 non déterminé (serial:A)"
+              description: "La carte a répondu mais l'état n'est pas interprétable avec certitude (type non qualifié, membre non optimal sur un assemblage). Vérifier les volumes membres et l'outil du constructeur."
+      - eval_time: 40m
+        alertname: HwraidVolumeStateUnknown
+        exp_alerts: []
+      - eval_time: 59m
+        alertname: HwraidControllerUnsupported
+        exp_alerts: []
+      - eval_time: 61m
+        alertname: HwraidControllerUnsupported
+        exp_alerts:
+          - exp_labels: {severity: info, controller: "pci:0000:05:00.0"}
+            exp_annotations:
+              summary: "Contrôleur pci:0000:05:00.0 non pris en charge"
+              description: "Aucun module ne sait lire cette carte : son état n'est pas surveillé."
+      - eval_time: 75m
+        alertname: HwraidControllerUnsupported
+        exp_alerts: []

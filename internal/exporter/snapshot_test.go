@@ -99,8 +99,8 @@ func TestNodeValidity(t *testing.T) {
 }
 
 func TestRenderExposition(t *testing.T) {
-	initial := "# HELP hwraid_exporter_build_info Exporter and Go versions, value 1.\n# TYPE hwraid_exporter_build_info gauge\n" +
-		`hwraid_exporter_build_info{version="` + Version + `",goversion="` + runtime.Version() + `"} 1` + "\n" +
+	initial := "# HELP hwraid_exporter_build_info Exporter version, source revision and Go version, value 1.\n# TYPE hwraid_exporter_build_info gauge\n" +
+		`hwraid_exporter_build_info{version="` + Version + `",revision="` + Revision + `",goversion="` + runtime.Version() + `"} 1` + "\n" +
 		"# HELP hwraid_snapshot_ready 1 once the first discovery has been published.\n# TYPE hwraid_snapshot_ready gauge\nhwraid_snapshot_ready 0\n"
 	if out := Render(Snapshot{}); out != initial {
 		t.Fatalf("vue initiale :\n%s", out)
@@ -345,12 +345,75 @@ func TestDiskOSDeviceRender(t *testing.T) {
 
 // Version publiée dès l'instantané initial, avant toute collecte.
 func TestBuildInfo(t *testing.T) {
-	old := Version
-	Version = "v9.9.9"
-	defer func() { Version = old }()
+	oldV, oldR := Version, Revision
+	Version, Revision = "v9.9.9", "2bc8c58f0e1d"
+	defer func() { Version, Revision = oldV, oldR }()
 	out := Render(Snapshot{})
-	want := `hwraid_exporter_build_info{version="v9.9.9",goversion="` + runtime.Version() + `"} 1`
+	want := `hwraid_exporter_build_info{version="v9.9.9",revision="2bc8c58f0e1d",goversion="` + runtime.Version() + `"} 1`
 	if !strings.Contains(out, want+"\n") {
 		t.Fatalf("ligne absente : %s\n%s", want, out)
+	}
+}
+
+// Scénario de collision : A porte S ; A devient illisible pendant que B
+// présente S ; puis les deux deviennent illisibles. Aucun cycle ne doit
+// publier deux cartes sous le même label.
+func TestIdentityNeverDuplicated(t *testing.T) {
+	const a, b = "0000:01:00.0", "0000:02:00.0"
+	tr := NewTracker()
+	cycle := func(sa, sb string) map[string]string {
+		p := plan(aacHost("host0", a, sa), aacHost("host1", b, sb))
+		s := Build(p, true, valid(p), tr, 0)
+		tr.Remember(s)
+		got, seen := map[string]string{}, map[string]bool{}
+		for _, c := range s.Controllers {
+			if seen[c.Label] {
+				t.Fatalf("label %s publié deux fois (A=%q, B=%q)", c.Label, sa, sb)
+			}
+			seen[c.Label] = true
+			got[c.PCIAddress] = c.Label
+		}
+		return got
+	}
+	if got := cycle("S", ""); got[a] != "serial:S" {
+		t.Fatal(got)
+	}
+	if got := cycle("", "S"); got[a] != "pci:"+a || got[b] != "serial:S" {
+		t.Fatal(got)
+	}
+	// Seule B garde la mémoire de S.
+	if got := cycle("", ""); got[a] != "pci:"+a || got[b] != "serial:S" {
+		t.Fatalf("après les deux lectures ratées : %v", got)
+	}
+}
+
+// Collecteur servi par une réponse gardée : jamais de date de dernier
+// succès, et une date déjà enregistrée est retirée.
+func TestCachedCollectorHasNoLastSuccess(t *testing.T) {
+	const addr = "0000:01:00.0"
+	tr := NewTracker()
+	t0 := time.Unix(1_000_000, 0)
+	tr.Update(map[string]module.Result{addr: {Collected: map[string]bool{"capabilities": true, "volumes": true}}}, []string{addr}, t0)
+	tr.Update(map[string]module.Result{addr: {Collected: map[string]bool{"capabilities": true, "volumes": true}, Cached: []string{"capabilities"}}}, []string{addr}, t0.Add(time.Minute))
+	last := tr.Last(addr)
+	if _, ok := last["capabilities"]; ok || last["volumes"] != t0.Add(time.Minute) {
+		t.Fatalf("%v", last)
+	}
+}
+
+// Seconde ligne de défense : même si deux adresses mémorisaient le même
+// numéro (état que Remember ne doit pas produire), aucun label n'est publié
+// deux fois.
+func TestIdentityDuplicateFallsBackToPCI(t *testing.T) {
+	const a, b = "0000:01:00.0", "0000:02:00.0"
+	tr := NewTracker()
+	tr.serial[a], tr.serial[b] = "serial:S", "serial:S"
+	p := plan(aacHost("host0", a, ""), aacHost("host1", b, ""))
+	got := map[string]string{}
+	for _, c := range Build(p, true, valid(p), tr, 0).Controllers {
+		got[c.PCIAddress] = c.Label + "/" + c.IdentitySource
+	}
+	if got[a] != "pci:"+a+"/pci" || got[b] != "pci:"+b+"/pci" {
+		t.Fatalf("%v", got)
 	}
 }

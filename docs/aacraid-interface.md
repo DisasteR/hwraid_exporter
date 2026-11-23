@@ -253,7 +253,7 @@ Les lectures des sections 4 à 6 forment une interface que le firmware annonce d
 | 32-35 | `Version` : version de la zone d'extension |
 | 144-147 | `SupportedOptions2` |
 
-Une carte sous `aacraid` annonce ces lectures si `Version` est supérieur à 1 et si le bit `0x08` de `SupportedOptions2` est positionné (`AAC_SUPPORTED_ARCIO_PHYDEV` dans FreeBSD). L'exporter exige les deux conditions, sur une réponse 706 valide (commande en écho, taille couvrant ces champs). Une réponse absente ou invalide est un échec de lecture (`hwraid_collection_success{collector="capabilities"} 0`), pas une absence de prise en charge. Si le bit est absent, la carte est publiée comme non prise en charge pour l'état des volumes et des disques, et aucune autre lecture d'état n'est tentée.
+Une carte sous `aacraid` annonce ces lectures si `Version` est supérieur à 1 et si le bit `0x08` de `SupportedOptions2` est positionné (`AAC_SUPPORTED_ARCIO_PHYDEV` dans FreeBSD). L'exporter exige les deux conditions, sur une réponse 706 valide (commande en écho, taille couvrant ces champs). Une réponse absente ou invalide est un échec de lecture (`hwraid_collection_success{collector="capabilities"} 0`), pas une absence de prise en charge. Si le bit est absent, la carte est publiée comme non prise en charge pour l'état des volumes et des disques, leur inventaire et leur emplacement, et aucune de ces lectures n'est tentée. La protection du cache, qui ne relève pas de cette interface, reste lue sur une carte qualifiée (section 8).
 
 Sur l'hôte de référence : `Version` = 15, `SupportedOptions2` = `0x00c8693c` (bit `0x08` positionné).
 

@@ -53,6 +53,9 @@ type Snapshot struct {
 // (hwraid_exporter_build_info).
 var Version = "dev"
 
+// Revision est le commit de la compilation, vide s'il est inconnu.
+var Revision string
+
 // Build construit l'instantané d'un cycle à partir du plan (cartes et
 // modules) et des résultats de collecte, indexés par adresse PCI. Une carte
 // RAID sans module est inventoriée avec backend_supported à 0. tracker peut
@@ -114,6 +117,17 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 		}
 		ctrls = append(ctrls, c)
 	}
+	// Un label serial: ne désigne qu'une carte : si plusieurs le portent
+	// (numéro lu et numéro mémorisé), toutes repassent en pci:.
+	count := map[string]int{}
+	for _, c := range ctrls {
+		count[c.Label]++
+	}
+	for i, c := range ctrls {
+		if c.IdentitySource == "serial" && count[c.Label] > 1 {
+			ctrls[i].Label, ctrls[i].IdentitySource = "pci:"+c.PCIAddress, "pci"
+		}
+	}
 	return Snapshot{Ready: true, DiscoverySuccess: discoveryOK, Controllers: ctrls, Interval: interval}
 }
 
@@ -132,8 +146,8 @@ func Render(s Snapshot) string {
 	gauge := func(name, help string) {
 		fmt.Fprintf(&b, "# HELP %s %s\n# TYPE %s gauge\n", name, help, name)
 	}
-	gauge("hwraid_exporter_build_info", "Exporter and Go versions, value 1.")
-	fmt.Fprintf(&b, "hwraid_exporter_build_info{%s} 1\n", labels("version", Version, "goversion", runtime.Version()))
+	gauge("hwraid_exporter_build_info", "Exporter version, source revision and Go version, value 1.")
+	fmt.Fprintf(&b, "hwraid_exporter_build_info{%s} 1\n", labels("version", Version, "revision", Revision, "goversion", runtime.Version()))
 	gauge("hwraid_snapshot_ready", "1 once the first discovery has been published.")
 	fmt.Fprintf(&b, "hwraid_snapshot_ready %d\n", b2i(s.Ready))
 	if !s.Ready {

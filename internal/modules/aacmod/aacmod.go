@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/DisasteR/hwraid_exporter/internal/aacraid"
@@ -60,7 +61,7 @@ type Module struct {
 	supplement map[string]aacraid.SupplementInfo
 	// connectors garde de même la carte des connecteurs (708), fixe tant que
 	// la carte n'est pas réinitialisée.
-	connectors map[string]aacraid.ConnectorMap
+	connectors map[string]keptMap
 }
 
 // New construit le module avec le transport réel et la liste blanche aacraid.
@@ -143,6 +144,8 @@ func (m *Module) Collect(c module.Card, refs []module.NodeRef) module.Result {
 	key := c.PCI.Address + "|" + strconv.FormatUint(refs[0].Dev, 10)
 	sup, err := m.supplementInfo(key, d)
 	r.Collected = map[string]bool{CapabilitiesCollector: err == nil}
+	// Réponse 706 gardée en mémoire : pas de date de dernier succès.
+	r.Cached = []string{CapabilitiesCollector}
 	if err != nil {
 		r.CollectErr = fmt.Errorf("RequestSupplementAdapterInfo: %w", err)
 		return r
@@ -279,7 +282,7 @@ func osDevices(h sysfs.SCSIHost, inv []aacraid.DiskInfo) []module.DiskOSDevice {
 // ou une réponse est incohérente, et aucun emplacement n'est publié. Un
 // disque sans entrée (derrière un expandeur) n'a pas d'emplacement publié.
 func (m *Module) locations(key string, d device, inv []aacraid.DiskInfo) ([]module.DiskLocation, error) {
-	cm, err := m.connectorMap(key, d)
+	cm, err := m.connectorMap(key, d, inv)
 	if err != nil {
 		return nil, err
 	}
@@ -299,14 +302,33 @@ func (m *Module) locations(key string, d device, inv []aacraid.DiskInfo) ([]modu
 	return out, nil
 }
 
+// keptMap est une carte des connecteurs gardée, avec l'ensemble des disques
+// présents au moment de sa lecture.
+type keptMap struct {
+	cm    aacraid.ConnectorMap
+	disks string
+}
+
+// diskSet résume l'ensemble des disques présents de l'inventaire.
+func diskSet(inv []aacraid.DiskInfo) string {
+	nums := make([]string, 0, len(inv))
+	for _, i := range inv {
+		nums = append(nums, strconv.FormatUint(uint64(i.Number), 10))
+	}
+	sort.Strings(nums)
+	return strings.Join(nums, ",")
+}
+
 // connectorMap lit la carte des connecteurs une fois par carte et par nœud,
-// hors du verrou ; une lecture en échec n'est pas gardée.
-func (m *Module) connectorMap(key string, d device) (aacraid.ConnectorMap, error) {
+// hors du verrou, et la relit quand l'ensemble des disques présents change
+// (disque ajouté ou retiré à chaud). Une lecture en échec n'est pas gardée.
+func (m *Module) connectorMap(key string, d device, inv []aacraid.DiskInfo) (aacraid.ConnectorMap, error) {
+	set := diskSet(inv)
 	m.mu.Lock()
-	cm, ok := m.connectors[key]
+	k, ok := m.connectors[key]
 	m.mu.Unlock()
-	if ok {
-		return cm, nil
+	if ok && k.disks == set {
+		return k.cm, nil
 	}
 	cm, err := d.ConnectorMap()
 	if err != nil {
@@ -315,9 +337,9 @@ func (m *Module) connectorMap(key string, d device) (aacraid.ConnectorMap, error
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.connectors == nil {
-		m.connectors = map[string]aacraid.ConnectorMap{}
+		m.connectors = map[string]keptMap{}
 	}
-	m.connectors[key] = cm
+	m.connectors[key] = keptMap{cm: cm, disks: set}
 	return cm, nil
 }
 
@@ -394,6 +416,9 @@ func readConfiguration(d device) ([]module.Volume, []module.Disk, []uint32, erro
 		}
 		if cs[i].Members, err = aacraid.DecodeMemberList(raw); err != nil {
 			return nil, nil, nil, err
+		}
+		if len(cs[i].Members) != cs[i].Info.Members {
+			return nil, nil, nil, fmt.Errorf("container %#x: %d members announced, %d listed", cs[i].Info.UID, cs[i].Info.Members, len(cs[i].Members))
 		}
 	}
 	ev := aacraid.Evaluate(cs, disks)

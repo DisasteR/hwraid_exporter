@@ -1,49 +1,82 @@
 name: release
 
-# Publication de l'image sur un tag de version (vX.Y.Z) seulement : le tag
-# est immuable, aucune étiquette flottante (latest) n'est publiée.
+# Publication sur un tag de version (vX.Y.Z) seulement, après la suite CI
+# complète sur le commit tagué. Le tag d'image est immuable : une version
+# déjà publiée est refusée, aucune étiquette flottante (latest) n'existe.
 on:
   push:
     tags: ['v*.*.*']
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
-  image:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: ci
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write # publication GitHub (binaire, SHA-256)
+      packages: write # image GHCR
     env:
       IMAGE: ghcr.io/disaster/hwraid_exporter
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
 
-      - name: Tag de version valide
-        run: echo "$GITHUB_REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'
+      - name: Tag de version sur main
+        run: |
+          echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          grep -q "^## $TAG " CHANGELOG.md
 
-      - name: Contenu publiable
-        run: sh scripts/check-public.sh
+      - name: Version absente du registre
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          if docker manifest inspect "$IMAGE:$TAG" >/dev/null 2>&1; then
+            echo "$IMAGE:$TAG existe déjà : une version publiée n'est pas remplacée" >&2; exit 1
+          fi
 
       - name: Construction
-        run: docker build --build-arg VERSION="$GITHUB_REF_NAME" -t "$IMAGE:$GITHUB_REF_NAME" .
+        run: docker build --build-arg VERSION="$TAG" --build-arg REVISION="$GITHUB_SHA" -t "$IMAGE:$TAG" .
 
-      - name: Essai au profil du NAS (sans carte)
+      - name: Essai de l'image au profil du NAS (sans carte)
         run: |
           docker run -d --name hw --read-only \
             --cap-drop ALL --cap-add MKNOD --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add SYS_RAWIO \
             --device-cgroup-rule 'c *:* r' --security-opt no-new-privileges \
-            -p 127.0.0.1:9800:9799 "$IMAGE:$GITHUB_REF_NAME"
+            -p 127.0.0.1:9800:9799 "$IMAGE:$TAG"
           for i in $(seq 1 20); do curl -fsS http://127.0.0.1:9800/metrics > m.txt 2>/dev/null && grep -q '^hwraid_snapshot_ready 1$' m.txt && break; sleep 0.5; done
           docker logs hw; cat m.txt
           grep -qx 'hwraid_snapshot_ready 1' m.txt
-          grep -q "^hwraid_exporter_build_info{version=\"$GITHUB_REF_NAME\"," m.txt
+          grep -q "^hwraid_exporter_build_info{version=\"$TAG\",revision=\"$GITHUB_SHA\"," m.txt
           pid=$(docker inspect -f '{{.State.Pid}}' hw)
           grep -qE '^Uid:\s+65534\s+65534\s+65534\s+65534$' /proc/$pid/status
           grep -qE '^NoNewPrivs:\s+1$' /proc/$pid/status
           docker rm -f hw
 
-      - name: Publication
+      - name: Binaire de l'image et somme SHA-256
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker push "$IMAGE:$GITHUB_REF_NAME"
-          docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$GITHUB_REF_NAME"
+          mkdir -p dist
+          id=$(docker create "$IMAGE:$TAG")
+          docker cp "$id:/hwraid-exporter" "dist/hwraid-exporter-$TAG-linux-amd64"
+          docker rm "$id"
+          test "$(dist/hwraid-exporter-$TAG-linux-amd64 version)" = "$TAG"
+          (cd dist && sha256sum hwraid-exporter-*-linux-amd64 > SHA256SUMS && cat SHA256SUMS)
+
+      - name: Publication de l'image
+        run: |
+          docker push "$IMAGE:$TAG"
+          docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$TAG" | tee digest.txt
+
+      - name: Publication GitHub
+        run: |
+          awk -v t="## $TAG " 'index($0, t) == 1 {f = 1; next} /^## / {f = 0} f' CHANGELOG.md > notes.md
+          printf '\nImage : `%s`\n' "$(cat digest.txt)" >> notes.md
+          gh release create "$TAG" --verify-tag --title "$TAG" --notes-file notes.md \
+            "dist/hwraid-exporter-$TAG-linux-amd64" dist/SHA256SUMS
