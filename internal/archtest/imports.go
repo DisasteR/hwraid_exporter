@@ -19,7 +19,7 @@ var Forbidden = []string{"syscall", "golang.org/x/sys/unix", "unsafe"}
 
 // AllowedDirs : répertoires (relatifs à la racine du module) qui peuvent
 // les importer.
-var AllowedDirs = []string{"internal/transport", "internal/nodes", "internal/privilege"}
+var AllowedDirs = []string{"internal/transport", "internal/nodes", "internal/privilege", "internal/lifecycle"}
 
 // skipDirs : répertoires jamais analysés (le piège de test vit dans testdata
 // et n'est analysé que lorsqu'on le désigne explicitement comme racine).
