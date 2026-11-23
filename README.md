@@ -37,6 +37,7 @@ sudo ./hwraid-exporter serve -listen 127.0.0.1:9799 -interval 1m
 |---|---|---|
 | `-listen` | `127.0.0.1:9799` | HTTP listen address |
 | `-interval` | `1m` | Collection interval (controller commands are sent at this pace, not at scrape time) |
+| `-collect-timeout` | smaller of `30s` and `-interval` | Maximum time to wait for one card in a cycle. A card that does not answer in time is published with failed collectors; the others are not delayed. A card stuck in a controller command is not queried again until that command returns. |
 | `-uid`, `-gid` | `65534` | Identity after the privilege drop (root refused) |
 | `-sysfs` | `/sys` | sysfs root (tests) |
 
@@ -55,6 +56,10 @@ services:
       - "c *:* r"
     security_opt:
       - no-new-privileges:true
+    # The default listen address (127.0.0.1) is unreachable from outside the
+    # container: attach it to Prometheus' network, or publish the port behind
+    # a firewall.
+    command: ["serve", "-listen", "0.0.0.0:9799"]
     restart: unless-stopped
 ```
 

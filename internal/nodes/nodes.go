@@ -77,7 +77,11 @@ var ErrForeignEntry = errors.New("entrée étrangère dans le répertoire des n�
 // en 0600 pour uid:gid ; le répertoire appartient à root:gid en 0750.
 // majors est la table des majors caractère lue dans /proc/devices : un
 // nœud dont le major ne correspond pas à celui de son pilote est refusé.
-func Sync(dir string, specs []Spec, majors map[string]uint32, uid, gid int) (Report, error) {
+// prune autorise la suppression des nœuds non attendus. L'appelant le met
+// à false quand son inventaire est incomplet (erreur de découverte, major
+// non résolu) : une absence non prouvée ne justifie aucune suppression.
+// Les temporaires abandonnés sont toujours retirés.
+func Sync(dir string, specs []Spec, majors map[string]uint32, uid, gid int, prune bool) (Report, error) {
 	var rep Report
 	want := map[string]Spec{}
 	for _, s := range specs {
@@ -111,6 +115,19 @@ func Sync(dir string, specs []Spec, majors map[string]uint32, uid, gid int) (Rep
 		return rep, err
 	}
 
+	// Temporaires d'une préparation interrompue : retirés avant toute
+	// création, qui réutilise le même nom.
+	for _, name := range sortedKeys(existing) {
+		if !strings.HasPrefix(name, tmpPrefix) {
+			continue
+		}
+		if err := unix.Unlinkat(dfd, name, 0); err != nil {
+			return rep, fmt.Errorf("suppression de %s : %w", name, err)
+		}
+		delete(existing, name)
+		rep.Removed = append(rep.Removed, name)
+	}
+
 	// 2. Créations, remplacements, corrections.
 	for _, name := range sortedKeys(want) {
 		s := want[name]
@@ -135,7 +152,10 @@ func Sync(dir string, specs []Spec, majors map[string]uint32, uid, gid int) (Rep
 			}
 		}
 	}
-	// 3. Suppression des nœuds obsolètes et des temporaires abandonnés.
+	// 3. Suppression des nœuds obsolètes, si l'inventaire est complet.
+	if !prune {
+		return rep, nil
+	}
 	for _, name := range sortedKeys(existing) {
 		if _, keep := want[name]; keep {
 			continue

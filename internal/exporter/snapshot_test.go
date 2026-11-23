@@ -15,6 +15,7 @@ type fakeMod struct{}
 func (fakeMod) Name() string                                    { return "aacraid" }
 func (fakeMod) Match(c module.Card) bool                        { return c.PCI.Driver == "aacraid" }
 func (fakeMod) Capabilities() uint64                            { return 1 << 17 }
+func (fakeMod) Collectors() []string                            { return []string{"volumes"} }
 func (fakeMod) Nodes(module.Card) ([]module.NodeRequest, error) { return nil, nil }
 func (fakeMod) Collect(module.Card, []module.NodeRef) module.Result {
 	return module.Result{NodeValid: true}
@@ -218,9 +219,10 @@ func TestLastSuccessAndInterval(t *testing.T) {
 	tr := NewTracker()
 	t0 := time.Unix(1_000_000, 0)
 	ok := map[string]module.Result{"0000:01:00.0": {NodeValid: true, Collected: map[string]bool{"volumes": true, "disks": true}}}
-	tr.Update(ok, t0)
+	present := []string{"0000:01:00.0"}
+	tr.Update(ok, present, t0)
 	failed := map[string]module.Result{"0000:01:00.0": {NodeValid: true, Collected: map[string]bool{"volumes": false, "disks": true}}}
-	tr.Update(failed, t0.Add(time.Minute))
+	tr.Update(failed, present, t0.Add(time.Minute))
 	out := Render(Build(p, true, failed, tr, 90*time.Second))
 	for _, line := range []string{
 		`hwraid_collection_interval_seconds{controller="serial:S1"} 90`,
@@ -231,7 +233,12 @@ func TestLastSuccessAndInterval(t *testing.T) {
 			t.Fatalf("ligne absente : %s\n%s", line, out)
 		}
 	}
-	tr.Update(map[string]module.Result{}, t0.Add(2*time.Minute))
+	// Carte présente mais non collectée (collecte suspendue) : dates conservées.
+	tr.Update(map[string]module.Result{}, present, t0.Add(2*time.Minute))
+	if tr.Last("0000:01:00.0")["volumes"] != t0 {
+		t.Fatal("dates perdues pour une carte présente non collectée")
+	}
+	tr.Update(map[string]module.Result{}, nil, t0.Add(3*time.Minute))
 	if tr.Last("0000:01:00.0") != nil {
 		t.Fatal("carte retirée encore suivie")
 	}
@@ -239,5 +246,46 @@ func TestLastSuccessAndInterval(t *testing.T) {
 	unsupported := plan(sysfs.SCSIHost{Name: "host7", ProcName: "inconnu", PCI: sysfs.PCIFunction{Address: "0000:05:00.0", Driver: "inconnu", Class: "0x010400"}})
 	if out := Render(Build(unsupported, true, nil, tr, time.Minute)); strings.Contains(out, "hwraid_collection_interval_seconds{") {
 		t.Fatalf("intervalle publié pour une carte sans module :\n%s", out)
+	}
+}
+
+// Identité : un numéro de série illisible ne renomme pas la carte ; un autre
+// numéro, ou une carte retirée de l'inventaire, met fin à la mémoire.
+func TestIdentityStableOnUnreadableSerial(t *testing.T) {
+	const addr = "0000:01:00.0"
+	label := func(tr *Tracker, hosts ...sysfs.SCSIHost) string {
+		p := plan(hosts...)
+		s := Build(p, true, valid(p), tr, 0)
+		tr.Remember(s)
+		for _, c := range s.Controllers {
+			if c.PCIAddress == addr {
+				return c.Label + "/" + c.IdentitySource
+			}
+		}
+		return ""
+	}
+	tr := NewTracker()
+	if got := label(tr, aacHost("host0", addr, "S1")); got != "serial:S1/serial" {
+		t.Fatal(got)
+	}
+	if got := label(tr, aacHost("host0", addr, "")); got != "serial:S1/serial" {
+		t.Fatalf("série illisible : %s", got)
+	}
+	// Une autre carte présente maintenant S1 : pas de doublon de label.
+	if got := label(tr, aacHost("host0", addr, ""), aacHost("host1", "0000:02:00.0", "S1")); got != "pci:"+addr+"/pci" {
+		t.Fatalf("doublon : %s", got)
+	}
+	// Autre numéro : autre carte.
+	if got := label(tr, aacHost("host0", addr, "S2")); got != "serial:S2/serial" {
+		t.Fatal(got)
+	}
+	// Carte retirée puis revenue sans numéro : plus de mémoire.
+	tr.Update(nil, nil, time.Now())
+	if got := label(tr, aacHost("host0", addr, "")); got != "pci:"+addr+"/pci" {
+		t.Fatalf("mémoire après retrait : %s", got)
+	}
+	// Sans suivi : comportement d'origine.
+	if got := label(nil, aacHost("host0", addr, "")); got != "pci:"+addr+"/pci" {
+		t.Fatal(got)
 	}
 }

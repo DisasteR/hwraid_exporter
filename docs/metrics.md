@@ -6,7 +6,7 @@ Référence des métriques publiées sur `/metrics`. Le contrat d'ensemble (prin
 
 Les métriques sont **les mêmes quel que soit le pilote, le contrôleur ou le constructeur**. Un module de pilote traduit ce que dit sa carte dans le vocabulaire commun ci-dessous ; les termes propres au constructeur ne sont publiés que dans des labels `vendor_*`, à titre d'information.
 
-- **Identité.** Toutes les séries d'une carte portent `controller` : `serial:<numéro>` si le numéro de série matériel est valide et unique sur l'hôte, sinon `pci:<domaine:bus:slot.fonction>`.
+- **Identité.** Toutes les séries d'une carte portent `controller` : `serial:<numéro>` si le numéro de série matériel est valide et unique sur l'hôte, sinon `pci:<domaine:bus:slot.fonction>`. Une identité `serial:` établie est conservée tant que la carte reste à la même adresse PCI et que son numéro devient seulement illisible (attribut vide) : une lecture sysfs ratée ne renomme pas toutes ses séries. Un autre numéro désigne une autre carte. Au démarrage, sans identité établie, une carte au numéro illisible est publiée en `pci:`.
 - **Objets locaux.** `volume` et `disk` sont des identifiants propres à la carte, stables tant que la configuration ne change pas : UID du conteneur en hexadécimal pour `volume` (aacraid), `d<numéro>` pour `disk`. Ils n'ont de sens qu'avec `controller`.
 - **États.** Une série d'état vaut 1 et porte l'état observé dans le label `state`, pris dans un vocabulaire fermé (ci-dessous). Une seule série par objet à un instant donné.
 - **Absence.** Une valeur non observée n'est pas publiée : lecture en échec, état non établi ou fonction non prise en charge. L'absence d'une série ne signifie jamais « tout va bien » : elle se surveille avec `hwraid_collection_success` et `hwraid_collector_supported`.
@@ -33,7 +33,7 @@ Valeurs réservées pour les modules à venir, non publiées aujourd'hui : `redu
 | Métrique | Labels | Valeur |
 |---|---|---|
 | `hwraid_snapshot_ready` | — | 0 avant la première découverte publiée, puis 1 |
-| `hwraid_discovery_success` | — | 1 si la dernière découverte des cartes dans sysfs a abouti |
+| `hwraid_discovery_success` | — | 1 si la dernière découverte des cartes dans sysfs a abouti pour tous les hôtes SCSI ; 0 si sysfs ou au moins un hôte est illisible (une carte peut alors manquer à l'inventaire) |
 
 ### Contrôleur
 
@@ -41,7 +41,7 @@ Valeurs réservées pour les modules à venir, non publiées aujourd'hui : `redu
 |---|---|---|
 | `hwraid_controller_info` | `controller`, `identity_source` (`serial` ou `pci`), `pci_address`, `driver`, `backend`, `model`, `firmware` | 1 |
 | `hwraid_controller_backend_supported` | `controller` | 1 si un module sait collecter cette carte |
-| `hwraid_management_node_valid` | `controller` | 1 si le nœud de gestion dédié désigne bien la carte ; 0 sinon (erreur de déploiement) |
+| `hwraid_management_node_valid` | `controller` | 1 si le nœud de gestion dédié désigne bien la carte ; 0 s'il n'a pas pu être préparé ou vérifié, ou désigne une autre carte (erreur de déploiement). Absente pour une carte sans module et pour une carte dont la collecte a dépassé son délai pendant ce cycle (rien n'a été observé) |
 
 ### Collecte
 
@@ -52,7 +52,9 @@ Valeurs réservées pour les modules à venir, non publiées aujourd'hui : `redu
 | `hwraid_collection_last_success_timestamp_seconds` | `controller`, `collector` | date Unix du dernier cycle où la lecture a abouti ; absente tant qu'elle n'a jamais abouti depuis le démarrage de l'exporter |
 | `hwraid_collection_interval_seconds` | `controller` | intervalle de collecte effectif (option `-interval`), publié pour chaque carte prise en charge |
 
-L'intervalle permet d'écrire des règles qui s'adaptent au réglage, par exemple « aucun succès depuis plus de trois cycles » : `time() - hwraid_collection_last_success_timestamp_seconds > on (controller) group_left 3 * hwraid_collection_interval_seconds`.
+**Collecte hors délai.** Les cartes sont collectées en parallèle ; une carte qui n'a pas répondu dans le délai (`-collect-timeout`, 30 s par défaut ou l'intervalle s'il est plus court) est publiée avec tous ses collecteurs à 0, sans série d'état, et ses dates de dernier succès sont conservées. Tant que la commande bloquée n'a pas rendu la main, aucune nouvelle commande n'est envoyée à cette carte.
+
+L'intervalle permet d'écrire des règles qui s'adaptent au réglage, par exemple « aucun succès depuis plus de trois cycles » : `time() - hwraid_collection_last_success_timestamp_seconds > on (job, instance, controller) group_left 3 * hwraid_collection_interval_seconds`. Joindre toujours aussi sur `job` et `instance` : deux hôtes peuvent publier le même identifiant `pci:`.
 
 Collecteurs du module aacraid : `capabilities` (capacités de la carte), `volumes`, `disks`, `cache_protection`.
 

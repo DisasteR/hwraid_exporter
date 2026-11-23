@@ -104,13 +104,29 @@ tests:
       - series: 'hwraid_collection_success{controller="serial:A",collector="volumes"}'
         values: '1x35'
     alert_rule_test:
-      - eval_time: 18m
+      - eval_time: 3m
+        alertname: HwraidVolumeDisappeared
+        exp_alerts: []
+      # Toujours signalé longtemps après la disparition.
+      - eval_time: 34m
         alertname: HwraidVolumeDisappeared
         exp_alerts:
           - exp_labels: {severity: warning, controller: "serial:A", volume: b3, name: x, raid_level: raid1, vendor_level: "1"}
             exp_annotations:
               summary: "Volume b3 disparu (serial:A)"
-              description: "Le volume était présent il y a 15 minutes et n'apparaît plus alors que la lecture des volumes réussit : suppression ou perte du volume."
+              description: "Le volume a été vu dans les dernières 24 heures et n'apparaît plus alors que la lecture des volumes réussit : suppression ou perte du volume."
+
+  # Volume absent pendant une lecture en échec : pas de disparition.
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_volume_info{controller="serial:A",volume="b3",name="x",raid_level="raid1",vendor_level="1",parent=""}'
+        values: '1x5 _x20'
+      - series: 'hwraid_collection_success{controller="serial:A",collector="volumes"}'
+        values: '1x5 0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: HwraidVolumeDisappeared
+        exp_alerts: []
 
   # Exporter absent.
   - interval: 1m
@@ -165,4 +181,125 @@ tests:
           - exp_labels: {severity: info, controller: "serial:B"}
             exp_annotations:
               summary: "Intervalle de collecte de 600 s : allonger les fenêtres des règles d'état (serial:B)"
-              description: "Les règles d'état utilisent max_over_time sur 10 minutes, soit au moins deux cycles pour un intervalle de 5 minutes au plus. Au-delà, passer ces fenêtres à au moins deux fois l'intervalle."
+              description: "Les règles d'état retiennent la dernière valeur connue sur 10 minutes, soit au moins deux cycles pour un intervalle de 5 minutes au plus. Au-delà, passer ces fenêtres à au moins deux fois l'intervalle."
+
+  # État passager : un seul cycle « dégradé » puis optimal ne déclenche pas
+  # d'alerte (le délai de 5 min porte sur l'état courant).
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_volume_state{controller="serial:A",volume="b3",state="optimal"}'
+        values: '1x2 stale 1x20'
+      - series: 'hwraid_volume_state{controller="serial:A",volume="b3",state="degraded"}'
+        values: '_x3 1 stale _x20'
+      - series: 'hwraid_disk_state{controller="serial:A",disk="d7",state="online"}'
+        values: '1x2 stale 1x20'
+      - series: 'hwraid_disk_state{controller="serial:A",disk="d7",state="failed"}'
+        values: '_x3 1 stale _x20'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: HwraidVolumeDegraded
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: HwraidDiskFailed
+        exp_alerts: []
+
+  # Deux hôtes publient le même identifiant de contrôleur : les jointures
+  # ne les mélangent pas. Seul l'hôte a dépasse trois cycles.
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_collection_last_success_timestamp_seconds{job="hwraid",instance="a:9799",controller="pci:0000:01:00.0",collector="volumes"}'
+        values: '0x20'
+      - series: 'hwraid_collection_interval_seconds{job="hwraid",instance="a:9799",controller="pci:0000:01:00.0"}'
+        values: '60x20'
+      - series: 'hwraid_collection_last_success_timestamp_seconds{job="hwraid",instance="b:9799",controller="pci:0000:01:00.0",collector="volumes"}'
+        values: '0+60x20'
+      - series: 'hwraid_collection_interval_seconds{job="hwraid",instance="b:9799",controller="pci:0000:01:00.0"}'
+        values: '60x20'
+      - series: 'hwraid_volume_state{job="hwraid",instance="a:9799",controller="pci:0000:01:00.0",volume="1",state="degraded"}'
+        values: '1 stale _x20'
+      - series: 'hwraid_volume_state{job="hwraid",instance="b:9799",controller="pci:0000:01:00.0",volume="1",state="optimal"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HwraidCollectionStale
+        exp_alerts:
+          - exp_labels: {severity: warning, job: hwraid, instance: "a:9799", controller: "pci:0000:01:00.0", collector: volumes}
+            exp_annotations:
+              summary: "Lecture volumes sans succès depuis plus de 3 cycles (pci:0000:01:00.0)"
+              description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter."
+      # Trou de lecture sur a : la panne de a reste visible malgré le volume
+      # optimal de même identifiant sur b.
+      - eval_time: 6m
+        alertname: HwraidVolumeDegraded
+        exp_alerts:
+          - exp_labels: {severity: critical, job: hwraid, instance: "a:9799", controller: "pci:0000:01:00.0", volume: "1", state: degraded}
+            exp_annotations:
+              summary: "Volume RAID 1 dégradé, sans reconstruction (pci:0000:01:00.0)"
+              description: "Le volume fonctionne sans redondance. Remplacer le disque en panne ; une seconde panne dans ce volume serait fatale."
+
+  # Contrôleur disparu alors que la découverte réussit ; découverte en
+  # échec ; collecte jamais publiée ; exporter injoignable.
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_controller_info{job="hwraid",instance="a:9799",controller="serial:A",identity_source="serial",pci_address="0000:01:00.0",driver="aacraid",backend="aacraid",model="6805",firmware="x"}'
+        values: '1x3 stale _x30'
+      - series: 'hwraid_discovery_success{job="hwraid",instance="a:9799"}'
+        values: '1x30'
+      - series: 'hwraid_discovery_success{job="hwraid",instance="b:9799"}'
+        values: '0x30'
+      - series: 'hwraid_snapshot_ready{job="hwraid",instance="b:9799"}'
+        values: '0x30'
+      - series: 'hwraid_snapshot_ready{job="hwraid",instance="c:9799"}'
+        values: '1x5 stale _x25'
+      - series: 'up{job="hwraid",instance="c:9799"}'
+        values: '1x5 0x25'
+      - series: 'up{job="autre",instance="d:9100"}'
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: HwraidControllerDisappeared
+        exp_alerts:
+          - exp_labels: {severity: warning, job: hwraid, instance: "a:9799", controller: "serial:A", identity_source: serial, pci_address: "0000:01:00.0", driver: aacraid, backend: aacraid, model: "6805", firmware: x}
+            exp_annotations:
+              summary: "Contrôleur serial:A disparu"
+              description: "La carte a été vue dans les dernières 24 heures et n'est plus découverte : carte retirée, pilote déchargé ou identité changée."
+      - eval_time: 16m
+        alertname: HwraidDiscoveryFailed
+        exp_alerts:
+          - exp_labels: {severity: warning, job: hwraid, instance: "b:9799"}
+            exp_annotations:
+              summary: "Découverte des contrôleurs en échec (b:9799)"
+              description: "L'exporter ne parvient pas à lire tout ou partie de l'inventaire sysfs : une carte peut ne plus être surveillée. Voir le journal de l'exporter."
+      - eval_time: 11m
+        alertname: HwraidSnapshotNotReady
+        exp_alerts:
+          - exp_labels: {severity: warning, job: hwraid, instance: "b:9799"}
+            exp_annotations:
+              summary: "Aucune collecte publiée (b:9799)"
+              description: "L'exporter répond mais n'a encore publié aucun résultat de collecte. Voir le journal de l'exporter."
+      - eval_time: 20m
+        alertname: HwraidExporterDown
+        exp_alerts:
+          - exp_labels: {severity: warning, job: hwraid, instance: "c:9799"}
+            exp_annotations:
+              summary: "hwraid_exporter injoignable (c:9799)"
+              description: "Prometheus ne collecte plus cet exporter : aucune alerte RAID de cet hôte ne peut se déclencher."
+
+  # Pas de disparition : carte absente pendant une découverte en échec
+  # (hôte e) ; mise à jour du firmware, qui change le label (hôte f).
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_controller_info{job="hwraid",instance="e:9799",controller="serial:E",identity_source="serial",pci_address="0000:01:00.0",driver="aacraid",backend="aacraid",model="6805",firmware="x"}'
+        values: '1x3 stale _x20'
+      - series: 'hwraid_discovery_success{job="hwraid",instance="e:9799"}'
+        values: '1x3 0x20'
+      - series: 'hwraid_controller_info{job="hwraid",instance="f:9799",controller="serial:F",identity_source="serial",pci_address="0000:01:00.0",driver="aacraid",backend="aacraid",model="6805",firmware="x"}'
+        values: '1x3 stale _x20'
+      - series: 'hwraid_controller_info{job="hwraid",instance="f:9799",controller="serial:F",identity_source="serial",pci_address="0000:01:00.0",driver="aacraid",backend="aacraid",model="6805",firmware="y"}'
+        values: '_x4 1x20'
+      - series: 'hwraid_discovery_success{job="hwraid",instance="f:9799"}'
+        values: '1x24'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: HwraidControllerDisappeared
+        exp_alerts: []

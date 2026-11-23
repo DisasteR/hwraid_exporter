@@ -18,6 +18,7 @@ type fake struct {
 func (f fake) Name() string                        { return f.name }
 func (f fake) Match(c Card) bool                   { return c.PCI.Driver == f.driver }
 func (f fake) Capabilities() uint64                { return f.caps }
+func (fake) Collectors() []string                  { return nil }
 func (f fake) Collect(Card, []NodeRef) Result      { return Result{NodeValid: true} }
 func (f fake) Nodes(c Card) ([]NodeRequest, error) { return f.nodes(c) }
 

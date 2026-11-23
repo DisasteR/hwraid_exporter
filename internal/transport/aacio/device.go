@@ -140,6 +140,24 @@ func (d *Device) CacheProtection() (present bool, st aacraid.ZMMStatus, err erro
 	return true, st, err
 }
 
+// stop clôture le transfert après le morceau n et vérifie la confirmation
+// (marque 0xc6, même transfert).
+func (d *Device) stop(r aacraid.PagedRead, head aacraid.PagedResponse, n uint32) error {
+	req := aacraid.StopRequest(head.Total, head.Xfer, n)
+	rsp, err := d.fib(append([]byte(nil), req...))
+	if err != nil {
+		return fmt.Errorf("lecture %d : clôture : %w", r, err)
+	}
+	s, err := aacraid.DecodePagedResponse(req, rsp)
+	if err != nil {
+		return fmt.Errorf("lecture %d : clôture : %w", r, err)
+	}
+	if s.Mark != 0xc6 || s.Xfer != head.Xfer {
+		return fmt.Errorf("lecture %d : clôture non confirmée (marque %#x, transfert %#x)", r, s.Mark, s.Xfer)
+	}
+	return nil
+}
+
 // maxPagedTotal borne la taille d'un transfert accepté (plus grande taille
 // qualifiée : liste des disques, 4 100 octets).
 const maxPagedTotal = 0x1004
@@ -159,10 +177,16 @@ func (d *Device) ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]
 	}
 	head, err := aacraid.DecodePagedResponse(open, rsp)
 	if err != nil {
+		// Statut d'échec ou écho incorrect : aucun transfert établi.
 		return nil, err
 	}
 	if head.Mark != 0xc9 || head.Total == 0 || head.Total > maxPagedTotal {
-		return nil, fmt.Errorf("lecture %d : ouverture refusée (marque %#x, taille %d)", r, head.Mark, head.Total)
+		openErr := fmt.Errorf("lecture %d : ouverture refusée (marque %#x, taille %d)", r, head.Mark, head.Total)
+		if head.Total == 0 || head.Total > maxPagedTotal {
+			// Clôture impossible dans les formes qualifiées : le signaler.
+			return nil, fmt.Errorf("%w ; transfert %#x non clôturé (taille hors bornes)", openErr, head.Xfer)
+		}
+		return nil, errors.Join(openErr, d.stop(r, head, 0))
 	}
 	var data []byte
 	last := uint32(0)
@@ -184,6 +208,9 @@ func (d *Device) ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]
 			data = append(data, c.Data...)
 			if len(data) >= int(head.Total) {
 				data = data[:head.Total]
+				if want := need(data); want > len(data) {
+					return fmt.Errorf("lecture %d : %d octets nécessaires, transfert de %d", r, want, len(data))
+				}
 				return nil
 			}
 			if want := need(data); want <= len(data) {
@@ -194,19 +221,8 @@ func (d *Device) ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]
 		}
 		return nil
 	}()
-	stop := aacraid.StopRequest(head.Total, head.Xfer, last)
-	stopRsp, stopErr := d.fib(append([]byte(nil), stop...))
-	if stopErr == nil {
-		var s aacraid.PagedResponse
-		if s, stopErr = aacraid.DecodePagedResponse(stop, stopRsp); stopErr == nil && s.Mark != 0xc6 {
-			stopErr = fmt.Errorf("lecture %d : clôture non confirmée (marque %#x)", r, s.Mark)
-		}
-	}
-	if readErr != nil {
-		return nil, readErr
-	}
-	if stopErr != nil {
-		return nil, stopErr
+	if err := errors.Join(readErr, d.stop(r, head, last)); err != nil {
+		return nil, err
 	}
 	return data, nil
 }

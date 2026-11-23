@@ -76,7 +76,7 @@ func TestSyncRefusesForeignEntries(t *testing.T) {
 			must(t, os.Chmod(dir, 0o750)) // répertoire sûr : seul le cas testé doit provoquer le refus
 			tc.setup(dir)
 			before := snapshot(t, dir)
-			_, err := Sync(dir, []Spec{{"aac0", "aac", 1, 3}}, testMajors, 65534, 65534)
+			_, err := Sync(dir, []Spec{{"aac0", "aac", 1, 3}}, testMajors, 65534, 65534, true)
 			if !errors.Is(err, ErrForeignEntry) {
 				t.Fatalf("ErrForeignEntry attendu, obtenu %v", err)
 			}
@@ -93,7 +93,7 @@ func TestSyncRefusesWritableDirectory(t *testing.T) {
 	for _, mode := range []os.FileMode{0o777, 0o770, 0o702} {
 		dir := t.TempDir()
 		must(t, os.Chmod(dir, mode))
-		if _, err := Sync(dir, nil, testMajors, 65534, 65534); err == nil {
+		if _, err := Sync(dir, nil, testMajors, 65534, 65534, true); err == nil {
 			t.Fatalf("mode %o accepté", mode)
 		}
 		st, err := os.Stat(dir)
@@ -110,7 +110,7 @@ func TestSyncRefusesSymlinkDirectory(t *testing.T) {
 	must(t, os.Mkdir(target, 0o755))
 	link := filepath.Join(base, "hwraid_exporter")
 	must(t, os.Symlink(target, link))
-	if _, err := Sync(link, nil, testMajors, 65534, 65534); err == nil {
+	if _, err := Sync(link, nil, testMajors, 65534, 65534, true); err == nil {
 		t.Fatal("un lien symbolique à la place du répertoire doit être refusé")
 	}
 	if entries, _ := os.ReadDir(target); len(entries) != 0 {
@@ -128,7 +128,7 @@ func TestSyncRejectsInvalidSpecs(t *testing.T) {
 		{{"aac0", "aac", 8, 0}},                              // major différent de celui du pilote
 		{{"megaraid_sas_ioctl", "megaraid_sas_ioctl", 1, 0}}, // pilote absent de la table
 	} {
-		if _, err := Sync(dir, specs, testMajors, 65534, 65534); err == nil {
+		if _, err := Sync(dir, specs, testMajors, 65534, 65534, true); err == nil {
 			t.Fatalf("specs acceptées : %+v", specs)
 		}
 	}
@@ -149,7 +149,7 @@ func TestSyncLifecycleAsRoot(t *testing.T) {
 	// Création pour root d'abord : le test, root sans CAP_DAC_OVERRIDE dans le
 	// profil du conteneur, ne peut ouvrir qu'un nœud qui lui appartient.
 	// L'ouverture prouve que le nœud est utilisable (pas de montage nodev).
-	rep, err := Sync(dir, []Spec{null}, testMajors, 0, 0)
+	rep, err := Sync(dir, []Spec{null}, testMajors, 0, 0, true)
 	if err != nil || len(rep.Created) != 1 {
 		t.Fatalf("création : rep=%+v err=%v", rep, err)
 	}
@@ -161,14 +161,14 @@ func TestSyncLifecycleAsRoot(t *testing.T) {
 	f.Close()
 
 	// Bascule vers l'identité d'exécution : propriétaire corrigé par recréation.
-	rep, err = Sync(dir, []Spec{null}, testMajors, 65534, 65534)
+	rep, err = Sync(dir, []Spec{null}, testMajors, 65534, 65534, true)
 	if err != nil || len(rep.Fixed) != 1 {
 		t.Fatalf("changement de propriétaire : rep=%+v err=%v", rep, err)
 	}
 	checkNode(t, filepath.Join(dir, "aac0"), null.Dev(), 65534, 65534)
 	checkDir(t, dir, 0, 65534)
 
-	rep, err = Sync(dir, []Spec{null}, testMajors, 65534, 65534)
+	rep, err = Sync(dir, []Spec{null}, testMajors, 65534, 65534, true)
 	if err != nil || len(rep.Created)+len(rep.Replaced)+len(rep.Fixed)+len(rep.Removed) != 0 {
 		t.Fatalf("idempotence : rep=%+v err=%v", rep, err)
 	}
@@ -177,20 +177,20 @@ func TestSyncLifecycleAsRoot(t *testing.T) {
 	// exige d'en être propriétaire) : Sync doit corriger propriétaire et mode.
 	must(t, os.Lchown(filepath.Join(dir, "aac0"), 0, 0))
 	must(t, os.Chmod(filepath.Join(dir, "aac0"), 0o666))
-	rep, err = Sync(dir, []Spec{null}, testMajors, 65534, 65534)
+	rep, err = Sync(dir, []Spec{null}, testMajors, 65534, 65534, true)
 	if err != nil || len(rep.Fixed) != 1 {
 		t.Fatalf("correction du mode : rep=%+v err=%v", rep, err)
 	}
 	checkNode(t, filepath.Join(dir, "aac0"), null.Dev(), 65534, 65534)
 
-	rep, err = Sync(dir, []Spec{zero}, testMajors, 65534, 65534)
+	rep, err = Sync(dir, []Spec{zero}, testMajors, 65534, 65534, true)
 	if err != nil || len(rep.Replaced) != 1 {
 		t.Fatalf("remplacement : rep=%+v err=%v", rep, err)
 	}
 	checkNode(t, filepath.Join(dir, "aac0"), zero.Dev(), 65534, 65534)
 
 	must(t, unix.Mknod(filepath.Join(dir, tmpPrefix+"aac9"), unix.S_IFCHR|0o600, int(unix.Mkdev(1, 3))))
-	rep, err = Sync(dir, nil, testMajors, 65534, 65534)
+	rep, err = Sync(dir, nil, testMajors, 65534, 65534, true)
 	if err != nil || len(rep.Removed) != 2 {
 		t.Fatalf("suppression : rep=%+v err=%v", rep, err)
 	}
@@ -198,9 +198,31 @@ func TestSyncLifecycleAsRoot(t *testing.T) {
 		t.Fatalf("entrées restantes : %v", entries)
 	}
 
+	// Temporaire abandonné portant le nom d'un nœud à créer (préparation
+	// interrompue entre mknod et rename) : la synchronisation aboutit.
+	must(t, unix.Mknod(filepath.Join(dir, tmpPrefix+"aac0"), unix.S_IFCHR|0o600, int(unix.Mkdev(1, 3))))
+	rep, err = Sync(dir, []Spec{null}, testMajors, 65534, 65534, true)
+	if err != nil || len(rep.Created) != 1 || len(rep.Removed) != 1 {
+		t.Fatalf("temporaire homonyme : rep=%+v err=%v", rep, err)
+	}
+	checkNode(t, filepath.Join(dir, "aac0"), null.Dev(), 65534, 65534)
+
+	// Inventaire incomplet (prune = false) : aucun nœud existant supprimé,
+	// mais les temporaires le sont toujours.
+	must(t, unix.Mknod(filepath.Join(dir, tmpPrefix+"aac5"), unix.S_IFCHR|0o600, int(unix.Mkdev(1, 3))))
+	rep, err = Sync(dir, nil, testMajors, 65534, 65534, false)
+	if err != nil || len(rep.Removed) != 1 || rep.Removed[0] != tmpPrefix+"aac5" {
+		t.Fatalf("inventaire incomplet : rep=%+v err=%v", rep, err)
+	}
+	checkNode(t, filepath.Join(dir, "aac0"), null.Dev(), 65534, 65534)
+	rep, err = Sync(dir, nil, testMajors, 65534, 65534, true)
+	if err != nil || len(rep.Removed) != 1 {
+		t.Fatalf("suppression après inventaire complet : rep=%+v err=%v", rep, err)
+	}
+
 	// Un nœud bloc portant un nom du schéma est refusé.
 	must(t, unix.Mknod(filepath.Join(dir, "aac3"), unix.S_IFBLK|0o600, int(unix.Mkdev(7, 0))))
-	if _, err := Sync(dir, nil, testMajors, 65534, 65534); !errors.Is(err, ErrForeignEntry) {
+	if _, err := Sync(dir, nil, testMajors, 65534, 65534, true); !errors.Is(err, ErrForeignEntry) {
 		t.Fatalf("nœud bloc : ErrForeignEntry attendu, obtenu %v", err)
 	}
 	must(t, os.Remove(filepath.Join(dir, "aac3")))
@@ -216,7 +238,7 @@ func TestSyncLifecycleAsRoot(t *testing.T) {
 			if i%2 == 1 {
 				s = zero
 			}
-			_, err := Sync(dir, []Spec{s}, testMajors, 65534, 65534)
+			_, err := Sync(dir, []Spec{s}, testMajors, 65534, 65534, true)
 			errs <- err
 		}(i)
 	}

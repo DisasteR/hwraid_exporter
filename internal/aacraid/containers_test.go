@@ -203,3 +203,60 @@ func TestDecodeRejects(t *testing.T) {
 		t.Fatal("information tronquée acceptée")
 	}
 }
+
+// Configurations incohérentes : indéterminées, quel que soit l'ordre.
+func TestEvaluateInconsistent(t *testing.T) {
+	const top, b3 = 0x1d000000, 0x1d000004
+	cases := map[string]func(cs []Container){
+		"miroir à disque dupliqué": func(cs []Container) {
+			for i := range cs {
+				if cs[i].Info.UID == b3 {
+					cs[i].Members[1].Disk = cs[i].Members[0].Disk
+				}
+			}
+		},
+		"miroir membre en double dans l'assemblage": func(cs []Container) { cs[0].Members[1].ChildUID = cs[0].Members[0].ChildUID },
+		"parenté incohérente": func(cs []Container) {
+			for i := range cs {
+				if cs[i].Info.UID == b3 {
+					cs[i].Info.Parent = 0x12345678
+				}
+			}
+		},
+		"membre inconnu": func(cs []Container) { cs[0].Members[0].ChildUID = 0x0bad0bad },
+	}
+	for name, mod := range cases {
+		cs, disks := referenceContainers(t)
+		mod(cs)
+		if st := Evaluate(cs, disks).Volumes[top]; st != VolumeUnknown {
+			t.Fatalf("%s : volume %s", name, st)
+		}
+	}
+	// Ordre de lecture inversé : même résultat.
+	cs, disks := referenceContainers(t)
+	for i, j := 0, len(cs)-1; i < j; i, j = i+1, j-1 {
+		cs[i], cs[j] = cs[j], cs[i]
+	}
+	if st := Evaluate(cs, disks).Volumes[top]; st != VolumeOptimal {
+		t.Fatalf("ordre inversé : %s", st)
+	}
+	// Assemblage imbriqué : indéterminé, même si l'assemblage enfant est optimal.
+	cs, disks = referenceContainers(t)
+	inner := cs[0]
+	inner.Info.UID, inner.Info.Parent = 0x99, top
+	outer := Container{Info: ContainerInfo{UID: 0x98, Type: TypeAssembly, Parent: NoUID, Members: 1},
+		Members: []Member{{Disk: NoUID, ChildUID: 0x99}}}
+	ev := Evaluate(append(append([]Container{outer}, cs[1:]...), inner), disks)
+	if ev.Volumes[0x98] != VolumeUnknown {
+		t.Fatalf("assemblage imbriqué : %s", ev.Volumes[0x98])
+	}
+}
+
+func TestContainerNamePrintable(t *testing.T) {
+	c := fixture(t, "234-0")
+	copy(c[296:], []byte{'A', 0xff, 0x01, 'b', 0})
+	info, err := DecodeContainerInfo(c)
+	if err != nil || info.Name != "A??b" {
+		t.Fatalf("%q %v", info.Name, err)
+	}
+}
