@@ -209,13 +209,16 @@ func volumesOf(cs []aacraid.Container, ev aacraid.Evaluation) []module.Volume {
 			CapacityBytes: c.Info.Blocks * 512,
 			State:         string(ev.Volumes[c.Info.UID]),
 		}
+		// Niveau RAID dans les termes de l'outil constructeur : son JSON
+		// donne raidLevel 1 aux miroirs et son affichage « RAID_volume » à
+		// l'assemblage (concaténation de volumes). Autre type : non observé.
 		switch c.Info.Type {
 		case aacraid.TypeMirror:
-			v.Type = "mirror"
+			v.RaidLevel = "raid1"
 		case aacraid.TypeAssembly:
-			v.Type = "assembly"
+			v.RaidLevel = "raid_volume"
 		default:
-			v.Type = fmt.Sprintf("type%d", c.Info.Type)
+			v.RaidLevel = "unknown"
 		}
 		if c.Info.Parent != aacraid.NoUID {
 			v.Parent = uidID(c.Info.Parent)

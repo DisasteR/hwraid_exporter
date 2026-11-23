@@ -138,7 +138,7 @@ func Render(s Snapshot) string {
 	gauge("hwraid_volume_info", "Inventaire des volumes (conteneurs) de la carte.")
 	for _, c := range s.Controllers {
 		for _, v := range c.Volumes {
-			fmt.Fprintf(&b, "hwraid_volume_info{%s} 1\n", labels("controller", c.Label, "volume", v.ID, "name", v.Name, "type", v.Type, "parent", v.Parent))
+			fmt.Fprintf(&b, "hwraid_volume_info{%s} 1\n", labels("controller", c.Label, "volume", v.ID, "name", v.Name, "raid_level", v.RaidLevel, "parent", v.Parent))
 		}
 	}
 	gauge("hwraid_volume_state", "État calculé du volume, valeur 1.")
