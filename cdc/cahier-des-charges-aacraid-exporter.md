@@ -84,6 +84,8 @@ L’attribut `reset_host` est inscriptible et réinitialise la carte : sysfs res
 | Progression des tâches | Interrogation synchrone publique : `AifRequest` / `AifReqJobsForCtr` (101, par conteneur) et `AifReqJobsForScsi` (102, par disque). FreeBSD documente le contenu des rapports de progression : `aac_AifJobProgressReport` (`status`, `finalTick`, `currentTick`) et l’énumération des types de tâche. | Format de la réponse à établir. |
 | Protection du cache (ZMM) | FreeBSD documente des états de batterie (`NVBATTSTATUS_*`, `PLATFORM_BAT_*`) pour les générations précédentes. Leur validité pour un module flash AFM‑600 n’est pas établie. | À établir. L’hôte de référence présente un module en panne, observable sans rien dégrader. |
 
+**Domaine de validité.** Ces lectures ne sont employées que si la réponse publique à `RequestSupplementAdapterInfo` (706) annonce `Version` > 1 et le bit `0x08` de `SupportedOptions2` (`AAC_SUPPORTED_ARCIO_PHYDEV`, FreeBSD `aacraid_reg.h`). Le module lit cette réponse une fois par démarrage. Si le bit est absent, il ne tente aucune autre lecture d’état et publie la carte avec ses fonctions d’état non prises en charge. La 6805 de référence annonce le bit.
+
 Le détail des formats et du protocole paginé figure dans [docs/aacraid-interface.md](../docs/aacraid-interface.md).
 
 [FreeBSD aacreg.h](https://cgit.freebsd.org/src/tree/sys/dev/aac/aacreg.h) · [FreeBSD aacraid_reg.h](https://cgit.freebsd.org/src/tree/sys/dev/aacraid/aacraid_reg.h)
