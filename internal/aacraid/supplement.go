@@ -63,6 +63,15 @@ func SupplementInfoRequest() []byte {
 	return b
 }
 
+// qualifiedRequests liste les seules FIB que l'exporter peut envoyer.
+func qualifiedRequests() [][]byte {
+	return [][]byte{
+		SupplementInfoRequest(),
+		CacheProtectionPresenceRequest(),
+		CacheProtectionStateRequest(),
+	}
+}
+
 // ErrFIBNotAllowed : la FIB n'est pas une requête qualifiée.
 var ErrFIBNotAllowed = errors.New("FIB non qualifiée")
 
@@ -70,8 +79,10 @@ var ErrFIBNotAllowed = errors.New("FIB non qualifiée")
 // une requête qualifiée. Toute autre commande, sous-commande ou valeur est
 // refusée.
 func CheckFIBRequest(b []byte) error {
-	if bytes.Equal(b, SupplementInfoRequest()) {
-		return nil
+	for _, ok := range qualifiedRequests() {
+		if bytes.Equal(b, ok) {
+			return nil
+		}
 	}
 	cmd := -1
 	if len(b) >= FIBHeaderSize {

@@ -46,10 +46,20 @@ type Result struct {
 	Unsupported []string
 	// CollectErr : échec d'une lecture firmware, sans effet sur NodeValid.
 	CollectErr error
+	// CacheProtection est l'état du module de protection du cache lu
+	// pendant le cycle ; nil si la lecture n'a pas abouti ou n'a pas eu lieu.
+	CacheProtection *CacheProtection
 	// Collected donne, pour chaque collecteur tenté pendant le cycle, le
 	// résultat de sa lecture (hwraid_collection_success). Un collecteur
 	// absent n'a pas été tenté.
 	Collected map[string]bool
+}
+
+// CacheProtection décrit le module de protection du cache (ZMM, batterie).
+type CacheProtection struct {
+	Present bool   // module installé
+	Type    string // « zmm »
+	State   string // état normalisé, vide si Present est faux
 }
 
 // Module est le contrat d'un module de pilote.

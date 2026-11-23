@@ -237,3 +237,50 @@ func TestSupplementInfoUnansweredRejected(t *testing.T) {
 		t.Fatal("réponse vide acceptée")
 	}
 }
+
+// Protection du cache : la lecture d'état n'est envoyée que si la lecture
+// de présence décrit le module ; les deux requêtes sont les requêtes
+// qualifiées.
+func TestCacheProtectionSequence(t *testing.T) {
+	for _, described := range []bool{true, false} {
+		var sent [][]byte
+		fakeIoctl(t, func(req uint32, buf []byte) error {
+			sent = append(sent, append([]byte(nil), buf...))
+			le := binary.LittleEndian
+			d := buf[aacraid.FIBHeaderSize:]
+			le.PutUint32(d[0:], 0) // statut du firmware : succès
+			switch {
+			case bytes.Equal(buf[:aacraid.FIBHeaderSize], aacraid.CacheProtectionPresenceRequest()[:aacraid.FIBHeaderSize]):
+				le.PutUint16(buf[8:], aacraid.FIBHeaderSize+44)
+				if described {
+					le.PutUint16(d[42:], 0x2000)
+				}
+			default:
+				le.PutUint16(buf[8:], aacraid.FIBHeaderSize+76)
+				d[20] = 1
+				le.PutUint32(d[48:], 0x40000009)
+			}
+			return nil
+		})
+		dev, err := Open("/dev/null", devNull, list(t))
+		if err != nil {
+			t.Skip(err)
+		}
+		present, st, err := dev.CacheProtection()
+		dev.Close()
+		if err != nil || present != described {
+			t.Fatalf("décrit=%v : present=%v err=%v", described, present, err)
+		}
+		want := 1
+		if described {
+			want = 2
+			if st.State != aacraid.CacheProtectionOptimal {
+				t.Fatalf("état %+v", st)
+			}
+		}
+		if len(sent) != want || !bytes.Equal(sent[0], aacraid.CacheProtectionPresenceRequest()) ||
+			(described && !bytes.Equal(sent[1], aacraid.CacheProtectionStateRequest())) {
+			t.Fatalf("décrit=%v : %d requêtes envoyées", described, len(sent))
+		}
+	}
+}

@@ -28,6 +28,7 @@ type Controller struct {
 	Unsupported            []string // collecteurs non pris en charge par la carte
 	CollectError           string   // échec d'une lecture firmware
 	Collected              map[string]bool
+	CacheProtection        *module.CacheProtection
 }
 
 // Snapshot est une vue complète et immuable.
@@ -75,6 +76,7 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result) Sn
 				c.NodeValid = r.NodeValid
 				c.Unsupported = r.Unsupported
 				c.Collected = r.Collected
+				c.CacheProtection = r.CacheProtection
 				if r.CollectErr != nil {
 					c.CollectError = r.CollectErr.Error()
 				}
@@ -128,6 +130,18 @@ func Render(s Snapshot) string {
 	for _, c := range s.Controllers {
 		for _, col := range c.Unsupported {
 			fmt.Fprintf(&b, "hwraid_collector_supported{%s} 0\n", labels("controller", c.Label, "collector", col))
+		}
+	}
+	gauge("hwraid_cache_protection_present", "1 si un module de protection du cache est installé.")
+	for _, c := range s.Controllers {
+		if cp := c.CacheProtection; cp != nil {
+			fmt.Fprintf(&b, "hwraid_cache_protection_present{%s} %d\n", labels("controller", c.Label, "type", cp.Type), b2i(cp.Present))
+		}
+	}
+	gauge("hwraid_cache_protection_state", "État observé du module de protection du cache, valeur 1.")
+	for _, c := range s.Controllers {
+		if cp := c.CacheProtection; cp != nil && cp.Present {
+			fmt.Fprintf(&b, "hwraid_cache_protection_state{%s} 1\n", labels("controller", c.Label, "type", cp.Type, "state", cp.State))
 		}
 	}
 	gauge("hwraid_collection_success", "Résultat de la dernière lecture du collecteur.")

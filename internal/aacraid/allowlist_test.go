@@ -1,6 +1,7 @@
 package aacraid
 
 import (
+	"bytes"
 	"errors"
 	"math/rand/v2"
 	"testing"
@@ -112,31 +113,51 @@ func TestNewRejectsInvalidEntries(t *testing.T) {
 	}
 }
 
-// La requête 706 n'est acceptée que par FSACTL_SENDFIB, et telle quelle.
-func TestSupplementRequestOnlyThroughSendFIB(t *testing.T) {
+// Les requêtes qualifiées ne sont acceptées que par FSACTL_SENDFIB, telles
+// quelles.
+func TestQualifiedRequestsOnlyThroughSendFIB(t *testing.T) {
 	l := mustList(t)
-	for name, code := range knownIoctls {
-		_, err := l.Check(allowlist.Request{Ioctl: code, Buf: SupplementInfoRequest()})
-		if want := name == "FSACTL_SENDFIB"; want != (err == nil) {
-			t.Fatalf("%s : accepté=%v, attendu=%v (%v)", name, err == nil, want, err)
+	for _, req := range qualifiedRequests() {
+		for name, code := range knownIoctls {
+			_, err := l.Check(allowlist.Request{Ioctl: code, Buf: req})
+			if want := name == "FSACTL_SENDFIB"; want != (err == nil) {
+				t.Fatalf("%s : accepté=%v, attendu=%v (%v)", name, err == nil, want, err)
+			}
 		}
 	}
 }
 
-// Toute modification d'un seul octet de la requête la fait refuser : le
-// contrôle porte sur l'intégralité du tampon, pas seulement sur Command.
+// La liste des requêtes qualifiées est exactement celle-ci : un ajout non
+// prévu impose de mettre à jour ce test en revue.
+func TestQualifiedRequestsAreExactlyExpected(t *testing.T) {
+	got := qualifiedRequests()
+	want := [][]byte{SupplementInfoRequest(), CacheProtectionPresenceRequest(), CacheProtectionStateRequest()}
+	if len(got) != len(want) {
+		t.Fatalf("%d requêtes qualifiées, %d attendues", len(got), len(want))
+	}
+	for i := range want {
+		if !bytes.Equal(got[i], want[i]) {
+			t.Fatalf("requête %d différente", i)
+		}
+	}
+}
+
+// Toute modification d'un seul octet d'une requête qualifiée la fait
+// refuser : le contrôle porte sur l'intégralité du tampon. En particulier,
+// un autre IoctlCmd de VM_Ioctl (ResetBus = 0x16) est refusé.
 func TestSendFIBRejectsEveryByteMutation(t *testing.T) {
 	l := mustList(t)
-	ref := SupplementInfoRequest()
-	for i := range ref {
-		for _, v := range []byte{0x00, 0x01, 0x80, 0xff} {
-			if ref[i] == v {
-				continue
-			}
-			b := append([]byte(nil), ref...)
-			b[i] = v
-			if _, err := l.Check(allowlist.Request{Ioctl: IoctlSendFIB, Buf: b}); !errors.Is(err, allowlist.ErrDenied) {
-				t.Fatalf("octet %d = %#x accepté (err=%v)", i, v, err)
+	for qi, ref := range qualifiedRequests() {
+		for i := range ref {
+			for _, v := range []byte{0x00, 0x01, 0x16, 0x80, 0xff} {
+				if ref[i] == v {
+					continue
+				}
+				b := append([]byte(nil), ref...)
+				b[i] = v
+				if _, err := l.Check(allowlist.Request{Ioctl: IoctlSendFIB, Buf: b}); !errors.Is(err, allowlist.ErrDenied) {
+					t.Fatalf("requête %d, octet %d = %#x accepté (err=%v)", qi, i, v, err)
+				}
 			}
 		}
 	}

@@ -20,6 +20,7 @@ import (
 type device interface {
 	HBAInfo() (aacraid.HBAInfo, error)
 	SupplementInfo() (aacraid.SupplementInfo, error)
+	CacheProtection() (bool, aacraid.ZMMStatus, error)
 	Close() error
 }
 
@@ -30,6 +31,10 @@ var StateCollectors = []string{"volumes", "disks"}
 // CapabilitiesCollector est le collecteur de la lecture des capacités de la
 // carte (RequestSupplementAdapterInfo), préalable aux collecteurs d'état.
 const CapabilitiesCollector = "capabilities"
+
+// CacheProtectionCollector est le collecteur de l'état du module de
+// protection du cache (ZMM).
+const CacheProtectionCollector = "cache_protection"
 
 // Module implémente module.Module pour aacraid.
 type Module struct {
@@ -124,7 +129,30 @@ func (m *Module) Collect(c module.Card, refs []module.NodeRef) module.Result {
 	if !sup.ArcIoReads() {
 		r.Unsupported = append([]string(nil), StateCollectors...)
 	}
+	collectCacheProtection(&r, d)
 	return r
+}
+
+// collectCacheProtection lit l'état du module de protection du cache, à
+// chaque cycle : cet état change (charge, panne) sans redémarrage.
+func collectCacheProtection(r *module.Result, d device) {
+	described, st, err := d.CacheProtection()
+	switch {
+	case err != nil:
+		r.Collected[CacheProtectionCollector] = false
+		if r.CollectErr == nil {
+			r.CollectErr = fmt.Errorf("protection du cache : %w", err)
+		}
+	case !described || st.State == aacraid.CacheProtectionOtherType:
+		// Format non décrit ou autre type de module : non décodé.
+		r.Unsupported = append(r.Unsupported, CacheProtectionCollector)
+	case st.State == aacraid.CacheProtectionNotInstalled:
+		r.Collected[CacheProtectionCollector] = true
+		r.CacheProtection = &module.CacheProtection{Type: "zmm"}
+	default:
+		r.Collected[CacheProtectionCollector] = true
+		r.CacheProtection = &module.CacheProtection{Present: true, Type: "zmm", State: string(st.State)}
+	}
 }
 
 // supplementInfo lit la réponse 706 une seule fois par carte et par nœud.

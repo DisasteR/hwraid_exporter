@@ -113,3 +113,29 @@ func (d *Device) SupplementInfo() (aacraid.SupplementInfo, error) {
 	}
 	return aacraid.DecodeSupplementInfo(buf)
 }
+
+// fib envoie une requête FIB qualifiée et renvoie la réponse.
+func (d *Device) fib(req []byte) ([]byte, error) {
+	if err := d.Do(allowlist.Request{Ioctl: aacraid.IoctlSendFIB, Buf: req}); err != nil {
+		return nil, err
+	}
+	return req, nil
+}
+
+// CacheProtection lit l'état du module de protection du cache : lecture de
+// présence, puis lecture d'état si la carte y décrit son module. present
+// vaut false si la carte ne décrit pas de module dans ce format.
+func (d *Device) CacheProtection() (present bool, st aacraid.ZMMStatus, err error) {
+	rsp, err := d.fib(aacraid.CacheProtectionPresenceRequest())
+	if err != nil {
+		return false, st, err
+	}
+	if present, err = aacraid.DecodeCacheProtectionPresence(rsp); err != nil || !present {
+		return false, st, err
+	}
+	if rsp, err = d.fib(aacraid.CacheProtectionStateRequest()); err != nil {
+		return true, st, err
+	}
+	st, err = aacraid.DecodeCacheProtectionState(rsp)
+	return true, st, err
+}
