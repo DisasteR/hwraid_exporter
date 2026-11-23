@@ -15,7 +15,9 @@ func status(uid, gid, inh, prm, eff, bnd, amb, nnp string) string {
 		"\nCapBnd:\t" + bnd + "\nCapAmb:\t" + amb + "\nNoNewPrivs:\t" + nnp + "\nSeccomp:\t2\n"
 }
 
-var target = Expected{UID: 65534, GID: 65534, Caps: Mask(CapSysRawIO)}
+const none = "0000000000000000"
+
+var target = AfterDrop(65534, 65534, Mask(CapSysRawIO))
 
 func TestMaskRawIO(t *testing.T) {
 	if Mask(CapSysRawIO) != 0x20000 {
@@ -24,7 +26,7 @@ func TestMaskRawIO(t *testing.T) {
 }
 
 func TestVerifyConformingState(t *testing.T) {
-	s, err := Parse(strings.NewReader(status("65534\t65534\t65534\t65534", "65534\t65534\t65534\t65534", rawio, rawio, rawio, rawio, rawio, "1")))
+	s, err := Parse(strings.NewReader(status("65534\t65534\t65534\t65534", "65534\t65534\t65534\t65534", none, rawio, rawio, rawio, none, "1")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,15 +40,17 @@ func TestVerifyDetectsEachDeviation(t *testing.T) {
 	ok := "65534\t65534\t65534\t65534"
 	mknod := "0000000008020000" // RAWIO + MKNOD
 	cases := map[string]string{
-		"UID sauvegardé resté root":    status("65534\t65534\t0\t65534", ok, rawio, rawio, rawio, rawio, rawio, "1"),
-		"GID effectif root":            status(ok, "65534\t0\t65534\t65534", rawio, rawio, rawio, rawio, rawio, "1"),
-		"MKNOD dans l'effectif":        status(ok, ok, rawio, rawio, mknod, rawio, rawio, "1"),
-		"MKNOD dans le permis":         status(ok, ok, rawio, mknod, rawio, rawio, rawio, "1"),
-		"MKNOD dans l'hérité":          status(ok, ok, mknod, rawio, rawio, rawio, rawio, "1"),
-		"MKNOD dans l'ensemble limite": status(ok, ok, rawio, rawio, rawio, mknod, rawio, "1"),
-		"MKNOD dans l'ambiant":         status(ok, ok, rawio, rawio, rawio, rawio, mknod, "1"),
-		"RAWIO perdue":                 status(ok, ok, rawio, rawio, "0000000000000000", rawio, rawio, "1"),
-		"no_new_privs absent":          status(ok, ok, rawio, rawio, rawio, rawio, rawio, "0"),
+		"UID sauvegardé resté root":    status("65534\t65534\t0\t65534", ok, none, rawio, rawio, rawio, none, "1"),
+		"GID effectif root":            status(ok, "65534\t0\t65534\t65534", none, rawio, rawio, rawio, none, "1"),
+		"MKNOD dans l'effectif":        status(ok, ok, none, rawio, mknod, rawio, none, "1"),
+		"MKNOD dans le permis":         status(ok, ok, none, mknod, rawio, rawio, none, "1"),
+		"MKNOD dans l'hérité":          status(ok, ok, mknod, rawio, rawio, rawio, none, "1"),
+		"MKNOD dans l'ensemble limite": status(ok, ok, none, rawio, rawio, mknod, none, "1"),
+		"MKNOD dans l'ambiant":         status(ok, ok, none, rawio, rawio, rawio, mknod, "1"),
+		"RAWIO perdue":                 status(ok, ok, none, rawio, none, rawio, none, "1"),
+		"RAWIO laissée dans l'hérité":  status(ok, ok, rawio, rawio, rawio, rawio, none, "1"),
+		"RAWIO laissée dans l'ambiant": status(ok, ok, none, rawio, rawio, rawio, rawio, "1"),
+		"no_new_privs absent":          status(ok, ok, none, rawio, rawio, rawio, none, "0"),
 	}
 	for name, txt := range cases {
 		s, err := Parse(strings.NewReader(txt))

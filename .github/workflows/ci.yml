@@ -29,6 +29,16 @@ jobs:
       - name: Tests
         run: go test -race -count=1 ./...
 
+      - name: Tests root (privilèges, nœuds)
+        run: |
+          mkdir -p dist/roottests
+          for p in ./internal/privilege; do
+            CGO_ENABLED=0 go test -c -o "dist/roottests/$(basename "$p").test" "$p"
+          done
+          for t in dist/roottests/*.test; do
+            sudo env HWRAID_REQUIRE_ROOT_TESTS=1 "$t" -test.v -test.count=1
+          done
+
       - name: Vulnérabilités connues
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 

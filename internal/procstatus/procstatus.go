@@ -104,14 +104,22 @@ func parseIDs(v string) ([4]uint32, error) {
 	return ids, nil
 }
 
-// Expected décrit l'état exigé après l'abandon des privilèges.
+// Expected décrit l'état exigé après l'abandon des privilèges, ensemble par
+// ensemble. Après l'abandon, l'exporter ne garde CAP_SYS_RAWIO que dans les
+// ensembles effectif, permis et limite ; hérité et ambiant sont vides, car
+// l'exporter ne lance aucun programme.
 type Expected struct {
-	UID, GID uint32
-	Caps     uint64 // masque exact attendu dans les cinq ensembles
+	UID, GID                uint32
+	Eff, Prm, Bnd, Inh, Amb uint64
 }
 
-// Verify renvoie une erreur décrivant chaque écart. Les cinq ensembles de
-// capacités doivent être égaux au masque attendu : une capacité en trop,
+// AfterDrop renvoie l'état attendu pour une identité et un masque conservé.
+func AfterDrop(uid, gid uint32, keep uint64) Expected {
+	return Expected{UID: uid, GID: gid, Eff: keep, Prm: keep, Bnd: keep}
+}
+
+// Verify renvoie une erreur décrivant chaque écart. Chaque ensemble de
+// capacités doit être exactement égal à l'attendu : une capacité en trop,
 // même seulement dans l'ensemble limite, est un écart.
 func (s Status) Verify(e Expected) error {
 	var errs []string
@@ -126,12 +134,12 @@ func (s Status) Verify(e Expected) error {
 		}
 	}
 	sets := []struct {
-		name string
-		v    uint64
-	}{{"CapInh", s.CapInh}, {"CapPrm", s.CapPrm}, {"CapEff", s.CapEff}, {"CapBnd", s.CapBnd}, {"CapAmb", s.CapAmb}}
+		name      string
+		got, want uint64
+	}{{"CapInh", s.CapInh, e.Inh}, {"CapPrm", s.CapPrm, e.Prm}, {"CapEff", s.CapEff, e.Eff}, {"CapBnd", s.CapBnd, e.Bnd}, {"CapAmb", s.CapAmb, e.Amb}}
 	for _, set := range sets {
-		if set.v != e.Caps {
-			errs = append(errs, fmt.Sprintf("%s=%016x (attendu %016x)", set.name, set.v, e.Caps))
+		if set.got != set.want {
+			errs = append(errs, fmt.Sprintf("%s=%016x (attendu %016x)", set.name, set.got, set.want))
 		}
 	}
 	if !s.NoNewPrivs {
