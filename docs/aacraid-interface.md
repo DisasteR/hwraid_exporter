@@ -6,6 +6,7 @@ Chaque élément porte sa provenance :
 
 - **[public]** : documenté dans une source publique, citée ;
 - **[observé]** : établi en observant, sur l'hôte de référence, les échanges entre l'outil constructeur et le pilote, puis en les comparant à ce que l'outil affiche. Ces éléments sont valables pour le modèle et le firmware testés. Ils sont requalifiés pour tout autre modèle ou firmware.
+- **[interopérabilité]** : établi par l'analyse de l'outil constructeur, faute de source publique, au titre de l'exception d'interopérabilité (directive 2009/24/CE, article 6 ; code de la propriété intellectuelle, article L122-6-1 IV). Seul le résultat nécessaire à l'interopérabilité de l'exporter est décrit ici ; la méthode et les éléments internes de l'outil ne sont pas publiés. Ces éléments sont qualifiés pour le modèle et le firmware de référence.
 
 Tous les entiers sont en petit-boutiste (*little-endian*). Les positions sont en octets, à partir de 0.
 
@@ -85,6 +86,7 @@ En-tête de 8 octets (mot 1 = nombre de membres), puis une entrée de 32 octets 
 | 0-3 | numéro du disque membre, `0xffffffff` si le membre est un conteneur |
 | 4-7 | UID du conteneur membre, `0xffffffff` si le membre est un disque |
 | 10 | rang du membre |
+| 12-15 | état du membre (section 6) [interopérabilité] |
 | 16-23 | bloc de début du membre sur le disque |
 | 24-31 | taille du membre en blocs |
 
@@ -100,7 +102,46 @@ Sur l'hôte de référence, le volume visible assemble quatre miroirs, eux-même
 | 88-… | fabricant, modèle, version de firmware, numéro de série (texte) |
 | 288-295 | WWN |
 
-## 6. Qualification
+## 6. État des membres, des volumes et des disques [interopérabilité]
+
+### État d'un membre
+
+Les octets 12 à 15 d'une entrée de la liste des membres portent l'état du membre :
+
+| Bit | Sens |
+|---|---|
+| `0x2` | membre en cours de reconstruction |
+| `0x4` | membre défaillant |
+| aucun | membre normal |
+
+Le bit `0x2` est examiné en premier. Sur l'hôte de référence, les 16 entrées ont ces octets à 0.
+
+Un membre est aussi **défaillant** lorsque le disque qu'il désigne (octets 0-3) n'apparaît pas dans la liste des disques présents.
+
+### État d'un conteneur
+
+L'état d'un conteneur ne figure pas tel quel dans les réponses : il se calcule à partir de ses membres et de son niveau RAID.
+
+1. On compte les membres défaillants. Un membre en reconstruction ne contribue pas encore à la redondance : il est compté avec eux, selon des conditions précisées dans le code du module.
+2. Aucun membre compté : **optimal**.
+3. Sinon, selon la tolérance du niveau RAID :
+   - tolérance d'un membre (RAID 1, RAID 5, RAID 10 et apparentés) : un membre compté → **dégradé**, ou **dégradé en reconstruction** si un membre se reconstruit ; deux ou plus → **en échec** ;
+   - tolérance de deux membres (RAID 6 et apparentés) : un membre compté → **redondance réduite**, ou **redondance réduite en reconstruction** ; deux → **dégradé**, ou **dégradé en reconstruction** ; davantage → **en échec** ;
+   - sans tolérance (RAID 0, volume simple) : un membre compté → **en échec**.
+
+La façon dont l'état d'un conteneur membre (par exemple un miroir dégradé) se reporte sur le conteneur qui l'assemble reste à établir.
+
+### État d'un disque
+
+| État | Condition |
+|---|---|
+| en ligne | disque présent, membre d'un conteneur |
+| en reconstruction | disque portant un membre dont le bit `0x2` est positionné |
+| en panne | disque désigné par un membre mais absent de la liste des disques |
+| disponible | disque présent, ni membre, ni secours |
+| secours, copie de retour | condition à établir |
+
+## 7. Qualification
 
 Chaque lecture utilisée par l'exporter est qualifiée sur le matériel de référence selon l'exigence S4 du cahier des charges :
 
