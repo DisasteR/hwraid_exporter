@@ -38,7 +38,10 @@ func fakeIoctl(t *testing.T, fn func(req uint32, buf []byte) error) *int {
 	ioctlFn = func(fd int, req uint32, buf []byte) error {
 		calls++
 		if req == aacraid.IoctlGetHBAInfo && len(buf) != aacraid.HBAInfoSize {
-			t.Fatalf("tampon de %d octets transmis, %d attendus", len(buf), aacraid.HBAInfoSize)
+			// Errorf : la fonction s'exécute sur le thread des ioctl, pas
+			// dans la goroutine du test.
+			t.Errorf("tampon de %d octets transmis, %d attendus", len(buf), aacraid.HBAInfoSize)
+			return errors.New("taille de tampon")
 		}
 		return fn(req, buf)
 	}

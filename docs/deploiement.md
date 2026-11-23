@@ -98,6 +98,16 @@ ExecStart=/usr/local/bin/hwraid-exporter serve -listen 0.0.0.0:9799 -interval 2m
 
 Le code de sortie 3 signale que les nœuds attendus ont changé (carte ajoutée ou retirée, pilote rechargé) : `Restart=on-failure` relance le service, qui refait la préparation.
 
+## Limite du pilote aacraid : ne pas interrompre une commande
+
+Le pilote `aacraid` réserve à la gestion de chaque carte une petite réserve de blocs de commande (8 sous Linux), partagée par tous les outils : l'exporter, ARCCONF, maxView. Quand un signal interrompt un processus pendant qu'une de ses commandes attend la carte, le pilote ne rend jamais le bloc : il est perdu jusqu'au redémarrage de la machine. Une fois la réserve vide, toute commande de gestion échoue : l'exporter journalise `cannot allocate memory` avec `driver management command pool probably exhausted`, et ARCCONF ne trouve plus la carte. Les entrées-sorties disque ne sont pas touchées. Le défaut est présent dans le code du pilote jusqu'à Linux 7.4 au moins.
+
+L'exporter s'en protège : ses commandes partent d'un thread qui bloque les signaux, et à l'arrêt (`SIGTERM`) il attend jusqu'à 20 s la fin de la commande en cours. Rien ne protège d'un `SIGKILL`. D'où trois règles d'exploitation :
+
+- arrêter le conteneur par `docker stop` ou `docker compose down`, jamais `docker rm -f` ni `docker kill` ; garder `stop_grace_period: 30s` (le délai par défaut de Docker est de 10 s) ;
+- ne pas tuer un autre outil de gestion pendant qu'il travaille : pas de `timeout` court ni de `SIGKILL` autour d'ARCCONF ;
+- réserve épuisée : seul un redémarrage la reconstitue. **Avant de redémarrer, arrêter les applications qui écrivent, lancer `sync` et attendre une minute.** À l'arrêt, le pilote demande à la carte de vider son cache d'écriture et de fermer ses volumes par une commande de gestion : réserve vide, cette commande n'est pas envoyée. Avec le réglage par défaut du pilote (`cache=2`), Linux ne demande jamais lui-même ce vidage. Si le cache d'écriture de la carte est actif sans protection (module ZMM ou batterie défaillant), les dernières écritures peuvent être perdues au redémarrage.
+
 ## Prometheus
 
 Collecte :
@@ -131,4 +141,5 @@ Attendu : `hwraid_snapshot_ready 1`, `hwraid_discovery_success 1`, `hwraid_manag
 | `collection_success 0` avec une erreur `EPERM` au journal | `userns-remap`, Docker rootless ou capacité `SYS_RAWIO` retirée |
 | `hwraid_collector_supported 0` sur une carte | modèle ou firmware non qualifié : carte inventoriée seulement |
 | `hwraid_discovery_success 0` | sysfs partiellement illisible : voir l'avertissement `unreadable SCSI hosts` au journal |
+| `collection_success 0` avec `cannot allocate memory` au journal | réserve de commandes de gestion du pilote épuisée : voir « Limite du pilote aacraid » avant de redémarrer |
 | le conteneur s'arrête avec le code 3 | nœuds attendus changés depuis le démarrage : `restart: unless-stopped` le relance |

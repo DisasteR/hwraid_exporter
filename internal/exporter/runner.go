@@ -21,6 +21,7 @@ import (
 type Runner struct {
 	mu       sync.Mutex
 	inflight map[string]chan module.Result // adresse PCI → collecte en cours
+	running  sync.WaitGroup                // collectes non terminées
 }
 
 // NewRunner crée un ordonnanceur sans collecte en cours.
@@ -47,7 +48,11 @@ func (r *Runner) Run(jobs map[string]func() module.Result, collectors map[string
 		ch := make(chan module.Result, 1)
 		r.inflight[addr] = ch
 		waiting[addr] = ch
-		go func() { ch <- job() }()
+		r.running.Add(1)
+		go func() {
+			defer r.running.Done()
+			ch <- job()
+		}()
 	}
 	r.mu.Unlock()
 
@@ -85,4 +90,26 @@ func (r *Runner) Run(jobs map[string]func() module.Result, collectors map[string
 		}
 	}
 	return out
+}
+
+// Drain attend, au plus timeout, la fin des collectes encore en cours,
+// y compris celles abandonnées à l'échéance d'un cycle. Il rend false si
+// l'une d'elles n'a pas rendu la main à temps.
+//
+// À l'arrêt du service, sortir pendant une commande de gestion l'interrompt
+// dans le pilote, qui perd alors un bloc de commande (voir aacio).
+func (r *Runner) Drain(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		r.running.Wait()
+		close(done)
+	}()
+	t := time.NewTimer(timeout)
+	defer t.Stop()
+	select {
+	case <-done:
+		return true
+	case <-t.C:
+		return false
+	}
 }

@@ -97,3 +97,40 @@ func TestTimedOutRender(t *testing.T) {
 		t.Fatalf("validité du nœud publiée sans observation :\n%s", out)
 	}
 }
+
+// Drain attend une collecte abandonnée à l'échéance du cycle, et seulement
+// elle : il rend false tant qu'elle est bloquée, true dès qu'elle finit.
+func TestRunnerDrain(t *testing.T) {
+	r := NewRunner()
+	if !r.Drain(10 * time.Millisecond) {
+		t.Fatal("aucune collecte : Drain doit réussir")
+	}
+	release := make(chan struct{})
+	var finished atomic.Bool
+	jobs := map[string]func() module.Result{"0000:01:00.0": func() module.Result {
+		<-release
+		finished.Store(true)
+		return module.Result{}
+	}}
+	out := r.Run(jobs, map[string][]string{"0000:01:00.0": {"volumes"}}, 10*time.Millisecond)
+	if !out["0000:01:00.0"].TimedOut {
+		t.Fatal("la collecte aurait dû dépasser l'échéance")
+	}
+	start := time.Now()
+	if r.Drain(50 * time.Millisecond) {
+		t.Fatal("Drain réussit alors que la collecte est bloquée")
+	}
+	if d := time.Since(start); d < 50*time.Millisecond || d > 2*time.Second {
+		t.Fatalf("Drain n'a pas respecté son délai : %v", d)
+	}
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		close(release)
+	}()
+	if !r.Drain(2 * time.Second) {
+		t.Fatal("Drain échoue après la fin de la collecte")
+	}
+	if !finished.Load() {
+		t.Fatal("Drain a rendu la main avant la fin de la collecte")
+	}
+}

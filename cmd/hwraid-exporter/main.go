@@ -46,6 +46,11 @@ const nodesDir = "/dev/hwraid_exporter"
 // superviseur doit relancer le processus pour refaire la préparation.
 const exitNodeChanged = 3
 
+// shutdownWait borne l'attente de la collecte en cours à l'arrêt. Elle doit
+// rester sous le délai d'arrêt du superviseur (stop_grace_period de
+// Compose, TimeoutStopSec de systemd), au-delà duquel il tue le processus.
+const shutdownWait = 20 * time.Second
+
 func main() {
 	bi, _ := debug.ReadBuildInfo()
 	version, revision = buildinfo.Resolve(version, revision, bi)
@@ -300,15 +305,23 @@ func serve(args []string) int {
 	}()
 	log.Info("listening", "listen", *listen, "version", version, "revision", revision)
 
+	// La boucle s'arrête au signal comme à une demande de sortie (code 3).
+	loopCtx, stopLoop := context.WithCancel(ctx)
+	defer stopLoop()
+	loopDone := make(chan struct{})
 	go func() {
+		defer close(loopDone)
 		collect()
 		t := time.NewTicker(*interval)
 		defer t.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-loopCtx.Done():
 				return
 			case <-t.C:
+				if loopCtx.Err() != nil {
+					return // arrêt demandé en même temps que le tic
+				}
 				collect()
 			}
 		}
@@ -319,10 +332,34 @@ func serve(args []string) int {
 	case <-ctx.Done():
 	case code = <-exitCode:
 	}
+	// Sortir pendant une commande de gestion l'interromprait dans le pilote,
+	// qui perdrait un bloc de commande jusqu'au redémarrage de la machine.
+	// Aucun nouveau cycle ne démarre ; celui en cours et les collectes
+	// abandonnées à leur échéance ont shutdownWait pour finir. Les signaux
+	// suivants restent captés : seul SIGKILL abrège l'attente.
+	stopLoop()
+	log.Info("stopping: waiting for the collection in progress", "max", shutdownWait)
+	if !waitIdle(loopDone, runner.Drain, shutdownWait) {
+		log.Warn("stopping while a card command is still pending: the aacraid driver may lose a management command until the next reboot")
+	}
 	shut, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shut)
 	return code
+}
+
+// waitIdle attend, au plus wait en tout, la fin de la boucle de collecte
+// (loopDone) puis celle des collectes encore en cours (drain).
+func waitIdle(loopDone <-chan struct{}, drain func(time.Duration) bool, wait time.Duration) bool {
+	end := time.Now().Add(wait)
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case <-loopDone:
+	case <-t.C:
+		return false
+	}
+	return drain(time.Until(end))
 }
 
 // sameSpecs compare deux ensembles de nœuds attendus (déjà triés par nom).

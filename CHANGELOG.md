@@ -3,6 +3,9 @@
 ## v0.1.2 — 2026-11-23
 
 - aacraid: a paged read whose close is acknowledged with status `0xc5` is now rejected, as the vendor tool does (it only accepts `CT_OK`), and retried once in the same cycle; a second rejection is an error. v0.1.1 published the data of such a read. `hwraid_transfer_close_unconfirmed_total` counts rejected reads.
+- aacraid: controller commands are sent from a dedicated thread that blocks asynchronous signals. The `aacraid` driver loses one management command block, until the next reboot, each time a signal interrupts a command waiting for the card; the Go runtime's own preemption signal (`SIGURG`) could do so. Once the driver's pool is empty, every management tool fails with `ENOMEM`.
+- On `SIGTERM`, the exporter starts no new cycle and waits up to 20 s for the commands in progress before exiting. The systemd unit sets `TimeoutStopSec=30s`.
+- `ENOMEM` on a controller command is reported as a probably exhausted driver pool, which only a reboot restores.
 
 ## v0.1.1 — 2026-11-23
 

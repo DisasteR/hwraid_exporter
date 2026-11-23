@@ -32,15 +32,22 @@ var ioctlFn = func(fd int, req uint32, buf []byte) error {
 	return nil
 }
 
+// ErrDriverPoolExhausted : le pilote a refusé une commande de gestion
+// faute de mémoire. Sous aacraid, c'est le signe que sa réserve de blocs de
+// commande de gestion est épuisée (voir thread.go) : seul un redémarrage de
+// la machine la reconstitue.
+var ErrDriverPoolExhausted = errors.New("driver management command pool probably exhausted (aacraid loses one per interrupted command); a reboot restores it, see docs/deploiement.md")
+
 // ErrClosed : le nœud a déjà été refermé.
 var ErrClosed = errors.New("management node closed")
 
 // Device est un nœud de gestion ouvert pour un cycle de collecte.
 // Il doit être refermé à la fin du cycle (pas de descripteur persistant).
 type Device struct {
-	fd   int
-	path string
-	list *allowlist.List
+	fd     int
+	path   string
+	list   *allowlist.List
+	thread *quietThread // émet les ioctl, signaux bloqués
 	// closeOther compte les lectures rejetées parce que leur clôture a été
 	// confirmée par 0xc5.
 	closeOther int
@@ -71,7 +78,12 @@ func Open(path string, wantDev uint64, list *allowlist.List) (*Device, error) {
 		return nil, fmt.Errorf("%w: %s is %d:%d, expected %d:%d", ErrNodeMismatch, path,
 			unix.Major(st.Rdev), unix.Minor(st.Rdev), unix.Major(wantDev), unix.Minor(wantDev))
 	}
-	return &Device{fd: fd, path: path, list: list}, nil
+	thread, err := startQuietThread()
+	if err != nil {
+		unix.Close(fd)
+		return nil, err
+	}
+	return &Device{fd: fd, path: path, list: list, thread: thread}, nil
 }
 
 // Close referme le nœud. Un second appel est sans effet : le descripteur,
@@ -80,6 +92,7 @@ func (d *Device) Close() error {
 	if d.fd < 0 {
 		return nil
 	}
+	d.thread.stop()
 	err := unix.Close(d.fd)
 	d.fd = -1
 	return err
@@ -99,7 +112,12 @@ func (d *Device) Do(req allowlist.Request) error {
 	if _, err := d.list.Check(priv); err != nil {
 		return err
 	}
-	if err := ioctlFn(d.fd, priv.Ioctl, priv.Buf); err != nil {
+	var err error
+	d.thread.run(func() { err = ioctlFn(d.fd, priv.Ioctl, priv.Buf) })
+	if errors.Is(err, unix.ENOMEM) && priv.Ioctl != aacraid.IoctlGetHBAInfo {
+		return fmt.Errorf("ioctl %#x on %s: %w: %w", req.Ioctl, d.path, err, ErrDriverPoolExhausted)
+	}
+	if err != nil {
 		return fmt.Errorf("ioctl %#x on %s: %w", req.Ioctl, d.path, err)
 	}
 	copy(req.Buf, priv.Buf)
