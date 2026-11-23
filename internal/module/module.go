@@ -63,7 +63,7 @@ type Result struct {
 type Volume struct {
 	ID            string // identifiant stable sur la carte (UID en hexadécimal)
 	Name          string
-	Type          string // « mirror », « assembly » ou « type<N> » si non qualifié
+	RaidLevel     string // « raid1 », « raid_volume » (termes de l'outil constructeur) ou « unknown »
 	Parent        string // ID du conteneur qui l'assemble, vide sinon
 	CapacityBytes uint64
 	State         string

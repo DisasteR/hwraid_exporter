@@ -190,14 +190,14 @@ func TestVolumeRender(t *testing.T) {
 	p := plan(aacHost("host0", "0000:01:00.0", "S1"))
 	res := map[string]module.Result{"0000:01:00.0": {NodeValid: true,
 		Volumes: []module.Volume{
-			{ID: "1d000000", Name: "Array0", Type: "assembly", CapacityBytes: 1024, State: "unknown", Members: []string{"1d000004"}},
-			{ID: "1d000004", Name: "Array0", Type: "mirror", Parent: "1d000000", CapacityBytes: 512, State: "degraded", Members: []string{"d3", "d7"}},
+			{ID: "1d000000", Name: "Array0", RaidLevel: "raid_volume", CapacityBytes: 1024, State: "unknown", Members: []string{"1d000004"}},
+			{ID: "1d000004", Name: "Array0", RaidLevel: "raid1", Parent: "1d000000", CapacityBytes: 512, State: "degraded", Members: []string{"d3", "d7"}},
 		},
 		Disks: []module.Disk{{ID: "d3", State: "online"}, {ID: "d7", State: "failed"}}}}
 	out := Render(Build(p, true, res))
 	for _, line := range []string{
-		`hwraid_volume_info{controller="serial:S1",volume="1d000000",name="Array0",type="assembly",parent=""} 1`,
-		`hwraid_volume_info{controller="serial:S1",volume="1d000004",name="Array0",type="mirror",parent="1d000000"} 1`,
+		`hwraid_volume_info{controller="serial:S1",volume="1d000000",name="Array0",raid_level="raid_volume",parent=""} 1`,
+		`hwraid_volume_info{controller="serial:S1",volume="1d000004",name="Array0",raid_level="raid1",parent="1d000000"} 1`,
 		`hwraid_volume_state{controller="serial:S1",volume="1d000004",state="degraded"} 1`,
 		`hwraid_volume_capacity_bytes{controller="serial:S1",volume="1d000000"} 1024`,
 		`hwraid_volume_member{controller="serial:S1",volume="1d000004",member="d7"} 1`,

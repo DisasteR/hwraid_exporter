@@ -305,6 +305,17 @@ func TestCollectVolumesReference(t *testing.T) {
 	c := card("0000:01:00.0", "0")
 	d := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}, sup: arcIo}
 	r := withDev(d, nil).Collect(c, ref)
+	// Type non observé : niveau inconnu, jamais deviné.
+	d2 := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}, sup: arcIo, paged: func(rd aacraid.PagedRead, p, size uint32) ([]byte, error) {
+		b, err := referencePaged(rd, p, size)
+		if err == nil && rd == aacraid.ReadContainerInfo && p == 0xfc {
+			b[48] = 4
+		}
+		return b, err
+	}}
+	if r2 := withDev(d2, nil).Collect(c, ref); r2.Volumes[1].RaidLevel != "unknown" || r2.Volumes[1].State != "unknown" {
+		t.Fatalf("type non observé : %+v", r2.Volumes[1])
+	}
 	if !r.Collected["volumes"] || !r.Collected["disks"] || r.CollectErr != nil {
 		t.Fatalf("%+v", r)
 	}
@@ -312,12 +323,12 @@ func TestCollectVolumesReference(t *testing.T) {
 		t.Fatalf("%d volumes, %d disques", len(r.Volumes), len(r.Disks))
 	}
 	top := r.Volumes[0]
-	if top.ID != "1d000000" || top.Name != "Array0" || top.Type != "assembly" || top.Parent != "" ||
+	if top.ID != "1d000000" || top.Name != "Array0" || top.RaidLevel != "raid_volume" || top.Parent != "" ||
 		top.CapacityBytes != 62495109120*512 || top.State != "optimal" || len(top.Members) != 4 {
 		t.Fatalf("volume : %+v", top)
 	}
 	for _, v := range r.Volumes[1:] {
-		if v.Type != "mirror" || v.Parent != "1d000000" || v.State != "optimal" || len(v.Members) != 2 {
+		if v.RaidLevel != "raid1" || v.Parent != "1d000000" || v.State != "optimal" || len(v.Members) != 2 {
 			t.Fatalf("miroir : %+v", v)
 		}
 	}

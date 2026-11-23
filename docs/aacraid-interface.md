@@ -104,11 +104,13 @@ Sur l'hôte de référence : 5 conteneurs, numéros 0, `0xfc`, `0xfd`, `0xfe`, `
 | Octets | Champ | Valeur de référence |
 |---|---|---|
 | 16-19 | identifiant unique | égal au « Unique Identifier » affiché par l'outil témoin |
-| 48-51 | type : 1 = assemblage de conteneurs, 3 = miroir de deux disques (seuls types observés) | 1 (volume), 3 (miroirs) |
+| 48-51 | type : 1 = assemblage de conteneurs (« RAID_volume » pour l'outil témoin, concaténation de volumes), 3 = miroir de deux disques (RAID 1) ; seuls types observés | 1 (volume), 3 (miroirs) |
 | 52-55 | UID du conteneur qui l'assemble, `0xffffffff` sinon | `0xffffffff` (volume), UID du volume (miroirs) |
 | 56-59 | nombre de membres | 4 (volume), 2 (miroirs) |
 | 64-71 | taille en blocs de 512 octets | 62 495 109 120 (= 30 515 190 Mio) |
 | 296-311 | nom, chaîne terminée par un octet nul, lue sur 16 octets au plus (longueur maximale non établie) | `Array0` |
+
+L'exporter publie le niveau RAID dans le label `raid_level` de `hwraid_volume_info`, dans les termes de l'outil témoin : `raid1` pour le type 3, `raid_volume` pour le type 1, `unknown` pour tout autre type.
 
 ### Liste des membres (sous-commande 249, paramètre : UID du conteneur)
 
