@@ -167,11 +167,11 @@ func TestCollect(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
 	c := card("0000:01:00.0", "0")
 
-	ok := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, Device: 0, Function: 0}, sup: arcIo}
+	ok := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, Device: 0, Function: 0, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}, sup: arcIo}
 	if r := withDev(ok, nil).Collect(c, ref); !r.NodeValid || r.Err != nil || !ok.closed {
 		t.Fatalf("carte cohérente : %+v (fermé=%v)", r, ok.closed)
 	}
-	other := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 1, Bus: 2}}
+	other := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 1, Bus: 2, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}}
 	if r := withDev(other, nil).Collect(c, ref); r.NodeValid || r.Err == nil || !other.closed {
 		t.Fatalf("nœud d'une autre carte jugé valide : %+v", r)
 	}
@@ -205,7 +205,7 @@ func TestParsePCI(t *testing.T) {
 func TestCollectSupplementGate(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
 	c := card("0000:01:00.0", "0")
-	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
 
 	d := &fakeDev{info: hba, sup: arcIo}
 	m := withDev(d, nil)
@@ -245,7 +245,7 @@ func TestCollectSupplementGate(t *testing.T) {
 	}
 
 	// Nœud d'une autre carte : aucune commande firmware n'est envoyée.
-	other := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 1, Bus: 2}, sup: arcIo}
+	other := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 1, Bus: 2, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}, sup: arcIo}
 	withDev(other, nil).Collect(c, ref)
 	if other.supCall != 0 {
 		t.Fatal("706 envoyée sur un nœud qui ne désigne pas la carte")
@@ -258,7 +258,7 @@ func TestCollectSupplementGate(t *testing.T) {
 func TestCollectReportsCapabilitiesCollection(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
 	c := card("0000:01:00.0", "0")
-	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
 
 	f := &fakeDev{info: hba, supErr: errors.New("EIO")}
 	m := withDev(f, nil)
@@ -271,7 +271,7 @@ func TestCollectReportsCapabilitiesCollection(t *testing.T) {
 			t.Fatalf("cycle %d : %+v", i, r.Collected)
 		}
 	}
-	other := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 1, Bus: 2}, sup: arcIo}
+	other := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 1, Bus: 2, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}, sup: arcIo}
 	if r := withDev(other, nil).Collect(c, ref); r.Collected != nil {
 		t.Fatalf("lecture non tentée rapportée : %+v", r.Collected)
 	}
@@ -283,7 +283,7 @@ func TestCollectReportsCapabilitiesCollection(t *testing.T) {
 func TestCollectCacheProtection(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
 	c := card("0000:01:00.0", "0")
-	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
 	run := func(a *cpAnswer) (module.Result, *fakeDev) {
 		d := &fakeDev{info: hba, sup: arcIo, cp: a}
 		return withDev(d, nil).Collect(c, ref), d
@@ -346,10 +346,10 @@ func ptr(b bool) *bool { return &b }
 func TestCollectVolumesReference(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
 	c := card("0000:01:00.0", "0")
-	d := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}, sup: arcIo}
+	d := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}, sup: arcIo}
 	r := withDev(d, nil).Collect(c, ref)
 	// Type non observé : niveau inconnu, jamais deviné.
-	d2 := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}, sup: arcIo, paged: func(rd aacraid.PagedRead, p, size uint32) ([]byte, error) {
+	d2 := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}, sup: arcIo, paged: func(rd aacraid.PagedRead, p, size uint32) ([]byte, error) {
 		b, err := referencePaged(rd, p, size)
 		if err == nil && rd == aacraid.ReadContainerInfo && p == 0xfc {
 			b[48] = 4
@@ -403,7 +403,7 @@ func TestCollectVolumesReference(t *testing.T) {
 func TestCollectDiskInventoryFailure(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
 	c := card("0000:01:00.0", "0")
-	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
 	cases := map[string]func(r aacraid.PagedRead, p, size uint32) ([]byte, error){
 		"lecture en échec": func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
 			if r == aacraid.ReadDiskInfo && p == 5 {
@@ -451,7 +451,7 @@ func TestCollectDiskInventoryFailure(t *testing.T) {
 func TestCollectVolumesFailureAndGate(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
 	c := card("0000:01:00.0", "0")
-	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
 	for _, failing := range []string{"229-0", "234-fd", "247-0", "249-1d000003"} {
 		d := &fakeDev{info: hba, sup: arcIo, paged: func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
 			if fmt.Sprintf("%d-%x", r, p) == failing {
@@ -476,7 +476,7 @@ func TestCollectVolumesFailureAndGate(t *testing.T) {
 // collecteurs sont publiés non pris en charge.
 func TestCollectRequiresQualification(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
-	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
 	variants := map[string]func(c *module.Card){
 		"autre modèle":        func(c *module.Card) { c.PCI.SubsystemDevice = "0x0300" },
 		"autre puce":          func(c *module.Card) { c.PCI.Device = "0x028c" },
@@ -486,8 +486,18 @@ func TestCollectRequiresQualification(t *testing.T) {
 	for name, mod := range variants {
 		c := card("0000:01:00.0", "0")
 		mod(&c)
-		d := &fakeDev{info: hba, sup: arcIo}
+		// Carte cohérente : le pilote annonce les identifiants de sysfs.
+		h := hba
+		id, err := pciIdentity(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.VendorID, h.DeviceID, h.SubVendorID, h.SubSystemID = id.Vendor, id.Device, id.SubVendor, id.SubDevice
+		d := &fakeDev{info: h, sup: arcIo}
 		r := withDev(d, nil).Collect(c, ref)
+		if !r.NodeValid {
+			t.Fatalf("%s : nœud refusé : %+v", name, r)
+		}
 		if d.cpCall != 0 || len(d.reads) != 0 || d.cmCall != 0 {
 			t.Fatalf("%s : lectures envoyées (ZMM %d, paginées %v)", name, d.cpCall, d.reads)
 		}
@@ -508,7 +518,7 @@ func TestCollectRequiresQualification(t *testing.T) {
 // Deux conteneurs au même UID : relevé rejeté, rien publié.
 func TestCollectRejectsDuplicateUID(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
-	d := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}, sup: arcIo, paged: func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
+	d := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}, sup: arcIo, paged: func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
 		if r == aacraid.ReadContainerInfo && p == 0xfd {
 			p = 0xfc // même information, donc même UID
 		}
@@ -525,8 +535,8 @@ func TestCollectRejectsDuplicateUID(t *testing.T) {
 func TestBlockedCardDoesNotBlockOthers(t *testing.T) {
 	wait := make(chan struct{})
 	devs := map[string]*fakeDev{
-		"/n/aac0": {info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}, sup: arcIo, supWait: wait},
-		"/n/aac1": {info: aacraid.HBAInfo{AdapterNumber: 1, Bus: 2}, sup: arcIo},
+		"/n/aac0": {info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}, sup: arcIo, supWait: wait},
+		"/n/aac1": {info: aacraid.HBAInfo{AdapterNumber: 1, Bus: 2, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}, sup: arcIo},
 	}
 	m := &Module{open: func(path string, _ uint64) (device, error) { return devs[path], nil }}
 	go m.Collect(card("0000:01:00.0", "0"), []module.NodeRef{{Path: "/n/aac0", Dev: 1}})
@@ -552,7 +562,7 @@ func TestBlockedCardDoesNotBlockOthers(t *testing.T) {
 func TestCollectDiskLocations(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
 	c := card("0000:01:00.0", "0")
-	d := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}, sup: arcIo}
+	d := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}, sup: arcIo}
 	m := withDev(d, nil)
 	var r module.Result
 	for i := 0; i < 3; i++ {
@@ -579,7 +589,7 @@ func TestCollectDiskLocations(t *testing.T) {
 func TestCollectDiskLocationFailures(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
 	c := card("0000:01:00.0", "0")
-	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
 
 	fail := true
 	d := &fakeDev{info: hba, sup: arcIo, cmap: func() (aacraid.ConnectorMap, error) {
@@ -637,7 +647,7 @@ func TestCollectDiskLocationFailures(t *testing.T) {
 // pris pour un disque.
 func TestCollectDiskOSDevices(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
-	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
 	devices := func() []sysfs.SCSIDevice {
 		out := []sysfs.SCSIDevice{{Address: "0:0:0:0", Channel: 0, Target: 0, Generic: "sg0", Serial: "TESTSN00"}}
 		for n := 0; n < 8; n++ {
@@ -682,7 +692,7 @@ func TestCollectDiskOSDevices(t *testing.T) {
 // configuration du cycle est en erreur, rien n'est publié.
 func TestCollectMemberCountMismatch(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
-	d := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}, sup: arcIo, paged: func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
+	d := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}, sup: arcIo, paged: func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
 		if r == aacraid.ReadMemberList && p == 0x1d000000 {
 			b, err := referencePaged(r, p, size)
 			if err != nil {
@@ -705,7 +715,7 @@ func TestConnectorMapRereadOnDiskChange(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
 	c := card("0000:01:00.0", "0")
 	seven := true
-	d := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}, sup: arcIo, paged: func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
+	d := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}, sup: arcIo, paged: func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
 		b, err := referencePaged(r, p, size)
 		if err == nil && r == aacraid.ReadDiskList && seven {
 			binary.LittleEndian.PutUint32(b[0:], 7) // d7 absent
@@ -723,5 +733,58 @@ func TestConnectorMapRereadOnDiskChange(t *testing.T) {
 	m.Collect(c, ref)
 	if d.cmCall != 2 || len(r.DiskLocations) != 8 {
 		t.Fatalf("%d lectures, %d emplacements après l'ajout de d7", d.cmCall, len(r.DiskLocations))
+	}
+}
+
+// Le nœud doit désigner la carte par ses quatre identifiants PCI aussi :
+// une réponse dont seul un identifiant diffère est refusée, sans aucune
+// commande firmware.
+func TestCollectRequiresPCIIdentifiers(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	good := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
+	if r := withDev(&fakeDev{info: good, sup: arcIo}, nil).Collect(card("0000:01:00.0", "0"), ref); !r.NodeValid {
+		t.Fatalf("carte de référence refusée : %+v", r)
+	}
+	for name, mod := range map[string]func(h *aacraid.HBAInfo){
+		"fabricant":      func(h *aacraid.HBAInfo) { h.VendorID = 0x1000 },
+		"puce":           func(h *aacraid.HBAInfo) { h.DeviceID = 0x028c },
+		"sous-fabricant": func(h *aacraid.HBAInfo) { h.SubVendorID = 0x103c },
+		"sous-système":   func(h *aacraid.HBAInfo) { h.SubSystemID = 0x0300 },
+	} {
+		h := good
+		mod(&h)
+		d := &fakeDev{info: h, sup: arcIo}
+		r := withDev(d, nil).Collect(card("0000:01:00.0", "0"), ref)
+		if r.NodeValid || r.Err == nil || d.supCall != 0 || d.cpCall != 0 || len(d.reads) != 0 || d.cmCall != 0 {
+			t.Fatalf("%s différent : %+v (706 %d, ZMM %d, paginées %v)", name, r, d.supCall, d.cpCall, d.reads)
+		}
+	}
+	// Identifiant illisible ou hors du format sysfs : refus, sans commande.
+	for _, v := range []string{"", "0301", "0xzz"} {
+		c := card("0000:01:00.0", "0")
+		c.PCI.SubsystemDevice = v
+		d := &fakeDev{info: good, sup: arcIo}
+		if r := withDev(d, nil).Collect(c, ref); r.Err == nil || d.supCall != 0 {
+			t.Fatalf("identifiant sysfs %q accepté : %+v", v, r)
+		}
+	}
+}
+
+// Un membre listé deux fois dans un volume (cardinalité correcte) rend la
+// configuration du cycle en erreur : sinon deux séries identiques seraient
+// publiées.
+func TestCollectDuplicateMember(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	d := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301},
+		sup: arcIo, paged: func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
+			b, err := referencePaged(r, p, size)
+			if err == nil && r == aacraid.ReadMemberList && p == 0x1d000004 {
+				copy(b[8+32:8+64], b[8:8+32]) // second membre = premier
+			}
+			return b, err
+		}}
+	r := withDev(d, nil).Collect(card("0000:01:00.0", "0"), ref)
+	if r.Volumes != nil || r.Collected["volumes"] || r.CollectErr == nil {
+		t.Fatalf("%+v", r)
 	}
 }

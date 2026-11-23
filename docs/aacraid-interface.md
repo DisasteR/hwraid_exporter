@@ -57,7 +57,7 @@ Le pilote Linux interroge lui-même chaque conteneur au démarrage (`VM_NameServ
 - `/sys/class/scsi_device/H:0:T:0/device/level` : type du conteneur (table `container_types` de `aachba.c` : `Volume`, `Mirror`, `Stripe`, `RAID5`, `RAID10`, `RAID6`…) ;
 - `/sys/class/scsi_host/hostH/` : `model`, `hba_kernel_version`, `serial_number`, `unique_id`.
 
-Le nom, la capacité, le type et l'identifiant unique d'un conteneur sont donc disponibles par la voie publique. L'exporter la privilégie pour ces informations.
+Le nom, la capacité, le type et l'identifiant unique d'un conteneur sont donc disponibles par la voie publique, mais seulement pour les volumes présentés à Linux et sans leurs membres. L'exporter lit ces informations, avec la composition des volumes, par l'information de conteneur (234) et la liste des membres (249), qui décrivent aussi les volumes internes d'un assemblage.
 
 ## 4. Transfert paginé [observé]
 
@@ -66,7 +66,7 @@ Les informations détaillées sont renvoyées par un transfert en plusieurs FIB,
 | Étape | Mots 0 à 7 de la requête | Réponse |
 |---|---|---|
 | Ouverture | `2`, sous-commande, paramètre, `0`, marque, `0xffffffff`, `0`, taille | statut, écho, `0xc9`, taille totale, `0xda`, identifiant du transfert |
-| Morceau n | `2`, `83`, `0xc9` (n = 0) ou `0xc8`, taille totale, `0xda`, identifiant, n, taille totale | les huit mots, puis **448 octets de données** |
+| Morceau n | `2`, `83`, `0xc9` (n = 0) ou `0xc8`, taille totale, `0xda`, identifiant, n, taille totale | les huit mots, puis **432 octets de données** ; `Size` = 496, en-tête compris |
 | Clôture | `2`, `84`, `0xc8`, taille totale, `0xda`, identifiant, dernier n lu, taille totale | `0xc6` au mot 2 |
 
 | Lecture | Sous-commande | Paramètre | Marque | Taille |
@@ -77,7 +77,7 @@ Les informations détaillées sont renvoyées par un transfert en plusieurs FIB,
 | Information de disque | 248 | numéro du disque | 0 | 4 096 |
 | Liste des membres | 249 | UID du conteneur | 0 | 8 + 32 × nombre de membres |
 
-L'outil de référence laisse au-delà des huit mots des résidus de ses propres tampons ; ils ne font pas partie de la requête et l'exporter envoie des zéros. Le champ `Size` des réponses de morceau vaut 496 ; le pas de 448 octets est établi par la reconstitution des transferts.
+L'outil de référence laisse au-delà des huit mots des résidus de ses propres tampons ; ils ne font pas partie de la requête et l'exporter envoie des zéros. Une réponse de morceau porte toujours la marque `0xc8` et `Size` = 496 : 32 octets d'en-tête, 32 de mots de contrôle et 432 de données. Le tampon copié par le pilote fait 512 octets, mais la carte n'en écrit pas les 16 derniers : sur les 325 réponses de morceau capturées, ils sont toujours nuls et identiques à la requête, y compris dans les transferts denses. Le pas est donc de 432 octets par morceau ; l'exporter exige la marque et la valeur de `Size`, et n'utilise jamais les octets non écrits.
 
 L'exporter ne lit que les morceaux nécessaires aux champs qu'il décode, puis clôture le transfert : sur l'hôte de référence, un seul morceau suffit pour chaque lecture. La clôture après le morceau 0 est une forme employée par l'outil de référence ; le firmware de l'hôte de référence l'accepte aussi pour les lectures de 4 096 octets (vérifié le 2026-11-23).
 
@@ -168,23 +168,23 @@ Vérifié sur les huit disques de l'hôte de référence contre l'outil témoin 
 
 ### Statistiques du contrôleur (sous-commande 244, paramètre : 0) [observé]
 
-Transfert paginé (section 4) de 2 788 octets sur l'hôte de référence, quand la collecte des statistiques est activée sur la carte. Compteurs cumulés depuis la dernière remise à zéro, entiers de 8 octets :
+Transfert paginé (section 4) de 2 788 octets sur l'hôte de référence, quand la collecte des statistiques est activée sur la carte. Compteurs cumulés depuis la dernière remise à zéro, entiers de 8 octets. Positions dans les données reconstituées au pas de 432 octets ; celles du troisième morceau ont été corrigées le 2026-11-23 (relevé initial au pas de 448, décalé de 32 octets). Le relevé des valeurs contre l'outil témoin reste à refaire avant toute publication de ces compteurs :
 
 | Octets | Champ |
 |---|---|
 | 8-11 | secondes écoulées depuis la dernière remise à zéro |
 | 16-103 | commandes en attente : 11 classes (0, 1, 2, 4 … 512) |
-| 1136 | lectures de l'hôte (volume 0) |
-| 1144 | écritures de l'hôte |
-| 1152 | secteurs lus |
-| 1160 | secteurs écrits |
-| 1184, 1192 | lectures et écritures hors cache |
-| 1200 | lectures servies entièrement par le cache DRAM |
-| 1208 | lectures en attente d'un chargement ou d'un vidage |
-| 1216 | lectures servies en partie par le cache |
-| 1224 | écritures absorbées par le cache DRAM |
-| 1232 | écritures en attente d'un chargement ou d'un vidage |
-| 1240 | vidages du cache DRAM |
+| 1104 | lectures de l'hôte (volume 0) |
+| 1112 | écritures de l'hôte |
+| 1120 | secteurs lus |
+| 1128 | secteurs écrits |
+| 1152, 1160 | lectures et écritures hors cache |
+| 1168 | lectures servies entièrement par le cache DRAM |
+| 1176 | lectures en attente d'un chargement ou d'un vidage |
+| 1184 | lectures servies en partie par le cache |
+| 1192 | écritures absorbées par le cache DRAM |
+| 1200 | écritures en attente d'un chargement ou d'un vidage |
+| 1208 | vidages du cache DRAM |
 
 Le même transfert porte des histogrammes par volume (temps de complétion, intervalle entre entrées-sorties, taille, déplacement) et des compteurs d'erreurs par disque ; leurs positions restent à établir. Les positions des volumes suivants le premier ne sont pas établies (un seul volume sur l'hôte de référence).
 

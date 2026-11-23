@@ -40,11 +40,23 @@ func TestDecodeHBAInfoFields(t *testing.T) {
 	if got != want {
 		t.Fatalf("obtenu %+v, attendu %+v", got, want)
 	}
-	if !got.MatchesPCI(0, 1, 0, 0) {
+	id := PCIIdentity{Bus: 1, Slot: 0, Function: 0, Vendor: 0x9005, Device: 0x028b, SubVendor: 0x9005, SubDevice: 0x0800}
+	if !got.Matches(0, id) {
 		t.Fatal("la carte 0000:01:00.0, unique_id 0, doit correspondre")
 	}
-	if got.MatchesPCI(1, 1, 0, 0) || got.MatchesPCI(0, 2, 0, 0) || got.MatchesPCI(0, 1, 0, 1) {
-		t.Fatal("un numéro de carte, un bus ou une fonction différents ne doivent pas correspondre")
+	for name, mod := range map[string]func(*PCIIdentity){
+		"bus": func(i *PCIIdentity) { i.Bus = 2 }, "slot": func(i *PCIIdentity) { i.Slot = 1 }, "fonction": func(i *PCIIdentity) { i.Function = 1 },
+		"fabricant": func(i *PCIIdentity) { i.Vendor = 0x1000 }, "puce": func(i *PCIIdentity) { i.Device = 0x028c },
+		"sous-fabricant": func(i *PCIIdentity) { i.SubVendor = 0x103c }, "sous-système": func(i *PCIIdentity) { i.SubDevice = 0x0301 },
+	} {
+		other := id
+		mod(&other)
+		if got.Matches(0, other) {
+			t.Fatalf("%s différent accepté", name)
+		}
+	}
+	if got.Matches(1, id) {
+		t.Fatal("un autre numéro de carte accepté")
 	}
 }
 

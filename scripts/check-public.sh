@@ -33,12 +33,15 @@ for f in sys.stdin.buffer.read().split(b"\0"):
     if not f:
         continue
     raw = open(f, "rb").read()
-    hays = [raw.lower()]
+    hays = [f.lower(), raw.lower()]
     if f.endswith(b".hex"):
         try:
-            hays.append(bytes.fromhex(raw.decode().strip()))
+            dec = bytes.fromhex(raw.decode().strip())
         except ValueError:
-            pass
+            print("fichier hexadécimal illisible :", f.decode(), file=sys.stderr)
+            bad = 1
+            continue
+        hays += [dec, dec.lower()]
     for d in deny:
         kind, v = d.split(":", 1)
         needles = [v.lower().encode()] if kind == "text" else [bytes.fromhex(v), v.lower().encode()]

@@ -74,6 +74,8 @@ Ou construire le binaire (statique, sans cgo) :
 CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=$(git describe --tags --always)" -o hwraid-exporter ./cmd/hwraid-exporter
 ```
 
+Puis installer le binaire téléchargé (`hwraid-exporter-<version>-linux-amd64`) ou construit (`hwraid-exporter`) :
+
 ```bash
 sudo install -m 0755 hwraid-exporter-<version>-linux-amd64 /usr/local/bin/hwraid-exporter
 ```
@@ -86,7 +88,7 @@ sudo install -m 0644 deploy/systemd/hwraid-exporter.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now hwraid-exporter
 ```
 
-L'unité [`deploy/systemd/hwraid-exporter.service`](../deploy/systemd/hwraid-exporter.service) borne la phase privilégiée : capacités limitées à celles de la préparation, création et lecture des seuls nœuds `aac` (`DeviceAllow=char-aac rm`), système de fichiers en lecture seule, filtre d'appels système. Elle est démarrée en CI à chaque modification. Pour changer d'option, surcharger `ExecStart` (`systemctl edit hwraid-exporter`) :
+L'unité n'a été démarrée qu'en CI, sans carte : la création du nœud `aac` sous `DeviceAllow=char-aac rm` et la collecte n'y sont pas encore recettées avec une 6805. L'unité [`deploy/systemd/hwraid-exporter.service`](../deploy/systemd/hwraid-exporter.service) borne la phase privilégiée : capacités limitées à celles de la préparation, création et lecture des seuls nœuds `aac` (`DeviceAllow=char-aac rm`), système de fichiers en lecture seule, filtre d'appels système. Elle est démarrée en CI à chaque modification. Pour changer d'option, surcharger `ExecStart` (`systemctl edit hwraid-exporter`) :
 
 ```ini
 [Service]

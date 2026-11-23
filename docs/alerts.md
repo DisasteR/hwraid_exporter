@@ -22,6 +22,7 @@ Ces règles sont un point de départ : seuils, durées et gravités sont à adap
 | `HwraidDiskFailed` | disque `failed` (membre absent de la carte) | immédiat | critical | remplacer le disque |
 | `HwraidVolumeDisappeared` | volume vu dans les dernières 24 h, absent alors que la lecture réussit | immédiat, pendant 24 h | warning | suppression ou perte du volume ; mettre en silence après une suppression volontaire |
 | `HwraidCacheProtectionFailed` | protection du cache `failed` | 5 min | warning | remplacer le module ; le cache d'écriture n'est plus protégé contre une coupure |
+| `HwraidCacheProtectionStateUnknown` | protection du cache `unknown` (combinaison d'état non qualifiée) | 30 min | warning | vérifier avec l'outil du constructeur ; sa protection n'est pas garantie |
 | `HwraidCacheProtectionNotReady` | protection du cache `charging` | 2 h | warning | une charge normale dure quelques minutes |
 | `HwraidCollectionStale` | aucun succès depuis plus de 3 intervalles de collecte (lecture en échec ou hors délai) | 1 min | warning | consulter le journal de l'exporter |
 | `HwraidCollectionNeverSucceeded` | lecture en échec, jamais réussie depuis le démarrage | 15 min | warning | consulter le journal de l'exporter |

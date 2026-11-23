@@ -111,6 +111,19 @@ groups:
           summary: "Protection du cache en charge depuis plus de 2 h ({{ $labels.controller }})"
           description: "Un module sain se charge en quelques minutes : une charge qui n'aboutit pas annonce une panne du module."
 
+      - alert: HwraidCacheProtectionStateUnknown
+        expr: |
+          hwraid_cache_protection_state{state="unknown"} == 1
+          or (last_over_time(hwraid_cache_protection_state{state="unknown"}[10m]) == 1
+              unless on (job, instance, controller) hwraid_cache_protection_state
+              unless on (job, instance, controller) hwraid_cache_protection_present == 0)
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "État de la protection du cache non déterminé ({{ $labels.controller }})"
+          description: "Le module répond avec une combinaison d'état non qualifiée : sa protection n'est pas garantie. Vérifier avec l'outil du constructeur."
+
   - name: hwraid-visibilite
     rules:
       - alert: HwraidCollectionStale

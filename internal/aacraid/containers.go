@@ -33,8 +33,13 @@ func DecodeContainerList(d []byte) ([]uint32, error) {
 		return nil, fmt.Errorf("container list: %d entries for %d bytes", n, len(d))
 	}
 	out := make([]uint32, n)
+	seen := map[uint32]bool{}
 	for i := range out {
 		out[i] = le.Uint32(d[8+4*i:])
+		if seen[out[i]] {
+			return nil, fmt.Errorf("container list: duplicate container %d", out[i])
+		}
+		seen[out[i]] = true
 	}
 	return out, nil
 }

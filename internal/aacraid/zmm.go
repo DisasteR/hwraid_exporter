@@ -122,6 +122,10 @@ const (
 	stateInstall  = 0x1
 	stateCharging = 0x4
 	stateReady    = 0x8
+	// stateObserved0x80 : bit présent sur le module en panne de l'hôte de
+	// référence (R = 0x40000081), sens non établi.
+	stateObserved0x80 = 0x80
+	stateKnownBits    = stateInstall | stateCharging | stateReady | stateObserved0x80
 )
 
 // ZMMStatus est le résultat décodé de la lecture d'état.
@@ -145,15 +149,26 @@ func DecodeCacheProtectionState(b []byte) (ZMMStatus, error) {
 }
 
 // zmmState applique la règle de docs/aacraid-interface.md (section 6).
+//
+// La règle n'annonce jamais à tort un module sain ou absent : optimal et
+// charging exigent installé et prêt sans aucun bit non reconnu (0x80, non
+// qualifié sur un module sain, compris) ; not_installed exige qu'aucun bit
+// d'état ne soit positionné. Un module installé mais pas prêt est en panne,
+// quels que soient les autres bits. Toute autre combinaison est unknown.
 func zmmState(r uint32) CacheProtectionState {
+	low := r &^ stateTypeMask
 	switch {
 	case r&stateTypeMask != stateTypeZMM:
 		return CacheProtectionOtherType
-	case r&stateInstall == 0:
+	case low == 0:
 		return CacheProtectionNotInstalled
-	case r&stateReady == 0:
+	case low&stateInstall == 0:
+		return CacheProtectionUnknown
+	case low&stateReady == 0:
 		return CacheProtectionFailed
-	case r&stateCharging != 0:
+	case low&^(stateInstall|stateCharging|stateReady) != 0:
+		return CacheProtectionUnknown
+	case low&stateCharging != 0:
 		return CacheProtectionCharging
 	default:
 		return CacheProtectionOptimal
