@@ -144,7 +144,7 @@ Lue pour chaque disque de la liste 247 (collecteur `disk_inventory`). Les champs
 | 116-135 | numéro de série, terminé par un octet nul s'il est plus court |
 | 288-295 | WWN, dans l'ordre de l'identifiant (`0x5000c500…`) |
 
-Vérifié sur les huit disques de l'hôte de référence contre l'outil témoin (même capture) : fabricant, modèle, firmware, numéro de série, WWN et capacité brute identiques. Le numéro de série figure aussi aux octets 304-327, cadré à droite ; il n'est pas utilisé.
+Vérifié sur les huit disques de l'hôte de référence contre l'outil témoin (même capture) : fabricant, modèle, firmware, numéro de série, WWN et capacité brute identiques. Lecture par l'exporter validée le 2026-11-23 sur l'hôte de référence (huit disques, valeurs identiques). Le numéro de série figure aussi aux octets 304-327, cadré à droite ; il n'est pas utilisé.
 
 La réponse ne contient pas d'emplacement (connecteur, position). L'outil témoin affiche « Connector N÷4, Device N mod 4 » pour le disque N ; les octets 191 et 200 portent une autre numérotation (4 × (N÷4) + 3 − N mod 4). Aucune des deux n'est publiée : la formule réelle de l'emplacement physique n'est pas établie, et une erreur ferait retirer le mauvais disque. Le numéro de série, imprimé sur l'étiquette du disque, sert à l'identifier physiquement.
 
