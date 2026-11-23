@@ -1,0 +1,26 @@
+# Mises à jour des dépendances épinglées : module Go, image de compilation
+# (version et empreinte) et actions GitHub (empreintes). Les images utilisées
+# dans les étapes de CI (prom/prometheus, alpine) ne sont pas suivies : à
+# mettre à jour à la main.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      go:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
