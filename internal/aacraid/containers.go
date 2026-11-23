@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"strings"
+	"unicode"
 )
 
 // Formats des lectures de conteneurs, de membres et de disques
@@ -112,7 +114,7 @@ func DecodeContainerInfo(d []byte) (ContainerInfo, error) {
 		Parent:  le.Uint32(d[containerParent:]),
 		Members: int(le.Uint32(d[containerMembers:])),
 		Blocks:  le.Uint64(d[containerBlocks:]),
-		Name:    string(name),
+		Name:    printable(name),
 	}
 	if c.Members < 1 || c.Members > MaxMembers {
 		return ContainerInfo{}, fmt.Errorf("information de conteneur %#x : %d membres", c.UID, c.Members)
@@ -163,4 +165,16 @@ func DecodeMemberList(d []byte) ([]Member, error) {
 		}
 	}
 	return out, nil
+}
+
+// printable garde un nom affichable : UTF-8 valide, sans caractère de
+// contrôle (un label Prometheus non UTF-8 ferait rejeter tout le scrape).
+func printable(b []byte) string {
+	s := strings.ToValidUTF8(string(b), "?")
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '?'
+		}
+		return r
+	}, s)
 }

@@ -25,6 +25,7 @@ type Controller struct {
 	// NodeChecked indique qu'une vérification du nœud a été tentée ;
 	// NodeValid en donne le résultat.
 	NodeChecked, NodeValid bool
+	TimedOut               bool // collecte hors délai pendant ce cycle
 	NodeError              string
 	Unsupported            []string // collecteurs non pris en charge par la carte
 	CollectError           string   // échec d'une lecture firmware
@@ -44,11 +45,10 @@ type Snapshot struct {
 	Interval time.Duration
 }
 
-// Build construit l'instantané à partir du plan (cartes et modules) et des
-// résultats de collecte, indexés par adresse PCI. Une carte RAID sans module
-// est inventoriée avec backend_supported à 0.
-// Build construit l'instantané d'un cycle. tracker peut être nil (pas de
-// dates de dernier succès).
+// Build construit l'instantané d'un cycle à partir du plan (cartes et
+// modules) et des résultats de collecte, indexés par adresse PCI. Une carte
+// RAID sans module est inventoriée avec backend_supported à 0. tracker peut
+// être nil (ni dates de dernier succès ni mémoire d'identité).
 func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tracker *Tracker, interval time.Duration) Snapshot {
 	serials := map[string]int{}
 	for _, pc := range p.Cards {
@@ -65,9 +65,15 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 			Firmware: firstAttr(pc.Card, func(h sysfs.SCSIHost) string { return h.Firmware }),
 		}
 		// Une série n'identifie une carte que si elle est non vide et unique.
-		if s := firstAttr(pc.Card, func(h sysfs.SCSIHost) string { return h.SerialNumber }); s != "" && serials[s] == 1 {
+		s := firstAttr(pc.Card, func(h sysfs.SCSIHost) string { return h.SerialNumber })
+		switch known := tracker.serialLabel(addr); {
+		case s != "" && serials[s] == 1:
 			c.Label, c.IdentitySource = "serial:"+s, "serial"
-		} else {
+		case s == "" && known != "" && serials[strings.TrimPrefix(known, "serial:")] == 0:
+			// Numéro de série illisible ce cycle : identité établie conservée,
+			// sauf si une autre carte présente ce numéro.
+			c.Label, c.IdentitySource = known, "serial"
+		default:
 			c.Label, c.IdentitySource = "pci:"+addr, "pci"
 		}
 		if pc.Module != nil {
@@ -78,6 +84,12 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 				c.NodeError = pc.Err.Error()
 			case !ok:
 				c.NodeError = "aucune collecte pour cette carte"
+			case r.TimedOut:
+				// Nœud non observé : management_node_valid n'est pas publié.
+				c.NodeChecked, c.TimedOut = false, true
+				c.Collected = r.Collected
+				c.LastSuccess = tracker.Last(addr)
+				c.CollectError = "collecte hors délai"
 			case r.Err != nil:
 				c.NodeError = r.Err.Error()
 			default:
@@ -85,9 +97,7 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 				c.Unsupported = r.Unsupported
 				c.Collected = r.Collected
 				c.CacheProtection = r.CacheProtection
-				if tracker != nil {
-					c.LastSuccess = tracker.Last(addr)
-				}
+				c.LastSuccess = tracker.Last(addr)
 				c.Volumes, c.Disks = r.Volumes, r.Disks
 				if r.CollectErr != nil {
 					c.CollectError = r.CollectErr.Error()

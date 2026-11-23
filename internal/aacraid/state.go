@@ -104,11 +104,15 @@ func Evaluate(containers []Container, disks []uint32) Evaluation {
 			ev.Volumes[c.Info.UID] = mirrorState(c, present)
 		}
 	}
+	byUID := map[uint32]Container{}
+	for _, c := range containers {
+		byUID[c.Info.UID] = c
+	}
 	for _, c := range containers {
 		if c.Info.Type == TypeMirror {
 			continue
 		}
-		ev.Volumes[c.Info.UID] = assemblyState(c, ev.Volumes)
+		ev.Volumes[c.Info.UID] = assemblyState(c, ev.Volumes, byUID)
 	}
 	return ev
 }
@@ -120,6 +124,9 @@ func mirrorState(c Container, present map[uint32]bool) VolumeState {
 		return VolumeUnknown
 	}
 	counted, rebuilding := 0, false
+	if c.Members[0].Disk == c.Members[1].Disk {
+		return VolumeUnknown // les deux membres désignent le même disque
+	}
 	for _, m := range c.Members {
 		if m.Disk == NoUID {
 			return VolumeUnknown
@@ -149,12 +156,23 @@ func mirrorState(c Container, present map[uint32]bool) VolumeState {
 // assemblyState : un conteneur qui assemble des conteneurs est optimal si
 // tous ses membres le sont ; sinon indéterminé, la propagation de l'état
 // d'un membre n'étant pas établie. Tout autre type est indéterminé.
-func assemblyState(c Container, volumes map[uint32]VolumeState) VolumeState {
+//
+// Seule la forme observée est évaluée : un assemblage de miroirs distincts,
+// chacun déclarant l'assemblage comme parent. Toute autre forme (membre
+// disque, assemblage imbriqué, membre en double, parenté incohérente) est
+// indéterminée, indépendamment de l'ordre de lecture.
+func assemblyState(c Container, volumes map[uint32]VolumeState, byUID map[uint32]Container) VolumeState {
 	if c.Info.Type != TypeAssembly || len(c.Members) != c.Info.Members {
 		return VolumeUnknown
 	}
+	seen := map[uint32]bool{}
 	for _, m := range c.Members {
-		if m.ChildUID == NoUID || volumes[m.ChildUID] != VolumeOptimal {
+		child, ok := byUID[m.ChildUID]
+		if m.ChildUID == NoUID || !ok || child.Info.Type != TypeMirror || child.Info.Parent != c.Info.UID || seen[m.ChildUID] {
+			return VolumeUnknown
+		}
+		seen[m.ChildUID] = true
+		if volumes[m.ChildUID] != VolumeOptimal {
 			return VolumeUnknown
 		}
 	}

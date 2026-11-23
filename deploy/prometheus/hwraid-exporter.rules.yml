@@ -1,12 +1,21 @@
 # Règles d'alerte d'exemple pour hwraid_exporter (docs/alerts.md).
-# Les états sont repris sur 10 minutes (max_over_time) : une lecture en
-# échec ponctuelle, qui retire les séries d'état, n'éteint pas une alerte
-# de panne. La perte de visibilité est signalée par des règles séparées.
+#
+# Règles d'état : l'état publié prime. La dernière valeur connue (sur
+# 10 minutes) ne sert que lorsque l'objet n'a plus aucune série d'état, ce
+# qui arrive pendant une lecture en échec : une panne ne s'éteint pas sur un
+# trou de lecture, et un état passager ne prolonge pas l'alerte une fois
+# l'objet revenu à un autre état.
+#
+# Toutes les jointures portent job et instance : deux hôtes peuvent publier
+# le même identifiant de contrôleur (pci:0000:01:00.0).
 groups:
   - name: hwraid-etat
     rules:
       - alert: HwraidVolumeFailed
-        expr: max_over_time(hwraid_volume_state{state="failed"}[10m]) == 1
+        expr: |
+          hwraid_volume_state{state="failed"} == 1
+          or (last_over_time(hwraid_volume_state{state="failed"}[10m]) == 1
+              unless on (job, instance, controller, volume) hwraid_volume_state)
         labels:
           severity: critical
         annotations:
@@ -14,7 +23,10 @@ groups:
           description: "Le volume a perdu plus de membres que sa redondance ne le permet : données inaccessibles ou perdues."
 
       - alert: HwraidVolumeDegraded
-        expr: max_over_time(hwraid_volume_state{state="degraded"}[10m]) == 1
+        expr: |
+          hwraid_volume_state{state="degraded"} == 1
+          or (last_over_time(hwraid_volume_state{state="degraded"}[10m]) == 1
+              unless on (job, instance, controller, volume) hwraid_volume_state)
         for: 5m
         labels:
           severity: critical
@@ -23,7 +35,10 @@ groups:
           description: "Le volume fonctionne sans redondance. Remplacer le disque en panne ; une seconde panne dans ce volume serait fatale."
 
       - alert: HwraidVolumeRebuilding
-        expr: max_over_time(hwraid_volume_state{state="degraded_rebuilding"}[10m]) == 1
+        expr: |
+          hwraid_volume_state{state="degraded_rebuilding"} == 1
+          or (last_over_time(hwraid_volume_state{state="degraded_rebuilding"}[10m]) == 1
+              unless on (job, instance, controller, volume) hwraid_volume_state)
         for: 5m
         labels:
           severity: warning
@@ -32,7 +47,10 @@ groups:
           description: "Redondance absente jusqu'à la fin de la reconstruction. Éviter toute intervention et toute coupure."
 
       - alert: HwraidVolumeStateUnknown
-        expr: max_over_time(hwraid_volume_state{state="unknown"}[10m]) == 1
+        expr: |
+          hwraid_volume_state{state="unknown"} == 1
+          or (last_over_time(hwraid_volume_state{state="unknown"}[10m]) == 1
+              unless on (job, instance, controller, volume) hwraid_volume_state)
         for: 30m
         labels:
           severity: warning
@@ -41,7 +59,10 @@ groups:
           description: "La carte a répondu mais l'état n'est pas interprétable avec certitude (type non qualifié, membre non optimal sur un assemblage). Vérifier les volumes membres et l'outil du constructeur."
 
       - alert: HwraidDiskFailed
-        expr: max_over_time(hwraid_disk_state{state="failed"}[10m]) == 1
+        expr: |
+          hwraid_disk_state{state="failed"} == 1
+          or (last_over_time(hwraid_disk_state{state="failed"}[10m]) == 1
+              unless on (job, instance, controller, disk) hwraid_disk_state)
         labels:
           severity: critical
         annotations:
@@ -49,19 +70,26 @@ groups:
           description: "Disque membre d'un volume mais absent de la carte."
 
       - alert: HwraidVolumeDisappeared
+        # Volume vu dans les dernières 24 h, absent alors que la lecture des
+        # volumes réussit. L'alerte dure 24 h : la mettre en silence après
+        # une suppression volontaire.
         expr: |
-          (hwraid_volume_info offset 15m unless on (controller, volume) hwraid_volume_info)
-          and on (controller) hwraid_collection_success{collector="volumes"} == 1
+          (last_over_time(hwraid_volume_info[1d])
+              unless on (job, instance, controller, volume) hwraid_volume_info)
+          and on (job, instance, controller) hwraid_collection_success{collector="volumes"} == 1
         labels:
           severity: warning
         annotations:
           summary: "Volume {{ $labels.volume }} disparu ({{ $labels.controller }})"
-          description: "Le volume était présent il y a 15 minutes et n'apparaît plus alors que la lecture des volumes réussit : suppression ou perte du volume."
+          description: "Le volume a été vu dans les dernières 24 heures et n'apparaît plus alors que la lecture des volumes réussit : suppression ou perte du volume."
 
   - name: hwraid-protection-cache
     rules:
       - alert: HwraidCacheProtectionFailed
-        expr: max_over_time(hwraid_cache_protection_state{state="failed"}[10m]) == 1
+        expr: |
+          hwraid_cache_protection_state{state="failed"} == 1
+          or (last_over_time(hwraid_cache_protection_state{state="failed"}[10m]) == 1
+              unless on (job, instance, controller) hwraid_cache_protection_state)
         for: 5m
         labels:
           severity: warning
@@ -70,7 +98,10 @@ groups:
           description: "Le module de protection du cache ne protège plus les données en attente d'écriture. Si le cache d'écriture reste actif, une coupure de courant peut les perdre."
 
       - alert: HwraidCacheProtectionNotReady
-        expr: max_over_time(hwraid_cache_protection_state{state="charging"}[10m]) == 1
+        expr: |
+          hwraid_cache_protection_state{state="charging"} == 1
+          or (last_over_time(hwraid_cache_protection_state{state="charging"}[10m]) == 1
+              unless on (job, instance, controller) hwraid_cache_protection_state)
         for: 2h
         labels:
           severity: warning
@@ -82,10 +113,10 @@ groups:
     rules:
       - alert: HwraidCollectionStale
         # S'adapte à l'intervalle configuré : aucun succès depuis plus de
-        # trois cycles de collecte.
+        # trois cycles de collecte (lecture en échec ou hors délai).
         expr: |
           time() - hwraid_collection_last_success_timestamp_seconds
-            > on (controller) group_left 3 * hwraid_collection_interval_seconds
+            > on (job, instance, controller) group_left 3 * hwraid_collection_interval_seconds
         for: 1m
         labels:
           severity: warning
@@ -98,7 +129,7 @@ groups:
         # date de dernier succès).
         expr: |
           hwraid_collection_success == 0
-            unless on (controller, collector) hwraid_collection_last_success_timestamp_seconds
+            unless on (job, instance, controller, collector) hwraid_collection_last_success_timestamp_seconds
         for: 15m
         labels:
           severity: warning
@@ -107,14 +138,14 @@ groups:
           description: "Depuis son démarrage, l'exporter n'a jamais réussi cette lecture. Voir le journal de l'exporter."
 
       - alert: HwraidCollectionIntervalTooLong
-        # Les fenêtres des règles d'état (max_over_time sur 10 min) ne
-        # couvrent un cycle en échec que si l'intervalle est d'au plus 5 min.
+        # Les règles d'état retiennent la dernière valeur sur 10 min : elles
+        # ne couvrent un cycle en échec que si l'intervalle est d'au plus 5 min.
         expr: hwraid_collection_interval_seconds > 300
         labels:
           severity: info
         annotations:
           summary: "Intervalle de collecte de {{ $value }} s : allonger les fenêtres des règles d'état ({{ $labels.controller }})"
-          description: "Les règles d'état utilisent max_over_time sur 10 minutes, soit au moins deux cycles pour un intervalle de 5 minutes au plus. Au-delà, passer ces fenêtres à au moins deux fois l'intervalle."
+          description: "Les règles d'état retiennent la dernière valeur connue sur 10 minutes, soit au moins deux cycles pour un intervalle de 5 minutes au plus. Au-delà, passer ces fenêtres à au moins deux fois l'intervalle."
 
       - alert: HwraidManagementNodeInvalid
         expr: hwraid_management_node_valid == 0
@@ -123,7 +154,7 @@ groups:
           severity: warning
         annotations:
           summary: "Nœud de gestion invalide ({{ $labels.controller }})"
-          description: "Erreur de déploiement : le nœud de gestion ne désigne pas la carte attendue. Aucune lecture n'est faite."
+          description: "Le nœud de gestion n'a pas pu être vérifié ou ne désigne pas la carte attendue (erreur de déploiement, carte changée). Aucune lecture n'est faite."
 
       - alert: HwraidControllerUnsupported
         expr: hwraid_controller_backend_supported == 0
@@ -134,7 +165,52 @@ groups:
           summary: "Contrôleur {{ $labels.controller }} non pris en charge"
           description: "Aucun module ne sait lire cette carte : son état n'est pas surveillé."
 
+      - alert: HwraidControllerDisappeared
+        # Contrôleur vu dans les dernières 24 h, absent alors que la
+        # découverte réussit. Un changement d'identité (numéro de série
+        # devenu illisible au démarrage) le déclenche aussi.
+        expr: |
+          (last_over_time(hwraid_controller_info[1d])
+              unless on (job, instance, controller) hwraid_controller_info)
+          and on (job, instance) hwraid_discovery_success == 1
+        labels:
+          severity: warning
+        annotations:
+          summary: "Contrôleur {{ $labels.controller }} disparu"
+          description: "La carte a été vue dans les dernières 24 heures et n'est plus découverte : carte retirée, pilote déchargé ou identité changée."
+
+      - alert: HwraidDiscoveryFailed
+        expr: hwraid_discovery_success == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Découverte des contrôleurs en échec ({{ $labels.instance }})"
+          description: "L'exporter ne parvient pas à lire tout ou partie de l'inventaire sysfs : une carte peut ne plus être surveillée. Voir le journal de l'exporter."
+
+      - alert: HwraidSnapshotNotReady
+        expr: hwraid_snapshot_ready == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Aucune collecte publiée ({{ $labels.instance }})"
+          description: "L'exporter répond mais n'a encore publié aucun résultat de collecte. Voir le journal de l'exporter."
+
+      - alert: HwraidExporterDown
+        # Instance qui a publié des métriques hwraid dans les dernières 24 h
+        # et que Prometheus n'arrive plus à collecter.
+        expr: up == 0 and on (job, instance) last_over_time(hwraid_snapshot_ready[1d])
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "hwraid_exporter injoignable ({{ $labels.instance }})"
+          description: "Prometheus ne collecte plus cet exporter : aucune alerte RAID de cet hôte ne peut se déclencher."
+
       - alert: HwraidExporterAbsent
+        # Filet global : aucune instance ne publie. Ne voit pas la perte d'une
+        # instance parmi plusieurs (voir HwraidExporterDown).
         expr: absent(hwraid_snapshot_ready)
         for: 10m
         labels:

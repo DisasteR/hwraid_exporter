@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -85,10 +86,18 @@ func serve(args []string) int {
 	uid := fs.Uint("uid", 65534, "identité d'exécution après abandon des privilèges")
 	gid := fs.Uint("gid", 65534, "groupe d'exécution après abandon des privilèges")
 	interval := fs.Duration("interval", time.Minute, "intervalle de collecte")
+	timeout := fs.Duration("collect-timeout", 0, "délai maximal de collecte d'une carte par cycle (défaut : le plus petit de 30s et de -interval)")
 	_ = fs.Parse(args)
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	if *interval <= 0 {
 		log.Error("intervalle invalide", "interval", *interval)
+		return 2
+	}
+	if *timeout == 0 {
+		*timeout = min(30*time.Second, *interval)
+	}
+	if *timeout < 0 || *timeout > *interval {
+		log.Error("délai de collecte invalide : positif et au plus égal à l'intervalle", "collect-timeout", *timeout, "interval", *interval)
 		return 2
 	}
 	if *uid == 0 || *gid == 0 || *uid >= 1<<32-1 || *gid >= 1<<32-1 {
@@ -123,12 +132,17 @@ func serve(args []string) int {
 	registry := []module.Module{aacmod.New(list)}
 	plan := module.Build(hosts, registry)
 	specs := plan.Specs(majors)
+	complete := len(herrs) == 0
 	for _, pc := range plan.Cards {
 		if pc.Err != nil {
 			log.Warn("carte non préparée", "pci", pc.Card.PCI.Address, "err", pc.Err)
+			complete = false
 		}
 	}
-	rep, err := nodes.Sync(nodesDir, specs, majors, int(*uid), int(*gid))
+	if !complete {
+		log.Warn("inventaire incomplet : aucun nœud existant ne sera supprimé")
+	}
+	rep, err := nodes.Sync(nodesDir, specs, majors, int(*uid), int(*gid), complete)
 	if err != nil {
 		log.Error("préparation des nœuds", "dir", nodesDir, "err", err)
 		return 1
@@ -164,38 +178,82 @@ func serve(args []string) int {
 	}
 
 	tracker := exporter.NewTracker()
+	runner := exporter.NewRunner()
+	lastHostErrs := ""
 	collect := func() {
-		hosts, _, err := sysfs.Discover(*root)
-		ok := err == nil
+		hosts, herrs, err := sysfs.Discover(*root)
+		// Découverte réussie : sans erreur globale ni hôte illisible.
+		ok := err == nil && len(herrs) == 0
 		if err != nil {
 			log.Warn("découverte en échec", "err", err)
 		}
-		// L'ensemble des nœuds attendus a-t-il changé depuis la préparation ?
-		// (carte ajoutée ou retirée, module rechargé, unique_id réattribué)
+		var msgs []string
+		for _, e := range herrs {
+			msgs = append(msgs, e.Host+" : "+e.Err.Error())
+		}
+		if cur := strings.Join(msgs, " ; "); cur != lastHostErrs {
+			if cur != "" {
+				log.Warn("hôtes SCSI illisibles", "err", cur)
+			} else if lastHostErrs != "" {
+				log.Info("hôtes SCSI de nouveau lisibles")
+			}
+			lastHostErrs = cur
+		}
 		cur := module.Build(hosts, registry)
-		if ok {
-			if m, cerr := readMajors(); cerr == nil && !sameSpecs(cur.Specs(m), specs) {
+		// L'ensemble des nœuds attendus a-t-il changé depuis la préparation ?
+		// (carte ajoutée ou retirée, module rechargé, major réattribué) Si
+		// oui, ou si le major ne peut être confirmé, aucun nœud n'est ouvert.
+		collectOK := err == nil
+		if err == nil {
+			switch m, cerr := readMajors(); {
+			case cerr != nil:
+				log.Error("lecture de /proc/devices : collecte suspendue", "err", cerr)
+				collectOK = false
+			case !sameSpecs(cur.Specs(m), specs):
 				log.Error("les nœuds attendus ont changé depuis la préparation : relance nécessaire")
 				requestExit(exitNodeChanged)
+				collectOK = false
 			}
 		}
-		results := map[string]module.Result{}
+		jobs := map[string]func() module.Result{}
+		collectors := map[string][]string{}
 		for _, pc := range cur.Cards {
-			if pc.Module == nil || pc.Err != nil {
+			if !collectOK || pc.Module == nil || pc.Err != nil {
 				continue
 			}
-			results[pc.Card.PCI.Address] = pc.Module.Collect(pc.Card, module.Refs(nodesDir, pc, specs))
+			addr := pc.Card.PCI.Address
+			jobs[addr] = func() module.Result { return pc.Module.Collect(pc.Card, module.Refs(nodesDir, pc, specs)) }
+			collectors[addr] = pc.Module.Collectors()
 		}
-		if ok {
-			tracker.Update(results, time.Now())
+		results := runner.Run(jobs, collectors, *timeout)
+		if err == nil {
+			present := map[string]bool{}
+			for _, pc := range cur.Cards {
+				present[pc.Card.PCI.Address] = true
+			}
+			if !ok {
+				// Hôte illisible : une carte peut manquer à l'inventaire de ce
+				// cycle sans avoir été retirée. Rien n'est oublié.
+				for _, a := range tracker.Known() {
+					present[a] = true
+				}
+			}
+			addrs := make([]string, 0, len(present))
+			for a := range present {
+				addrs = append(addrs, a)
+			}
+			tracker.Update(results, addrs, time.Now())
 		}
 		s := exporter.Build(cur, ok, results, tracker, *interval)
+		tracker.Remember(s)
 		for _, c := range s.Controllers {
-			if !c.NodeValid {
+			if c.NodeChecked && !c.NodeValid {
 				// Adresse PCI et non label : le label peut contenir la série (S9).
 				log.Warn("nœud de gestion invalide", "pci", c.PCIAddress, "err", c.NodeError)
 			}
-			if c.CollectError != "" {
+			if c.TimedOut {
+				log.Warn("collecte hors délai", "pci", c.PCIAddress, "délai", *timeout)
+			} else if c.CollectError != "" {
 				log.Warn("lecture en échec", "pci", c.PCIAddress, "err", c.CollectError)
 			}
 		}

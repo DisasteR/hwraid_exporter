@@ -109,7 +109,7 @@ Le pilote ne distingue pas une lecture d’une écriture : l’ouverture en lect
 | **S6. Préparation puis abandon des privilèges.** Seule la phase de préparation, exécutée au démarrage avant toute lecture d’entrée externe et avant l’ouverture du port HTTP, crée ou supprime des nœuds, et uniquement dans `/dev/hwraid_exporter/` (section 6.2). Elle se termine par un abandon irréversible des privilèges : identité non root, capacités réduites à celles des pilotes présents dans tous les ensembles (effectif, permis, hérité, ambiant, limite), `no_new_privs`. Le processus vérifie le résultat dans `/proc/self/status` et s’arrête immédiatement si un écart subsiste. Le binaire n’est jamais installé avec un bit setuid ni des capacités de fichier. | Cas de recette « Préparation des nœuds », « Abandon des privilèges » et « Abandon en échec ». |
 | **S7. Privilèges minimaux.** En conteneur : `cap_drop: ALL` puis seulement les capacités de la phase de préparation (section 6.5), `no-new-privileges`, racine en lecture seule, accès aux périphériques limité par `device_cgroup_rules` aux nœuds caractère en lecture. En natif : une unité unique démarrée en root avec `CapabilityBoundingSet` limité au même ensemble, `NoNewPrivileges=yes`, `ProtectSystem=strict`, `DevicePolicy=closed` avec `DeviceAllow=char-aac r` (et équivalents par pilote), `SystemCallFilter`. Ni `userns-remap` ni Docker rootless : les capacités y sont sans effet sur les contrôles `capable()` des pilotes. `privileged: true` n’est qu’un repli documenté (section 6.5). | Le fragment Compose et l’unité systemd fournis respectent ces règles. Avec `userns-remap`, l’exporter publie une erreur d’accès explicite (cause `EPERM`). |
 | **S8. Commandes rejouables.** Seules des commandes de consultation idempotentes figurent dans la liste blanche, car une commande interrompue par un signal peut être réémise par le noyau. Le transport traite `EINTR` comme un échec de la lecture en cours, sans nouvel essai immédiat. | Revue de chaque entrée de liste blanche. Test sur faux appel système renvoyant `EINTR`. |
-| **S9. Exposition HTTP maîtrisée.** Le service ne propose aucune action sur le matériel : seul `/metrics` (et une page d’accueil statique) est routé. TLS et authentification sont configurables (fichier de configuration web de l’exporter-toolkit Prometheus). Les journaux ne contiennent ni série ni WWN complets. | Test de routage. Test de démarrage avec TLS activé. Revue des journaux de recette. |
+| **S9. Exposition HTTP maîtrisée.** Le service ne propose aucune action sur le matériel : seul `/metrics` (et une page d’accueil statique) est routé. TLS et authentification ne sont pas intégrés : l’écoute par défaut est locale (`127.0.0.1`) ; une exposition au-delà de l’hôte passe par un réseau maîtrisé (réseau Docker partagé avec Prometheus, pare-feu) ou un mandataire TLS. Les journaux ne contiennent ni série ni WWN complets. | Test de routage. Revue des journaux de recette. |
 
 Pour `megaraid_sas`, la capacité `CAP_SYS_ADMIN` n’est exigée qu’à l’ouverture du nœud et non à chaque ioctl. Le module devra faire ouvrir ce nœud par l’étape privilégiée de lancement, puis transmettre le descripteur au processus de collecte, qui reste sans `CAP_SYS_ADMIN`. La liste blanche porte sur les DCMD de consultation (par exemple `MR_DCMD_CTRL_GET_INFO`, `MR_DCMD_LD_LIST_QUERY`, `MR_DCMD_PD_LIST_QUERY`). Pour `hpsa` et `smartpqi`, elle porte sur les commandes CISS de consultation.
 
@@ -171,8 +171,11 @@ Chaque mesure d’état expose uniquement l’état observé avec la valeur 1. U
 Une lecture en échec retire les valeurs métier de la fonction concernée : l’exporter ne publie pas de valeur qu’il n’a pas observée. Les règles d’alerte doivent donc tolérer un trou ponctuel, par exemple un dépassement d’échéance causé par un outil constructeur (section 6.3), et alerter séparément sur la perte de visibilité :
 
 ```promql
-# Panne RAID, maintenue malgré un échec de lecture ponctuel
-max_over_time(hwraid_volume_state{state=~"degraded|failed"}[10m]) == 1
+# Panne RAID : état courant, ou dernière valeur connue si l'objet n'a plus
+# de série d'état (échec de lecture ponctuel)
+hwraid_volume_state{state=~"degraded|failed"} == 1
+or (last_over_time(hwraid_volume_state{state=~"degraded|failed"}[10m]) == 1
+    unless on (job, instance, controller, volume) hwraid_volume_state)
 ```
 
 ```promql
@@ -182,7 +185,8 @@ hwraid_collection_success{collector="volumes"} == 0
 
 ```promql
 # Données périmées malgré des réponses HTTP 200
-time() - hwraid_collection_last_success_timestamp_seconds > 3 * hwraid_collection_interval_seconds
+time() - hwraid_collection_last_success_timestamp_seconds
+  > on (job, instance, controller) group_left 3 * hwraid_collection_interval_seconds
 ```
 
 Le signal Prometheus `up` couvre l’accessibilité HTTP de l’exporter. Une règle d’absence de carte attendue doit s’appuyer sur l’inventaire voulu du site : une carte disparue ne peut plus signaler sa propre erreur.
@@ -228,7 +232,7 @@ Le principe est le même pour tous les pilotes : chaque nœud dédié est un nœ
 6. refuse de toucher à toute autre entrée (fichier, lien, répertoire, nœud bloc, nom inconnu) : elle est signalée et le démarrage échoue ;
 7. n’agit jamais en dehors de `/dev/hwraid_exporter/`, et journalise chaque création, correction et suppression.
 
-**Abandon des privilèges.** La préparation terminée, l’exporter abandonne ses privilèges de façon irréversible, pour tous ses threads (bibliothèque `libcap` en Go pur, `kernel.org/pub/linux/libs/security/libcap/cap`) : groupes supplémentaires vidés, passage à l’identité non root, capacités réduites à celles des pilotes présents dans tous les ensembles, `no_new_privs`. Il relit `/proc/self/status` et s’arrête si l’identité ou un ensemble de capacités diffère de l’attendu. Le processus de collecte, qui tourne en permanence et répond sur le réseau, ne possède donc jamais `CAP_MKNOD` ni `CAP_SYS_ADMIN` : avec la première et un répertoire inscriptible, un processus compromis pourrait créer un nœud vers n’importe quel disque de l’hôte et le lire en entier. Après l’abandon, il ne peut ouvrir que les nœuds qui lui appartiennent et ceux lisibles par tous.
+**Abandon des privilèges.** La préparation terminée, l’exporter abandonne ses privilèges de façon irréversible, pour tous ses threads (bibliothèque standard de Go : changements d’identité appliqués à tous les threads depuis Go 1.16, capacités et `prctl` par `syscall.AllThreadsSyscall`) : groupes supplémentaires vidés, passage à l’identité non root, capacités réduites à celles des pilotes présents dans tous les ensembles, `no_new_privs`. Il relit `/proc/self/status` et s’arrête si l’identité ou un ensemble de capacités diffère de l’attendu. Le processus de collecte, qui tourne en permanence et répond sur le réseau, ne possède donc jamais `CAP_MKNOD` ni `CAP_SYS_ADMIN` : avec la première et un répertoire inscriptible, un processus compromis pourrait créer un nœud vers n’importe quel disque de l’hôte et le lire en entier. Après l’abandon, il ne peut ouvrir que les nœuds qui lui appartiennent et ceux lisibles par tous.
 
 Ce modèle tient en un seul processus et une seule déclaration, sans composant sur l’hôte :
 
@@ -276,11 +280,15 @@ services:
       - "c *:* r"
     security_opt:
       - no-new-privileges:true
+    # Écoute sur l’interface du conteneur (127.0.0.1 par défaut, injoignable
+    # depuis l’extérieur du conteneur). Rattacher le conteneur au réseau de
+    # Prometheus, ou publier le port en le limitant par pare-feu.
+    command: ["serve", "-listen", "0.0.0.0:9799"]
     restart: unless-stopped
     stop_grace_period: 30s
 ```
 
-`device_cgroup_rules` autorise l’ouverture en lecture des nœuds caractère que la phase de préparation crée dans le `/dev` du conteneur. Le joker est nécessaire parce que le major de `aac` est dynamique. Il ne donne rien au processus de collecte, qui ne peut plus créer de nœud après l’abandon des privilèges. Pour `hpsa` et `smartpqi`, ajouter `"c 21:* rw"` (major fixe de `sg`, ouverture en lecture-écriture imposée par le noyau, section 4, S5). Un profil seccomp minimal, adapté au binaire, est livré avec chaque version et remplacera à terme le profil par défaut de Docker.
+`device_cgroup_rules` autorise l’ouverture en lecture des nœuds caractère que la phase de préparation crée dans le `/dev` du conteneur. Le joker est nécessaire parce que le major de `aac` est dynamique. Il ne donne rien au processus de collecte, qui ne peut plus créer de nœud après l’abandon des privilèges. Pour `hpsa` et `smartpqi`, ajouter `"c 21:* rw"` (major fixe de `sg`, ouverture en lecture-écriture imposée par le noyau, section 4, S5). Un profil seccomp minimal, adapté au binaire, est prévu pour remplacer le profil par défaut de Docker (section 7.7).
 
 **Validation sur l’hôte de référence.** Vérifié : le `/dev` du conteneur n’est pas monté `nodev`. Un nœud créé avec la seule capacité `CAP_MKNOD` vers le major de `aac` s’ouvre avec `device_cgroup_rules: "c *:* r"`, et la même ouverture est refusée (`EPERM`) sans cette règle. Vérifié ensuite avec le prototype, dans ce profil exact : après la préparation, le processus tourne en UID et GID 65534 sur tous les champs, sans groupe supplémentaire, avec `CAP_SYS_RAWIO` seule dans les ensembles effectif, permis et limite, des ensembles hérité et ambiant vides et `no_new_privs` actif. Il ouvre son nœud dédié et obtient une réponse de `FSACTL_GET_HBA_INFO` cohérente avec l’adresse PCI et le `unique_id` de la carte.
 
@@ -435,7 +443,7 @@ Comparer ces sorties au premier lecteur natif. Conserver les captures anonymisé
 | Scrapes en rafale | Figer l’horloge entre deux publications. Envoyer 100 requêtes concurrentes à `/metrics`. Toutes lisent les mêmes valeurs et les compteurs de découverte et de lecture matérielle restent inchangés. |
 | Collecte bloquée et publication atomique | Bloquer la lecture d’une carte dans le faux pilote. Vérifier que l’autre carte progresse, que HTTP répond pendant le blocage et que chaque réponse correspond entièrement à une vue publiée. |
 | Premier cycle et péremption | Vérifier la vue initiale, le premier échec sans valeur métier, puis un succès. Suspendre le producteur : les scrapes continuent de répondre et la date de dernier succès reste fixe. |
-| Exposition HTTP | Seul `/metrics` répond (toute autre route : 404). Démarrage avec TLS et authentification : un scrape sans identifiant est refusé. |
+| Exposition HTTP | Seul `/metrics` répond (toute autre route : 404). |
 | Binaire autonome et parité | Sur Linux sans Docker, l’unité systemd unique démarre le binaire, qui abandonne ses privilèges et expose `/metrics`. À version, paramètres, permissions et matériel identiques, comparer inventaire et états métier avec ceux de l’image. Les empreintes du binaire publié et de celui de l’image sont identiques. |
 | Image de production | La CI vérifie que l’exécutable ELF Linux n’a ni interpréteur dynamique ni bibliothèque partagée requise. Le test HTTP interroge `/metrics` depuis l’extérieur du conteneur `scratch`. |
 | Conteneur sur OMV — SMART | Aucune interrogation SMART dupliquée avec smartctl_exporter. |
@@ -473,3 +481,15 @@ for host in /sys/class/scsi_host/host*; do
     done
 done
 ```
+
+### 7.7 Travaux identifiés par la revue du 2026-11-23
+
+Deux revues indépendantes du dépôt ont été menées. Les corrections immédiates sont faites ; restent à traiter :
+
+1. **Filtre seccomp dans le processus.** `CAP_SYS_RAWIO`, conservée pour le pilote, autorise aussi `iopl` et `ioperm`. Installer après l'abandon des privilèges un filtre en liste blanche (`SECCOMP_FILTER_FLAG_TSYNC`), refusant au moins `iopl`, `ioperm`, `mknod*`, `ptrace`, `process_vm_*`, `kexec*`, et vérifier `Seccomp: 2` dans `/proc/self/status`.
+2. **Contrat de module pour les pilotes suivants.** Nœud partagé entre cartes (`megaraid_sas_ioctl_node`), descripteur ouvert pendant la préparation puis transmis après l'abandon de `CAP_SYS_ADMIN`, association des nœuds `sg` à leur carte (`hpsa`, `smartpqi`), échéance passée à `Collect`, capacités conservées seulement pour un plan valide.
+3. **Sens des dates de dernier succès pour une valeur gardée en cache** (capacités de la carte) : distinguer lecture matérielle, valeur en cache et lecture non tentée.
+4. **Lier les morceaux et la clôture d'un transfert paginé à son ouverture** dans le transport (identifiant, total, progression), en plus du contrôle de forme de la liste blanche.
+5. **Bits non reconnus du mot d'état ZMM.** Le bit `0x80`, présent sur le module en panne de l'hôte de référence, n'est pas qualifié. Qualifier les bits sur un module sain (bloc AFM-600CC de remplacement), puis publier `unknown` pour tout bit hors de l'ensemble connu.
+6. **Vocabulaires des pilotes suivants.** Identifiant de disque `enclosure:slot`, états `predictive_failure`, `offline`, `unconfigured_bad` pour les disques, `learning` et `degraded` pour les batteries.
+7. **Chaîne d'outillage.** Épingler les actions de CI par empreinte et l'image de base par digest.

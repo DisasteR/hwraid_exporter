@@ -110,7 +110,7 @@ Sur l'hôte de référence : 5 conteneurs, numéros 0, `0xfc`, `0xfd`, `0xfe`, `
 | 64-71 | taille en blocs de 512 octets | 62 495 109 120 (= 30 515 190 Mio) |
 | 296-311 | nom, chaîne terminée par un octet nul, lue sur 16 octets au plus (longueur maximale non établie) | `Array0` |
 
-L'exporter publie le niveau RAID dans le label `raid_level` de `hwraid_volume_info`, dans les termes de l'outil témoin : `raid1` pour le type 3, `raid_volume` pour le type 1, `unknown` pour tout autre type.
+L'exporter publie le niveau RAID de `hwraid_volume_info` dans le vocabulaire normalisé ([metrics.md](metrics.md)) et, dans `vendor_level`, dans les termes de l'outil témoin : type 3 → `raid_level="raid1"`, `vendor_level="1"` ; type 1 → `raid_level="concat"`, `vendor_level="RAID_volume"` (assemblage par concaténation) ; tout autre type → `raid_level="unknown"`, `vendor_level="type N"`.
 
 ### Liste des membres (sous-commande 249, paramètre : UID du conteneur)
 

@@ -14,6 +14,7 @@ import (
 	"github.com/DisasteR/hwraid_exporter/internal/allowlist"
 	"github.com/DisasteR/hwraid_exporter/internal/module"
 	"github.com/DisasteR/hwraid_exporter/internal/procstatus"
+	"github.com/DisasteR/hwraid_exporter/internal/sysfs"
 	"github.com/DisasteR/hwraid_exporter/internal/transport/aacio"
 )
 
@@ -62,6 +63,11 @@ func (*Module) Name() string { return "aacraid" }
 
 // Match retient les cartes liées au pilote aacraid.
 func (*Module) Match(c module.Card) bool { return c.PCI.Driver == "aacraid" }
+
+// Collectors liste tous les collecteurs du module.
+func (*Module) Collectors() []string {
+	return append([]string{CapabilitiesCollector, CacheProtectionCollector}, StateCollectors...)
+}
 
 // Capabilities : CAP_SYS_RAWIO, exigée par le pilote à chaque ioctl.
 func (*Module) Capabilities() uint64 { return procstatus.Mask(procstatus.CapSysRawIO) }
@@ -128,6 +134,13 @@ func (m *Module) Collect(c module.Card, refs []module.NodeRef) module.Result {
 		r.CollectErr = fmt.Errorf("RequestSupplementAdapterInfo : %w", err)
 		return r
 	}
+	// Lectures firmware au-delà de 706 : seulement vers un couple modèle et
+	// firmware qualifié (exigence S4) ; toute autre carte est publiée avec
+	// ces collecteurs non pris en charge.
+	if !Qualified(c) {
+		r.Unsupported = append(append([]string(nil), StateCollectors...), CacheProtectionCollector)
+		return r
+	}
 	if !sup.ArcIoReads() {
 		r.Unsupported = append([]string(nil), StateCollectors...)
 	}
@@ -136,6 +149,44 @@ func (m *Module) Collect(c module.Card, refs []module.NodeRef) module.Result {
 		collectVolumes(&r, d)
 	}
 	return r
+}
+
+// Qualification est un couple modèle et firmware sur lequel les lectures
+// (volumes, membres, disques, protection du cache) ont été vérifiées contre
+// l'outil de référence (docs/aacraid-interface.md, section 8).
+type Qualification struct {
+	Vendor, Device, SubsystemVendor, SubsystemDevice string // tels que publiés par sysfs
+	Firmware                                         string // hba_kernel_version
+}
+
+// Qualifications liste les couples qualifiés.
+var Qualifications = []Qualification{
+	// Adaptec 6805, firmware 5.3-0 build 19204 (hôte de référence, 2026-11-23).
+	{Vendor: "0x9005", Device: "0x028b", SubsystemVendor: "0x9005", SubsystemDevice: "0x0301", Firmware: "5.3-0[19204]"},
+}
+
+// Qualified indique si la carte correspond à un couple qualifié.
+func Qualified(c module.Card) bool {
+	_, h, err := hostOf(c)
+	if err != nil {
+		return false
+	}
+	for _, q := range Qualifications {
+		if c.PCI.Vendor == q.Vendor && c.PCI.Device == q.Device && c.PCI.SubsystemVendor == q.SubsystemVendor &&
+			c.PCI.SubsystemDevice == q.SubsystemDevice && h.Firmware == q.Firmware {
+			return true
+		}
+	}
+	return false
+}
+
+// hostOf renvoie l'hôte SCSI aacraid de la carte.
+func hostOf(c module.Card) (int, sysfs.SCSIHost, error) {
+	i, _, err := host(c)
+	if err != nil {
+		return 0, sysfs.SCSIHost{}, err
+	}
+	return i, c.Hosts[i], nil
 }
 
 // collectVolumes lit la configuration (conteneurs, membres, disques
@@ -173,6 +224,11 @@ func readConfiguration(d device) ([]module.Volume, []module.Disk, error) {
 		info, err := aacraid.DecodeContainerInfo(raw)
 		if err != nil {
 			return nil, nil, err
+		}
+		for _, prev := range cs {
+			if prev.Info.UID == info.UID {
+				return nil, nil, fmt.Errorf("UID de conteneur %#x en double (conteneurs %d et %d)", info.UID, prev.Number, n)
+			}
 		}
 		cs = append(cs, aacraid.Container{Number: n, Info: info})
 	}
@@ -272,16 +328,21 @@ func collectCacheProtection(r *module.Result, d device) {
 }
 
 // supplementInfo lit la réponse 706 une seule fois par carte et par nœud.
+// La lecture firmware se fait hors du verrou : une carte qui ne répond pas
+// ne doit pas bloquer la collecte des autres.
 func (m *Module) supplementInfo(key string, d device) (aacraid.SupplementInfo, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if s, ok := m.supplement[key]; ok {
+	s, ok := m.supplement[key]
+	m.mu.Unlock()
+	if ok {
 		return s, nil
 	}
 	s, err := d.SupplementInfo()
 	if err != nil {
 		return s, err
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.supplement == nil {
 		m.supplement = map[string]aacraid.SupplementInfo{}
 	}

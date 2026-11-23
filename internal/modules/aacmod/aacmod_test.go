@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/DisasteR/hwraid_exporter/internal/aacraid"
 	"github.com/DisasteR/hwraid_exporter/internal/module"
@@ -16,10 +18,12 @@ import (
 // Le module doit satisfaire le contrat.
 var _ module.Module = (*Module)(nil)
 
+// card construit une Adaptec 6805 au firmware qualifié (hôte de référence).
 func card(addr, uid string) module.Card {
 	return module.Card{
-		PCI:   sysfs.PCIFunction{Address: addr, Driver: "aacraid", Class: "0x010400"},
-		Hosts: []sysfs.SCSIHost{{Name: "host3", Number: 3, ProcName: "aacraid", UniqueID: uid}},
+		PCI: sysfs.PCIFunction{Address: addr, Driver: "aacraid", Class: "0x010400",
+			Vendor: "0x9005", Device: "0x028b", SubsystemVendor: "0x9005", SubsystemDevice: "0x0301"},
+		Hosts: []sysfs.SCSIHost{{Name: "host3", Number: 3, ProcName: "aacraid", UniqueID: uid, Firmware: "5.3-0[19204]"}},
 	}
 }
 
@@ -61,6 +65,8 @@ type fakeDev struct {
 	sup     aacraid.SupplementInfo
 	supErr  error
 	supCall int
+	supWait chan struct{} // si non nil, SupplementInfo attend sa fermeture
+	started atomic.Int32  // appels à SupplementInfo commencés (lecture concurrente)
 	closed  bool
 	cp      *cpAnswer
 	cpCall  int
@@ -71,6 +77,10 @@ type fakeDev struct {
 func (f *fakeDev) HBAInfo() (aacraid.HBAInfo, error) { return f.info, f.err }
 func (f *fakeDev) SupplementInfo() (aacraid.SupplementInfo, error) {
 	f.supCall++
+	f.started.Add(1)
+	if f.supWait != nil {
+		<-f.supWait
+	}
 	return f.sup, f.supErr
 }
 func (f *fakeDev) Close() error { f.closed = true; return nil }
@@ -366,4 +376,79 @@ func TestCollectVolumesFailureAndGate(t *testing.T) {
 	if len(d.reads) != 0 || r.Volumes != nil {
 		t.Fatalf("carte sans interface interrogée : %v", d.reads)
 	}
+}
+
+// Exigence S4 : une carte aacraid dont le modèle ou le firmware n'est pas
+// qualifié ne reçoit aucune lecture firmware au-delà de 706 ; ses
+// collecteurs sont publiés non pris en charge.
+func TestCollectRequiresQualification(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}
+	variants := map[string]func(c *module.Card){
+		"autre modèle":        func(c *module.Card) { c.PCI.SubsystemDevice = "0x0300" },
+		"autre puce":          func(c *module.Card) { c.PCI.Device = "0x028c" },
+		"autre firmware":      func(c *module.Card) { c.Hosts[0].Firmware = "5.2-0[19109]" },
+		"firmware non publié": func(c *module.Card) { c.Hosts[0].Firmware = "" },
+	}
+	for name, mod := range variants {
+		c := card("0000:01:00.0", "0")
+		mod(&c)
+		d := &fakeDev{info: hba, sup: arcIo}
+		r := withDev(d, nil).Collect(c, ref)
+		if d.cpCall != 0 || len(d.reads) != 0 {
+			t.Fatalf("%s : lectures envoyées (ZMM %d, paginées %v)", name, d.cpCall, d.reads)
+		}
+		want := map[string]bool{"volumes": true, "disks": true, CacheProtectionCollector: true}
+		for _, u := range r.Unsupported {
+			delete(want, u)
+		}
+		if len(want) != 0 || !r.NodeValid || !r.Collected[CapabilitiesCollector] {
+			t.Fatalf("%s : %+v", name, r)
+		}
+	}
+	// La carte de référence est qualifiée.
+	if !Qualified(card("0000:01:00.0", "0")) {
+		t.Fatal("6805 de référence non qualifiée")
+	}
+}
+
+// Deux conteneurs au même UID : relevé rejeté, rien publié.
+func TestCollectRejectsDuplicateUID(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	d := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}, sup: arcIo, paged: func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
+		if r == aacraid.ReadContainerInfo && p == 0xfd {
+			p = 0xfc // même information, donc même UID
+		}
+		return referencePaged(r, p, size)
+	}}
+	r := withDev(d, nil).Collect(card("0000:01:00.0", "0"), ref)
+	if r.Volumes != nil || r.Collected["volumes"] || r.CollectErr == nil {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// Une carte bloquée dans la lecture 706 ne bloque pas la collecte d'une
+// autre carte : aucun verrou du module n'est tenu pendant un appel firmware.
+func TestBlockedCardDoesNotBlockOthers(t *testing.T) {
+	wait := make(chan struct{})
+	devs := map[string]*fakeDev{
+		"/n/aac0": {info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}, sup: arcIo, supWait: wait},
+		"/n/aac1": {info: aacraid.HBAInfo{AdapterNumber: 1, Bus: 2}, sup: arcIo},
+	}
+	m := &Module{open: func(path string, _ uint64) (device, error) { return devs[path], nil }}
+	go m.Collect(card("0000:01:00.0", "0"), []module.NodeRef{{Path: "/n/aac0", Dev: 1}})
+	for i := 0; i < 1000 && devs["/n/aac0"].started.Load() == 0; i++ {
+		time.Sleep(time.Millisecond)
+	}
+	done := make(chan module.Result, 1)
+	go func() { done <- m.Collect(card("0000:02:00.0", "1"), []module.NodeRef{{Path: "/n/aac1", Dev: 2}}) }()
+	select {
+	case r := <-done:
+		if !r.NodeValid || !r.Collected[CapabilitiesCollector] {
+			t.Fatalf("seconde carte : %+v", r)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("la seconde carte attend la première")
+	}
+	close(wait)
 }

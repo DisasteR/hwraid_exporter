@@ -57,6 +57,9 @@ type Result struct {
 	// résultat de sa lecture (hwraid_collection_success). Un collecteur
 	// absent n'a pas été tenté.
 	Collected map[string]bool
+	// TimedOut : la collecte n'a pas rendu la main avant l'échéance du
+	// cycle. Rien n'a été observé, pas même la validité du nœud.
+	TimedOut bool
 }
 
 // Volume est un conteneur RAID et son état.
@@ -96,8 +99,13 @@ type Module interface {
 	// Capabilities est le masque des capacités à conserver après l'abandon
 	// des privilèges si le module a au moins une carte.
 	Capabilities() uint64
+	// Collectors liste les collecteurs que Collect peut renseigner : ils
+	// sont publiés en échec quand la collecte d'une carte dépasse son délai.
+	Collectors() []string
 	// Collect lit la carte au travers de ses nœuds préparés. Appelé après
-	// l'abandon des privilèges.
+	// l'abandon des privilèges, éventuellement en parallèle pour des cartes
+	// différentes : l'état partagé du module doit être protégé, sans tenir
+	// de verrou pendant un appel au firmware.
 	Collect(c Card, refs []NodeRef) Result
 }
 
