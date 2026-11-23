@@ -3,3 +3,4 @@ arcconf*
 *.reference
 *.zip
 captures/
+/tools/fibcap/fibcap.so

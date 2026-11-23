@@ -65,6 +65,7 @@ The nodes are created in the container's own `/dev`, not on the host. Why each c
 - [Specification (CDC)](cdc/cahier-des-charges-aacraid-exporter.md): requirements, security model, metrics contract, test plan.
 - [aacraid interface](docs/aacraid-interface.md): commands and response formats used by the exporter, with the provenance of each item.
 - [Legal basis](docs/base-legale-interoperabilite.md): why information not documented by the vendor can be used and published (interoperability exception).
+- [Capture guide](docs/guide-capture-aacraid.md): how to capture the exchanges of an `aacraid` card the exporter does not support yet, with [`tools/fibcap`](tools/fibcap).
 
 The project documentation is written in French.
 
