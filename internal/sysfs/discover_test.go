@@ -132,7 +132,26 @@ func TestDiscoverHostWithoutPCIParent(t *testing.T) {
 	if len(hosts) != 1 || hosts[0].Name != "host0" {
 		t.Fatalf("hôtes = %+v", hosts)
 	}
-	if len(herrs) != 1 || herrs[0].Host != "host5" || !errors.Is(herrs[0], ErrNoPCIParent) {
+	// Hôte non PCI : hors périmètre, ni retenu ni signalé (sinon la
+	// découverte serait en échec permanent sur un hôte avec un disque USB
+	// relié hors PCI, iSCSI ou VMBus).
+	if len(herrs) != 0 {
+		t.Fatalf("erreurs = %v", herrs)
+	}
+}
+
+// Un ancêtre à adresse PCI sans fichier vendor lisible est une anomalie de
+// lecture : l'hôte reste en erreur, il ne disparaît pas silencieusement de
+// l'inventaire (ce qui autoriserait la suppression de ses nœuds).
+func TestDiscoverUnreadablePCIParent(t *testing.T) {
+	f := newFixture(t)
+	aac := f.pciFunc("pci0000:00/0000:00:09.0/0000:01:00.0", "aacraid", map[string]string{"class": "0x010400"})
+	f.host(aac, "host0", map[string]string{"proc_name": "aacraid", "unique_id": "0"})
+	hosts, herrs, err := Discover(f.root)
+	if err != nil || len(hosts) != 0 {
+		t.Fatalf("err=%v hôtes=%+v", err, hosts)
+	}
+	if len(herrs) != 1 || herrs[0].Host != "host0" || !errors.Is(herrs[0], ErrPCIUnreadable) {
 		t.Fatalf("erreurs = %v", herrs)
 	}
 }

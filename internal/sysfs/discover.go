@@ -51,12 +51,20 @@ type HostError struct {
 func (e HostError) Error() string { return e.Host + ": " + e.Err.Error() }
 func (e HostError) Unwrap() error { return e.Err }
 
-// ErrNoPCIParent : aucun ancêtre PCI trouvé pour l'hôte.
+// ErrNoPCIParent : aucun ancêtre de l'hôte ne porte une adresse PCI (hôte
+// virtuel, VMBus, iSCSI). Preuve structurelle que l'hôte n'est pas une carte
+// PCI : il est hors périmètre et ignoré par Discover.
 var ErrNoPCIParent = errors.New("aucune fonction PCI parente")
+
+// ErrPCIUnreadable : un ancêtre porte une adresse PCI mais ne publie pas de
+// fichier vendor lisible. Anomalie de lecture : l'hôte reste en erreur, pour
+// qu'une carte ne sorte pas de l'inventaire sur une lecture ratée.
+var ErrPCIUnreadable = errors.New("fonction PCI parente illisible")
 
 // Discover parcourt <root>/class/scsi_host. root vaut "/sys" en production.
 // Une erreur globale n'est renvoyée que si le répertoire de classe est illisible ;
 // les problèmes propres à un hôte sont renvoyés dans la liste de HostError.
+// Un hôte sans aucun ancêtre PCI n'est ni retenu ni signalé.
 func Discover(root string) ([]SCSIHost, []HostError, error) {
 	classDir := filepath.Join(root, "class", "scsi_host")
 	entries, err := os.ReadDir(classDir)
@@ -71,6 +79,9 @@ func Discover(root string) ([]SCSIHost, []HostError, error) {
 			continue
 		}
 		h, err := readHost(root, classDir, name)
+		if errors.Is(err, ErrNoPCIParent) {
+			continue // hôte non PCI : hors périmètre
+		}
 		if err != nil {
 			herrs = append(herrs, HostError{Host: name, Err: err})
 			continue
@@ -121,8 +132,8 @@ func readHost(root, classDir, name string) (SCSIHost, error) {
 func (p PCIFunction) IsRAIDClass() bool { return strings.HasPrefix(p.Class, "0x0104") }
 
 // pciParent remonte depuis le répertoire réel de l'hôte jusqu'à la première
-// fonction PCI : un ancêtre dont le nom est une adresse PCI et qui publie
-// un fichier vendor. La remontée s'arrête à la racine sysfs.
+// fonction PCI : le premier ancêtre dont le nom est une adresse PCI, qui
+// doit publier un fichier vendor. La remontée s'arrête à la racine sysfs.
 func pciParent(root, start string) (string, error) {
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
@@ -133,9 +144,10 @@ func pciParent(root, start string) (string, error) {
 			return "", ErrNoPCIParent
 		}
 		if pciAddress.MatchString(filepath.Base(dir)) {
-			if _, err := os.Stat(filepath.Join(dir, "vendor")); err == nil {
-				return dir, nil
+			if _, err := os.Stat(filepath.Join(dir, "vendor")); err != nil {
+				return "", fmt.Errorf("%w : %s : %v", ErrPCIUnreadable, filepath.Base(dir), err)
 			}
+			return dir, nil
 		}
 	}
 }
