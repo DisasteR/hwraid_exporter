@@ -40,6 +40,7 @@ const (
 	ReadContainerList PagedRead = 229 // liste des conteneurs, paramètre 0
 	ReadContainerInfo PagedRead = 234 // information de conteneur, paramètre : numéro
 	ReadDiskList      PagedRead = 247 // liste des disques présents, paramètre 0
+	ReadDiskInfo      PagedRead = 248 // information de disque, paramètre : numéro
 	ReadMemberList    PagedRead = 249 // liste des membres, paramètre : UID
 )
 
@@ -53,6 +54,7 @@ var pagedForms = map[PagedRead]pagedForm{
 	ReadContainerList: {markDA, 0x408, func(p uint32) bool { return p == 0 }},
 	ReadContainerInfo: {markDA, 0x1000, func(p uint32) bool { return p <= 0xffff }},
 	ReadDiskList:      {0, 0x1004, func(p uint32) bool { return p == 0 }},
+	ReadDiskInfo:      {0, 0x1000, func(p uint32) bool { return p <= 0xffff }},
 	ReadMemberList:    {0, 0, func(p uint32) bool { return p != 0 && p != 0xffffffff }},
 }
 

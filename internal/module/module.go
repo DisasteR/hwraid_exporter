@@ -53,6 +53,9 @@ type Result struct {
 	// seulement si la lecture complète a abouti.
 	Volumes []Volume
 	Disks   []Disk
+	// DiskInventory : inventaire de tous les disques présents (membres ou
+	// non), publié seulement si la lecture complète a abouti.
+	DiskInventory []DiskInfo
 	// Collected donne, pour chaque collecteur tenté pendant le cycle, le
 	// résultat de sa lecture (hwraid_collection_success). Un collecteur
 	// absent n'a pas été tenté.
@@ -78,6 +81,13 @@ type Volume struct {
 type Disk struct {
 	ID    string // « d<N> », numéro de disque de la carte
 	State string
+}
+
+// DiskInfo est l'inventaire d'un disque présent sur la carte.
+type DiskInfo struct {
+	ID                                   string // « d<N> », comme Disk.ID
+	Vendor, Model, Firmware, Serial, WWN string // vides si non publiés par la carte
+	CapacityBytes                        uint64 // 0 si inconnue
 }
 
 // CacheProtection décrit le module de protection du cache (ZMM, batterie).

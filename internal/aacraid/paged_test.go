@@ -23,6 +23,10 @@ var capturedPaged = []struct {
 		func() ([]byte, error) { return OpenRequest(ReadContainerInfo, 0xfc, 0) }},
 	{"247 ouverture", "01001000f4010100e0010002", "02000000f7000000000000000000000000000000ffffffff0000000004100000",
 		func() ([]byte, error) { return OpenRequest(ReadDiskList, 0, 0) }},
+	{"248 ouverture, disque 0", "01001000f4010100e0010002", "02000000f8000000000000000000000000000000ffffffff0000000000100000",
+		func() ([]byte, error) { return OpenRequest(ReadDiskInfo, 0, 0) }},
+	{"248 ouverture, disque 7", "01001000f4010100e0010002", "02000000f8000000070000000000000000000000ffffffff0000000000100000",
+		func() ([]byte, error) { return OpenRequest(ReadDiskInfo, 7, 0) }},
 	{"249 ouverture, 4 membres", "01001000f4010100e0010002", "02000000f90000000000001d0000000000000000ffffffff0000000088000000",
 		func() ([]byte, error) { return OpenRequest(ReadMemberList, 0x1d000000, MemberListSize(4)) }},
 	{"249 ouverture, 2 membres", "01001000f4010100e0010002", "02000000f90000000400001d0000000000000000ffffffff0000000048000000",
@@ -64,12 +68,13 @@ func TestOpenRequestRejects(t *testing.T) {
 	}{
 		{ReadContainerList, 1, 0},
 		{ReadDiskList, 1, 0},
+		{ReadDiskInfo, 0x10000, 0},
 		{ReadContainerInfo, 0x10000, 0},
 		{ReadMemberList, 0, MemberListSize(2)},
 		{ReadMemberList, NoUID, MemberListSize(2)},
 		{ReadMemberList, 0x1d000000, 7},
 		{ReadMemberList, 0x1d000000, MemberListSize(MaxMembers + 1)},
-		{PagedRead(248), 1, 0}, // information disque : non qualifiée ici
+		{PagedRead(244), 0, 0}, // statistiques : non qualifiées
 		{PagedRead(ctStopData), 0, 0},
 	}
 	for _, b := range bad {
@@ -94,6 +99,7 @@ func TestPagedAllowlistMutations(t *testing.T) {
 	// Mots libres par forme (indices de mots de données).
 	free := map[string]map[int]bool{
 		"229 ouverture": {}, "247 ouverture": {},
+		"248 ouverture, disque 0": {2: true}, "248 ouverture, disque 7": {2: true},
 		"234 ouverture, conteneur 0": {2: true}, "234 ouverture, conteneur 0xfc": {2: true},
 		"249 ouverture, 4 membres": {2: true, 7: true}, "249 ouverture, 2 membres": {2: true, 7: true},
 		"morceau 0": {3: true, 5: true, 6: true, 7: true}, "morceau 1": {3: true, 5: true, 6: true, 7: true},

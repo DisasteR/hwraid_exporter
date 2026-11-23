@@ -73,6 +73,7 @@ Les informations détaillées sont renvoyées par un transfert en plusieurs FIB,
 | Liste des conteneurs | 229 | 0 | `0xda` | 1 032 |
 | Information de conteneur | 234 | numéro du conteneur | `0xda` | 4 096 |
 | Liste des disques présents | 247 | 0 | 0 | 4 100 |
+| Information de disque | 248 | numéro du disque | 0 | 4 096 |
 | Liste des membres | 249 | UID du conteneur | 0 | 8 + 32 × nombre de membres |
 
 L'outil de référence laisse au-delà des huit mots des résidus de ses propres tampons ; ils ne font pas partie de la requête et l'exporter envoie des zéros. Le champ `Size` des réponses de morceau vaut 496 ; le pas de 448 octets est établi par la reconstitution des transferts.
@@ -129,13 +130,23 @@ Sur l'hôte de référence, le volume visible assemble quatre miroirs, eux-même
 
 ### Information de disque (sous-commande 248, paramètre : numéro de disque)
 
+Lue pour chaque disque de la liste 247 (collecteur `disk_inventory`). Les champs texte ont une largeur fixe, complétés par des espaces et sans séparateur, comme dans une réponse INQUIRY SCSI.
+
 | Octets | Champ |
 |---|---|
-| 8-11 | numéro du disque |
+| 8-11 | numéro du disque (vérifié égal au paramètre) |
 | 40-47 | capacité brute en blocs |
 | 48-55 | taille utilisable en blocs |
-| 88-… | fabricant, modèle, version de firmware, numéro de série (texte) |
-| 288-295 | WWN |
+| 64-67 | taille de bloc en octets |
+| 88-95 | fabricant |
+| 96-111 | modèle |
+| 112-115 | version de firmware |
+| 116-135 | numéro de série, terminé par un octet nul s'il est plus court |
+| 288-295 | WWN, dans l'ordre de l'identifiant (`0x5000c500…`) |
+
+Vérifié sur les huit disques de l'hôte de référence contre l'outil témoin (même capture) : fabricant, modèle, firmware, numéro de série, WWN et capacité brute identiques. Le numéro de série figure aussi aux octets 304-327, cadré à droite ; il n'est pas utilisé.
+
+La réponse ne contient pas d'emplacement (connecteur, position). L'outil témoin affiche « Connector N÷4, Device N mod 4 » pour le disque N ; les octets 191 et 200 portent une autre numérotation (4 × (N÷4) + 3 − N mod 4). Aucune des deux n'est publiée : la formule réelle de l'emplacement physique n'est pas établie, et une erreur ferait retirer le mauvais disque. Le numéro de série, imprimé sur l'étiquette du disque, sert à l'identifier physiquement.
 
 ### Statistiques du contrôleur (sous-commande 244, paramètre : 0) [observé]
 

@@ -289,3 +289,26 @@ func TestIdentityStableOnUnreadableSerial(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+// Inventaire des disques : une série d'information par disque présent ;
+// capacité publiée seulement si elle est connue ; texte échappé.
+func TestDiskInventoryRender(t *testing.T) {
+	p := plan(aacHost("host0", "0000:01:00.0", "S1"))
+	res := map[string]module.Result{"0000:01:00.0": {NodeValid: true, DiskInventory: []module.DiskInfo{
+		{ID: "d0", Vendor: "ATA", Model: "ST8000VN0022-2EL", Firmware: "SC61", Serial: "SN0", WWN: "0x5000c50000000000", CapacityBytes: 8001563222016},
+		{ID: "d1", Vendor: "ATA", Model: `X"Y`, Firmware: "1", Serial: "SN1"},
+	}}}
+	out := Render(Build(p, true, res, nil, 0))
+	for _, line := range []string{
+		`hwraid_disk_info{controller="serial:S1",disk="d0",vendor="ATA",model="ST8000VN0022-2EL",firmware="SC61",serial="SN0",wwn="0x5000c50000000000"} 1`,
+		`hwraid_disk_info{controller="serial:S1",disk="d1",vendor="ATA",model="X\"Y",firmware="1",serial="SN1",wwn=""} 1`,
+		`hwraid_disk_capacity_bytes{controller="serial:S1",disk="d0"} 8001563222016`,
+	} {
+		if !strings.Contains(out, line+"\n") {
+			t.Fatalf("ligne absente : %s\n%s", line, out)
+		}
+	}
+	if strings.Contains(out, `hwraid_disk_capacity_bytes{controller="serial:S1",disk="d1"}`) {
+		t.Fatalf("capacité inconnue publiée :\n%s", out)
+	}
+}

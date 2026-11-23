@@ -31,6 +31,10 @@ type device interface {
 // volume, de membres et de disque (docs/aacraid-interface.md, section 7).
 var StateCollectors = []string{"volumes", "disks"}
 
+// DiskInventoryCollector est le collecteur de l'inventaire des disques
+// présents (fabricant, modèle, firmware, numéro de série, WWN, capacité).
+const DiskInventoryCollector = "disk_inventory"
+
 // CapabilitiesCollector est le collecteur de la lecture des capacités de la
 // carte (RequestSupplementAdapterInfo), préalable aux collecteurs d'état.
 const CapabilitiesCollector = "capabilities"
@@ -66,7 +70,7 @@ func (*Module) Match(c module.Card) bool { return c.PCI.Driver == "aacraid" }
 
 // Collectors liste tous les collecteurs du module.
 func (*Module) Collectors() []string {
-	return append([]string{CapabilitiesCollector, CacheProtectionCollector}, StateCollectors...)
+	return append([]string{CapabilitiesCollector, CacheProtectionCollector, DiskInventoryCollector}, StateCollectors...)
 }
 
 // Capabilities : CAP_SYS_RAWIO, exigée par le pilote à chaque ioctl.
@@ -138,11 +142,11 @@ func (m *Module) Collect(c module.Card, refs []module.NodeRef) module.Result {
 	// firmware qualifié (exigence S4) ; toute autre carte est publiée avec
 	// ces collecteurs non pris en charge.
 	if !Qualified(c) {
-		r.Unsupported = append(append([]string(nil), StateCollectors...), CacheProtectionCollector)
+		r.Unsupported = append(append([]string(nil), StateCollectors...), DiskInventoryCollector, CacheProtectionCollector)
 		return r
 	}
 	if !sup.ArcIoReads() {
-		r.Unsupported = append([]string(nil), StateCollectors...)
+		r.Unsupported = append(append([]string(nil), StateCollectors...), DiskInventoryCollector)
 	}
 	collectCacheProtection(&r, d)
 	if sup.ArcIoReads() {
@@ -190,68 +194,105 @@ func hostOf(c module.Card) (int, sysfs.SCSIHost, error) {
 }
 
 // collectVolumes lit la configuration (conteneurs, membres, disques
-// présents) et calcule les états. Toute erreur annule la publication des
-// volumes et des disques pour ce cycle : jamais de configuration partielle.
+// présents) et calcule les états, puis l'inventaire des disques présents.
+// Toute erreur annule la publication de ce qu'elle concerne pour ce cycle :
+// jamais de configuration ni d'inventaire partiels. L'inventaire réutilise
+// la liste des disques présents : il n'est pas lu si la configuration ne
+// l'a pas été.
 func collectVolumes(r *module.Result, d device) {
-	vols, disks, err := readConfiguration(d)
+	vols, disks, present, err := readConfiguration(d)
 	for _, col := range StateCollectors {
 		r.Collected[col] = err == nil
 	}
 	if err != nil {
+		r.Collected[DiskInventoryCollector] = false
 		if r.CollectErr == nil {
 			r.CollectErr = fmt.Errorf("configuration : %w", err)
 		}
 		return
 	}
 	r.Volumes, r.Disks = vols, disks
+	inv, err := readInventory(d, present)
+	r.Collected[DiskInventoryCollector] = err == nil
+	if err != nil {
+		if r.CollectErr == nil {
+			r.CollectErr = fmt.Errorf("inventaire des disques : %w", err)
+		}
+		return
+	}
+	r.DiskInventory = inv
 }
 
-func readConfiguration(d device) ([]module.Volume, []module.Disk, error) {
+// readInventory lit l'information de chaque disque présent. Seul le début
+// de chaque réponse est lu (DiskInfoNeed), puis le transfert est clos.
+func readInventory(d device, nums []uint32) ([]module.DiskInfo, error) {
+	sorted := append([]uint32(nil), nums...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	out := make([]module.DiskInfo, 0, len(sorted))
+	for _, n := range sorted {
+		raw, err := d.ReadPaged(aacraid.ReadDiskInfo, n, 0, func([]byte) int { return aacraid.DiskInfoNeed })
+		if err != nil {
+			return nil, err
+		}
+		i, err := aacraid.DecodeDiskInfo(raw)
+		if err != nil {
+			return nil, err
+		}
+		if i.Number != n {
+			return nil, fmt.Errorf("information du disque %d : la réponse désigne le disque %d", n, i.Number)
+		}
+		out = append(out, module.DiskInfo{ID: fmt.Sprintf("d%d", n), Vendor: i.Vendor, Model: i.Model,
+			Firmware: i.Firmware, Serial: i.Serial, WWN: i.WWN, CapacityBytes: i.CapacityBytes()})
+	}
+	return out, nil
+}
+
+func readConfiguration(d device) ([]module.Volume, []module.Disk, []uint32, error) {
 	raw, err := d.ReadPaged(aacraid.ReadContainerList, 0, 0, aacraid.ContainerListNeed)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	nums, err := aacraid.DecodeContainerList(raw)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	var cs []aacraid.Container
 	for _, n := range nums {
 		raw, err := d.ReadPaged(aacraid.ReadContainerInfo, n, 0, func([]byte) int { return aacraid.ContainerInfoNeed })
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		info, err := aacraid.DecodeContainerInfo(raw)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		for _, prev := range cs {
 			if prev.Info.UID == info.UID {
-				return nil, nil, fmt.Errorf("UID de conteneur %#x en double (conteneurs %d et %d)", info.UID, prev.Number, n)
+				return nil, nil, nil, fmt.Errorf("UID de conteneur %#x en double (conteneurs %d et %d)", info.UID, prev.Number, n)
 			}
 		}
 		cs = append(cs, aacraid.Container{Number: n, Info: info})
 	}
 	raw, err = d.ReadPaged(aacraid.ReadDiskList, 0, 0, aacraid.DiskListNeed)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	disks, err := aacraid.DecodeDiskList(raw)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	for i := range cs {
 		size := aacraid.MemberListSize(cs[i].Info.Members)
 		raw, err := d.ReadPaged(aacraid.ReadMemberList, cs[i].Info.UID, size, func([]byte) int { return int(size) })
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if cs[i].Members, err = aacraid.DecodeMemberList(raw); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 	}
 	ev := aacraid.Evaluate(cs, disks)
-	return volumesOf(cs, ev), disksOf(ev), nil
+	return volumesOf(cs, ev), disksOf(ev), disks, nil
 }
 
 func uidID(uid uint32) string { return fmt.Sprintf("%08x", uid) }
