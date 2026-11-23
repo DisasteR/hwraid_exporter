@@ -24,8 +24,9 @@ var Forbidden = []string{"syscall", "golang.org/x/sys/unix", "unsafe"}
 const TransportDir = "internal/transport"
 
 // AllowedDirs : répertoires (relatifs à la racine du module) qui peuvent
-// les importer.
-var AllowedDirs = []string{"internal/transport", "internal/nodes", "internal/privilege", "internal/lifecycle"}
+// les importer. tools/ioplprobe est une sonde de la CI (vérification du
+// profil seccomp), hors du binaire de l'exporter.
+var AllowedDirs = []string{"internal/transport", "internal/nodes", "internal/privilege", "internal/lifecycle", "tools/ioplprobe"}
 
 // skipDirs : répertoires jamais analysés (le piège de test vit dans testdata
 // et n'est analysé que lorsqu'on le désigne explicitement comme racine).
