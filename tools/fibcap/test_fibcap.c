@@ -47,6 +47,21 @@ int main(void)
 	/* Taille aberrante : plafonnée à 2048. */
 	fib[8] = 0xff, fib[9] = 0xff;
 	ioctl(fd, 0x42008UL, fib);
+	/* Pointeur invalide : pas de faute de segmentation, l'appel est
+	 * transmis tel quel (le noyau répond ENOTTY sur /dev/null). */
+	errno = 0;
+	r = ioctl(fd, 0x42008UL, (void *)8);
+	if (r != -1 || errno != ENOTTY) {
+		printf("pointeur invalide : r=%d errno=%d\n", r, errno);
+		fails++;
+	}
+	/* errno préservé sur le chemin non journalisé. */
+	errno = 1234;
+	ioctl(fd, 0x42198UL, fib);
+	if (errno != ENOTTY) {
+		printf("errno=%d après échec (attendu ENOTTY)\n", errno);
+		fails++;
+	}
 	/* ioctl de gestion sans FIB (GET_HBA_INFO) : code seul. */
 	ioctl(fd, 0x42198UL, fib);
 	/* ioctl étranger : non journalisé, mais transmis (errno ENOTTY). */

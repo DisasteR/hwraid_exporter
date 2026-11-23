@@ -2,7 +2,7 @@
  * fibcap : bibliothèque LD_PRELOAD qui journalise les ioctl de gestion
  * aacraid d'un processus : capture des commandes émises par l'outil de
  * gestion du constructeur et des réponses du firmware (exigence S4 du cahier
- * des charges, docs/guide-capture-aacraid.md).
+ * des charges, docs/guide-capture.md et docs/guide-capture-aacraid.md).
  *
  * Le journal contient les réponses du firmware, donc des numéros de série et
  * des WWN : il ne doit pas être publié tel quel.
@@ -23,10 +23,23 @@
  * seul appel write ; une écriture incomplète est signalée sur la sortie
  * d'erreur.
  *
- * Limites : x86-64, glibc. Les FIB ne sont lues qu'aux plages que le pilote
- * lit lui-même (ioctl_send_fib) : un appelant qui passe un tampon plus court
- * provoquerait l'erreur EFAULT sans fibcap, et une faute de segmentation
- * avec fibcap.
+ * Lecture des tampons : par l'intermédiaire du noyau (écriture dans un
+ * tube), jamais par accès direct. Une adresse invalide donne une ligne
+ * « illisible » au lieu d'une faute de segmentation. Une FIB dont la taille
+ * déclarée dépasse 2048 octets, que le pilote refuse sans la lire, n'est pas
+ * lue : seule sa taille est journalisée.
+ *
+ * Champs d'une ligne : seq, t (secondes.nanosecondes sur 9 chiffres), pid,
+ * tid, phase (REQ avant l'appel, RSP après), ioctl ; pour RSP : ret (valeur
+ * rendue à l'appelant, -1 en cas d'échec) et errno ; pour une FIB : len et
+ * fib (octets en hexadécimal), ou size (taille déclarée non lue), ou
+ * fib=illisible.
+ *
+ * Limites : x86-64, glibc ; seuls les appels à ioctl() passant par la glibc
+ * sont vus. Le journal est écrit dans le thread appelant (ajoute une
+ * latence) ; les processus fils héritent de la bibliothèque mais pas du
+ * descripteur (O_CLOEXEC sur exec), et partagent le compteur seq si fork
+ * sans exec : le champ pid les distingue.
  *
  * Seuls des symboles anciens de la glibc sont utilisés (syscall, getenv),
  * pour fonctionner sur des distributions plus anciennes que celle de
@@ -48,6 +61,8 @@
 
 static int out_fd = -1;
 static unsigned long seq;
+static int pipe_fd[2] = {-1, -1};
+static int pipe_lock;
 
 static void warn(const char *m)
 {
@@ -70,7 +85,29 @@ __attribute__((constructor)) static void fibcap_init(void)
 	out_fd = (int)syscall(SYS_openat, -100, p, 01 | 0100 | 0200 | 02000 | 0400000 | 02000000, 0600);
 	if (out_fd < 0)
 		warn("fibcap : journal impossible à créer (existe déjà ?), aucune capture\n");
+	/* pipe2(O_CLOEXEC) : tube de copie sûre (voir safe_copy). */
+	else if (syscall(SYS_pipe2, pipe_fd, 02000000) != 0) {
+		warn("fibcap : tube impossible à créer, aucune capture\n");
+		syscall(SYS_close, out_fd);
+		out_fd = -1;
+	}
 	errno = saved;
+}
+
+/* safe_copy copie n octets (n <= FIB_MAX, inférieur à la capacité du tube)
+ * depuis src : le noyau lit src et rend EFAULT si l'adresse est invalide,
+ * là où un accès direct provoquerait une faute de segmentation. Le tube est
+ * partagé entre les threads : un verrou sérialise son usage. */
+static int safe_copy(unsigned char *dst, const void *src, size_t n)
+{
+	int ok = 0;
+	while (__atomic_exchange_n(&pipe_lock, 1, __ATOMIC_ACQUIRE))
+		;
+	if (syscall(SYS_write, pipe_fd[1], src, n) == (long)n &&
+	    syscall(SYS_read, pipe_fd[0], dst, n) == (long)n)
+		ok = 1;
+	__atomic_store_n(&pipe_lock, 0, __ATOMIC_RELEASE);
+	return ok;
 }
 
 /* Code de gestion aacraid : CTL_CODE(fn, méthode) = 4<<16 | fn<<2 | m,
@@ -111,17 +148,31 @@ static void puthex(struct buf *o, const unsigned char *p, size_t len)
 	}
 }
 
-static size_t fib_len(const unsigned char *f)
+/* Plage que le pilote copie : max(Size + 32, SenderSize). Au-delà de 2048
+ * octets, le pilote refuse la FIB sans lire son corps. */
+static size_t fib_len(const unsigned char *hdr)
 {
-	size_t size = (size_t)(f[8] | f[9] << 8) + FIB_HDR;
-	size_t sender = (size_t)(f[10] | f[11] << 8);
-	if (sender > size)
-		size = sender;
-	return size > FIB_MAX ? FIB_MAX : size;
+	size_t size = (size_t)(hdr[8] | hdr[9] << 8) + FIB_HDR;
+	size_t sender = (size_t)(hdr[10] | hdr[11] << 8);
+	return sender > size ? sender : size;
 }
 
+/* Lecture d'une FIB pour le journal. Rend 1 et la longueur si les octets
+ * sont dans dst ; 0 si illisible ; 2 si la taille déclarée est hors borne
+ * (*len la contient, rien n'est lu au-delà de l'en-tête). */
+static int read_fib(const void *arg, unsigned char *dst, size_t *len)
+{
+	if (!safe_copy(dst, arg, FIB_HDR))
+		return 0;
+	*len = fib_len(dst);
+	if (*len > FIB_MAX)
+		return 2;
+	return safe_copy(dst, arg, *len) ? 1 : 0;
+}
+
+/* fibst : 0 pas de FIB, 1 octets lus, 2 taille hors borne, 3 illisible. */
 static void record(unsigned long id, const char *phase, unsigned long req,
-		   long ret, int err, const unsigned char *fib, size_t len)
+		   long ret, int err, int fibst, const unsigned char *fib, size_t len)
 {
 	struct buf o;
 	struct {
@@ -134,7 +185,11 @@ static void record(unsigned long id, const char *phase, unsigned long req,
 	put(&o, " t=");
 	putnum(&o, (unsigned long)ts.sec, 10);
 	put(&o, ".");
+	for (long d = 100000000; d > 1 && ts.nsec < d; d /= 10)
+		put(&o, "0");
 	putnum(&o, (unsigned long)ts.nsec, 10);
+	put(&o, " pid=");
+	putnum(&o, (unsigned long)syscall(SYS_getpid), 10);
 	put(&o, " tid=");
 	putnum(&o, (unsigned long)syscall(SYS_gettid), 10);
 	put(&o, " phase=");
@@ -152,11 +207,16 @@ static void record(unsigned long id, const char *phase, unsigned long req,
 		put(&o, " errno=");
 		putnum(&o, (unsigned long)err, 10);
 	}
-	if (fib) {
+	if (fibst == 1) {
 		put(&o, " len=");
 		putnum(&o, len, 10);
 		put(&o, " fib=");
 		puthex(&o, fib, len);
+	} else if (fibst == 2) {
+		put(&o, " size=");
+		putnum(&o, len, 10);
+	} else if (fibst == 3) {
+		put(&o, " fib=illisible");
 	}
 	o.b[o.n++] = '\n';
 	if (syscall(SYS_write, out_fd, o.b, o.n) != (long)o.n)
@@ -175,15 +235,24 @@ int ioctl(int fd, unsigned long req, ...)
 		return (int)syscall(SYS_ioctl, fd, req, arg);
 	}
 	unsigned long id = __atomic_fetch_add(&seq, 1, __ATOMIC_RELAXED);
-	int is_fib = (req == FSACTL_SENDFIB || req == FSACTL_SEND_LARGE_FIB) && arg;
-	size_t len = is_fib ? fib_len((const unsigned char *)arg) : 0;
-	record(id, "REQ", req, 0, 0, is_fib ? (const unsigned char *)arg : NULL, len);
+	int is_fib = (req == FSACTL_SENDFIB || req == FSACTL_SEND_LARGE_FIB);
+	unsigned char fib[FIB_MAX];
+	size_t len = 0;
+	int st = 0;
+	if (is_fib) {
+		st = read_fib(arg, fib, &len);
+		st = st == 0 ? 3 : st;
+	}
+	record(id, "REQ", req, 0, 0, st, fib, len);
 	ret = syscall(SYS_ioctl, fd, req, arg);
 	err = ret < 0 ? errno : 0;
 	/* Après un échec, le tampon n'est pas une réponse : seul le code est
-	 * journalisé. */
-	record(id, "RSP", req, ret < 0 ? -err : ret, err,
-	       (is_fib && ret >= 0) ? (const unsigned char *)arg : NULL, len);
+	 * journalisé. Après un succès, la plage relue est celle de la requête,
+	 * que le pilote recopie au retour. */
+	int rst = 0;
+	if (st == 1 && ret >= 0)
+		rst = safe_copy(fib, arg, len) ? 1 : 3;
+	record(id, "RSP", req, ret < 0 ? -1 : ret, err, rst, fib, len);
 	errno = ret < 0 ? err : saved;
 	return (int)ret;
 }

@@ -19,7 +19,7 @@ Tous les entiers sont en little-endian. Les positions sont en octets, à partir 
 | Plage copiée par le pilote | `max(Size + 32, SenderSize)` octets, au plus 2 048, à l'aller et au retour | `commctrl.c` (`ioctl_send_fib`) |
 | Informations de la carte sans commande firmware | `FSACTL_GET_HBA_INFO` = `0x42198`, réponse de 200 octets construite par le pilote | `commctrl.c` (`aac_get_hba_info`), `aacraid.h` (`struct aac_hba_info`) |
 | Droits | `CAP_SYS_RAWIO` à chaque ioctl | `linit.c` (`aac_cfg_ioctl`) |
-| Sérialisation | un mutex par carte pour tous les ioctl | `commctrl.c` (`aac_do_ioctl`) |
+| Sérialisation | un mutex par carte pour chaque ioctl (relâché pendant `FSACTL_RESET_IOP`, que l'exporter n'emploie pas) | `commctrl.c` (`aac_do_ioctl`) |
 
 ## 2. Bloc de commande firmware (FIB) [public]
 
@@ -31,7 +31,7 @@ En-tête de 32 octets (`struct aac_fibhdr`, `aacraid.h`) :
 | 4-5 | `Command` |
 | 6 | `StructType` |
 | 7 | inutilisé |
-| 8-9 | `Size` : taille des données qui suivent l'en-tête |
+| 8-9 | `Size` : dans la requête passée à l'ioctl, taille des données qui suivent l'en-tête ; le pilote y ajoute ensuite les 32 octets d'en-tête, et la réponse porte la taille totale |
 | 10-11 | `SenderSize` |
 | 12-31 | champs techniques (adresses, poignée, chaînage) |
 
@@ -45,7 +45,7 @@ Commandes d'en-tête utilisées par l'exporter :
 | 706 | `RequestSupplementAdapterInfo` | Linux `aacraid.h` (`struct aac_supplement_adapter_info`), FreeBSD `aacraid_reg.h` |
 | 803 | `AdapterEnvironmentInfo` (capteurs de température) | FreeBSD `aacraid_reg.h` |
 
-Pour `ContainerCommand`, les données commencent par la commande VM (mot 0) et la sous-commande (mot 1). Valeurs publiques utilisées : `VM_ContainerConfig` = 2, `VM_NameServe` = 1, `VM_NameServe64` = 22 ; sous-commandes `CT_GET_CONTAINER_COUNT` = 4, `CT_GET_SCSI_METHOD` = 64, `CT_CID_TO_32BITS_UID` = 165 (Linux `aacraid.h` et `aachba.c`, FreeBSD `aacraid_reg.h`).
+Pour `ContainerCommand`, les données commencent par la commande VM (mot 0). Avec `VM_ContainerConfig`, le mot 1 est la sous-commande ; avec `VM_NameServe` et `VM_NameServe64`, c'est le type de la requête (`struct aac_query_mount`). Valeurs publiques utilisées : `VM_ContainerConfig` = 2, `VM_NameServe` = 1, `VM_NameServe64` = 22 ; sous-commandes `CT_GET_CONTAINER_COUNT` = 4, `CT_GET_SCSI_METHOD` = 64, `CT_CID_TO_32BITS_UID` = 165 (Linux `aacraid.h` et `aachba.c`, FreeBSD `aacraid_reg.h`).
 
 Pour `AifRequest`, le mot 0 des données est la sous-commande : `AifReqJobsForCtr` = 101 (tâches d'un conteneur), `AifReqJobsForScsi` = 102 (tâches d'un disque). La même commande porte des sous-commandes d'action (arrêt, suspension, reprise, lancement de tâche) : la liste blanche de l'exporter contrôle la sous-commande, jamais seulement `Command`.
 
@@ -66,7 +66,11 @@ Les informations détaillées (volume, disque, liste des membres) sont renvoyée
 2. **Lecture des morceaux** : sous-commande 83 avec les mots 2 à 6 = `0xc9` (premier morceau) puis `0xc8`, taille totale, `0xda`, identifiant du transfert, numéro du morceau (0, 1…). La réponse reprend les mots 0 à 7 (le mot 7 n'est pas interprété), suivis de **448 octets de données**. Les données sont reconstruites dans la limite de la taille totale : le dernier morceau n'est utile que jusqu'à cette taille.
 3. **Clôture** : sous-commande 84 avec les paramètres du dernier morceau ; la réponse porte `0xc6` au mot 2.
 
-Le pilote sérialise chaque ioctl, pas un transfert entier : un autre programme (outil constructeur) peut intercaler ses propres commandes entre deux morceaux. Le décodeur de l'exporter doit donc vérifier l'identifiant du transfert à chaque morceau et abandonner la lecture en cas d'incohérence.
+Le pilote sérialise chaque ioctl, pas un transfert entier : un autre programme (outil constructeur) peut intercaler ses propres commandes entre deux morceaux. Le décodeur de l'exporter doit donc, avant d'utiliser un transfert :
+
+- vérifier à chaque réponse le statut (mot 0), l'écho de la sous-commande (mot 1), l'identifiant du transfert et le numéro du morceau attendu ;
+- refuser une taille totale supérieure à la borne fixée pour la lecture concernée, avant toute allocation ;
+- arrêter la lecture au premier écart, envoyer la clôture si le transfert a été ouvert, et rejeter le relevé entier : aucune donnée partielle n'est publiée.
 
 Exemples sur l'hôte de référence : 4 096 octets (10 morceaux) pour un volume ou un disque, 136 ou 72 octets (1 morceau) pour une liste de membres.
 
@@ -77,7 +81,7 @@ Exemples sur l'hôte de référence : 4 096 octets (10 morceaux) pour un volume 
 | Octets | Champ | Valeur de référence |
 |---|---|---|
 | 16-19 | identifiant unique | égal au « Unique Identifier » affiché par l'outil témoin |
-| 64-71 | taille en blocs de 512 octets | 62 495 109 120 (= 30 515 190 Mo) |
+| 64-71 | taille en blocs de 512 octets | 62 495 109 120 (= 30 515 190 Mio) |
 | 296-… | nom, chaîne terminée par un octet nul (longueur maximale non établie) | `Array0` |
 
 ### Liste des membres (sous-commande 249, paramètre : UID du conteneur)
@@ -125,14 +129,15 @@ Un membre est aussi **défaillant** lorsque le disque qu'il désigne (octets 0-3
 
 L'état d'un conteneur ne figure pas tel quel dans les réponses : il se calcule à partir de ses membres et de son niveau RAID. La règle s'applique à chaque conteneur séparément : un RAID 10 construit comme un assemblage de miroirs (cas de l'hôte de référence) est évalué miroir par miroir.
 
-1. On compte les membres défaillants. Un membre en reconstruction ne contribue pas encore à la redondance : il est compté avec eux, selon des conditions précisées dans le code du module.
-2. Aucun membre compté : **optimal**.
-3. Sinon, selon la tolérance du niveau RAID :
+1. Si un membre est **indéterminé**, ou si la liste des membres ou des disques n'a pas été lue complètement dans le cycle, l'état du conteneur est **indéterminé**.
+2. On compte les membres défaillants. Un membre en reconstruction ne contribue pas encore à la redondance : il est compté avec eux.
+3. Aucun membre compté : **optimal**.
+4. Sinon, selon la tolérance du niveau RAID :
    - tolérance d'un membre (miroir, RAID 5 et apparentés) : un membre compté → **dégradé**, ou **dégradé en reconstruction** si un membre se reconstruit ; deux ou plus → **en échec** ;
    - tolérance de deux membres (RAID 6 et apparentés) : un membre compté → **redondance réduite**, ou **redondance réduite en reconstruction** ; deux → **dégradé**, ou **dégradé en reconstruction** ; davantage → **en échec** ;
    - sans tolérance (RAID 0, volume simple) : un membre compté → **en échec**.
 
-La façon dont l'état d'un conteneur membre (par exemple un miroir dégradé) se reporte sur le conteneur qui l'assemble reste à établir.
+La façon dont l'état d'un conteneur membre (par exemple un miroir dégradé) se reporte sur le conteneur qui l'assemble reste à établir. D'ici là, l'exporter publie l'état de chaque conteneur membre, et l'état du conteneur qui les assemble est **indéterminé** dès qu'un de ses conteneurs membres n'est pas optimal.
 
 ### État d'un disque
 
@@ -141,7 +146,7 @@ La façon dont l'état d'un conteneur membre (par exemple un miroir dégradé) s
 | en ligne | disque présent, membre d'un conteneur |
 | en reconstruction | disque portant un membre dont le bit `0x2` est positionné |
 | en panne | disque désigné par un membre mais absent de la liste des disques |
-| disponible | disque présent, ni membre, ni secours |
+| disponible | disque présent, ni membre ; publié seulement quand l'état de secours sait être établi |
 | secours, copie de retour | condition à établir |
 
 ## 7. Domaine de validité [interopérabilité]
@@ -153,7 +158,7 @@ Les lectures des sections 4 à 6 forment une interface que le firmware annonce d
 | 32-35 | `Version` : version de la zone d'extension |
 | 144-147 | `SupportedOptions2` |
 
-Une carte sous `aacraid` utilise ces lectures si `Version` est supérieur à 1 et si le bit `0x08` de `SupportedOptions2` est positionné (`AAC_SUPPORTED_ARCIO_PHYDEV` dans FreeBSD). L'exporter n'emploie ces lectures que sur une carte qui annonce ce bit. Si le bit est absent, la carte est publiée comme non prise en charge pour l'état des volumes et des disques, et aucune autre lecture d'état n'est tentée.
+Une carte sous `aacraid` annonce ces lectures si `Version` est supérieur à 1 et si le bit `0x08` de `SupportedOptions2` est positionné (`AAC_SUPPORTED_ARCIO_PHYDEV` dans FreeBSD). L'exporter exige les deux conditions, sur une réponse 706 valide (commande en écho, taille couvrant ces champs). Une réponse absente ou invalide est un échec de lecture (`hwraid_collection_success{collector="capabilities"} 0`), pas une absence de prise en charge. Si le bit est absent, la carte est publiée comme non prise en charge pour l'état des volumes et des disques, et aucune autre lecture d'état n'est tentée.
 
 Sur l'hôte de référence : `Version` = 15, `SupportedOptions2` = `0x00c8693c` (bit `0x08` positionné).
 
@@ -163,7 +168,7 @@ Ce critère dit quelles cartes annoncent cette interface. Il ne prouve pas qu'un
 
 Chaque lecture utilisée par l'exporter est qualifiée sur le matériel de référence selon l'exigence S4 du cahier des charges :
 
-1. capture des FIB émises par l'outil témoin lors d'une consultation, au moyen de la bibliothèque [`fibcap`](../tools/fibcap), chargée avec `LD_PRELOAD`, qui journalise les ioctl de gestion sans les modifier ([guide de capture](guide-capture-aacraid.md)) ;
+1. capture des FIB émises par l'outil témoin lors d'une consultation, au moyen de la bibliothèque [`fibcap`](../tools/fibcap), chargée avec `LD_PRELOAD`, qui journalise les ioctl de gestion sans les modifier ([guide de capture](guide-capture.md), [annexe aacraid](guide-capture-aacraid.md)) ;
 2. association de chaque FIB à une ligne de l'affichage de l'outil, et comparaison des champs décodés aux valeurs affichées ;
 3. pour chaque requête émise par l'exporter : partie significative identique à la capture, autres octets à zéro lorsqu'ils sont démontrés résiduels.
 
