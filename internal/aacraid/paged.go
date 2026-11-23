@@ -39,7 +39,12 @@ const (
 	MarkChunk    = 0xc8
 	ChunkRspSize = 496
 	markClosed   = 0xc6
-	markDA       = 0xda
+	// MarkClosedOther : autre confirmation de clôture, observée deux fois en
+	// 23 cycles sur l'hôte de référence pendant que maxView interrogeait la
+	// carte, toujours pour notre transfert et après des morceaux valides.
+	// Sens non établi ; traitée comme une clôture et comptée.
+	MarkClosedOther = 0xc5
+	markDA          = 0xda
 )
 
 // PagedRead décrit une lecture paginée qualifiée.

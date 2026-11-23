@@ -5,6 +5,7 @@ package exporter
 
 import (
 	"errors"
+	"fmt"
 	"runtime"
 	"strings"
 	"testing"
@@ -418,5 +419,29 @@ func TestIdentityDuplicateFallsBackToPCI(t *testing.T) {
 	}
 	if got[a] != "pci:"+a+"/pci" || got[b] != "pci:"+b+"/pci" {
 		t.Fatalf("%v", got)
+	}
+}
+
+// Clôtures non nominales : cumulées d'un cycle à l'autre, publiées à 0 dès
+// le départ pour une carte prise en charge, oubliées avec la carte.
+func TestCloseUnconfirmedCounter(t *testing.T) {
+	const addr = "0000:01:00.0"
+	p := plan(aacHost("host0", addr, "S1"))
+	tr := NewTracker()
+	line := func(n int) string {
+		return fmt.Sprintf(`hwraid_transfer_close_unconfirmed_total{controller="serial:S1"} %d`, n) + "\n"
+	}
+	if out := Render(Build(p, true, valid(p), tr, 0)); !strings.Contains(out, line(0)) || !strings.Contains(out, "# TYPE hwraid_transfer_close_unconfirmed_total counter\n") {
+		t.Fatalf("compteur absent au départ :\n%s", out)
+	}
+	for _, n := range []int{1, 0, 2} {
+		tr.Update(map[string]module.Result{addr: {NodeValid: true, CloseUnconfirmed: n}}, []string{addr}, time.Now())
+	}
+	if out := Render(Build(p, true, valid(p), tr, 0)); !strings.Contains(out, line(3)) {
+		t.Fatalf("cumul attendu à 3 :\n%s", out)
+	}
+	tr.Update(nil, nil, time.Now())
+	if tr.Closes(addr) != 0 {
+		t.Fatal("cumul conservé après le retrait de la carte")
 	}
 }

@@ -30,6 +30,7 @@ type device interface {
 	CacheProtection() (bool, aacraid.ZMMStatus, error)
 	ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error)
 	ConnectorMap() (aacraid.ConnectorMap, error)
+	CloseUnconfirmed() int
 	Close() error
 }
 
@@ -160,7 +161,7 @@ func (b bounded) ConnectorMap() (aacraid.ConnectorMap, error) {
 	return b.device.ConnectorMap()
 }
 
-func (m *Module) Collect(c module.Card, refs []module.NodeRef, deadline time.Time) module.Result {
+func (m *Module) Collect(c module.Card, refs []module.NodeRef, deadline time.Time) (res module.Result) {
 	if len(refs) != 1 {
 		return module.Result{Err: fmt.Errorf("%d prepared node(s), 1 expected", len(refs))}
 	}
@@ -177,6 +178,9 @@ func (m *Module) Collect(c module.Card, refs []module.NodeRef, deadline time.Tim
 		return module.Result{Err: err}
 	}
 	defer raw.Close()
+	// Clôtures confirmées autrement que par 0xc6 pendant ce cycle, quel que
+	// soit le chemin de retour.
+	defer func() { res.CloseUnconfirmed = raw.CloseUnconfirmed() }()
 	now := m.now
 	if now == nil {
 		now = time.Now

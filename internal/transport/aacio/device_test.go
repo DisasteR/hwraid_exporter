@@ -345,6 +345,7 @@ type fakeFirmware struct {
 	openMark  uint32 // marque d'ouverture (0 : 0xc9)
 	total     uint32 // taille annoncée (0 : taille de payload)
 	stopXfer  uint32 // transfert annoncé à la clôture (0 : écho)
+	stopMark  uint32 // marque de la clôture (0 : 0xc6)
 	chunkMark uint32 // marque des réponses de morceau (0 : 0xc8)
 	chunkSize uint16 // champ Size des réponses de morceau (0 : 496)
 }
@@ -389,6 +390,9 @@ func (f *fakeFirmware) ioctl(t *testing.T) {
 			}
 		case 84:
 			le.PutUint32(d[8:], 0xc6)
+			if f.stopMark != 0 {
+				le.PutUint32(d[8:], f.stopMark)
+			}
 			if f.stopXfer != 0 {
 				le.PutUint32(d[20:], f.stopXfer)
 			}
@@ -537,5 +541,38 @@ func TestReadPagedStopMustMatchTransfer(t *testing.T) {
 	defer d.Close()
 	if _, err := d.ReadPaged(aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return aacraid.ContainerInfoNeed }); err == nil {
 		t.Fatal("clôture d'un autre transfert acceptée")
+	}
+}
+
+// Clôture confirmée par 0xc5 pour le même transfert : lecture acceptée,
+// clôture comptée. Toute autre marque, ou 0xc5 pour un autre transfert, est
+// une erreur.
+func TestReadPagedCloseOtherMark(t *testing.T) {
+	need := func([]byte) int { return aacraid.ContainerInfoNeed }
+	payload := make([]byte, 0x1000)
+	payload[5] = 0x42
+	for _, c := range []struct {
+		name    string
+		mark    uint32
+		xfer    uint32
+		ok      bool
+		counted int
+	}{
+		{"0xc6", 0xc6, 0, true, 0},
+		{"0xc5, même transfert", 0xc5, 0, true, 1},
+		{"0xc5, autre transfert", 0xc5, 10, false, 0},
+		{"0xc7", 0xc7, 0, false, 0},
+	} {
+		f := &fakeFirmware{payload: payload, xfer: 9, failAt: -1, stopMark: c.mark, stopXfer: c.xfer}
+		f.ioctl(t)
+		d, err := Open("/dev/null", devNull, list(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := d.ReadPaged(aacraid.ReadContainerInfo, 0, 0, need)
+		if (err == nil) != c.ok || (c.ok && data[5] != 0x42) || d.CloseUnconfirmed() != c.counted {
+			t.Fatalf("%s : err=%v, comptées=%d", c.name, err, d.CloseUnconfirmed())
+		}
+		d.Close()
 	}
 }

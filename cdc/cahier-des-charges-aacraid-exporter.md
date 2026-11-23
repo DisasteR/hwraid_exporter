@@ -318,6 +318,8 @@ Privilégier des arguments CLI utilisables directement ou via `command` dans Com
 
 ### 6.8 Intervalle global et exceptions par contrôleur
 
+**État : seul l'intervalle global est implémenté** (`-interval`, 1 minute par défaut, publié par `hwraid_collection_interval_seconds`). Les exceptions par contrôleur décrites ci-dessous sont prévues, non implémentées (section 7.7).
+
 Le binaire doit démarrer avec un intervalle global par défaut. Chaque carte découverte en hérite. Une règle associée à la valeur exacte du label stable `controller` remplace cet intervalle pour cette seule carte. La même règle s’applique après redémarrage. Une règle utilisant une adresse PCI suit cet emplacement en cas de remplacement de carte.
 
 Exemple illustratif de configuration. La syntaxe finale et les valeurs par défaut restent à valider :
@@ -438,7 +440,7 @@ Comparer ces sorties au premier lecteur natif. Conserver les captures anonymisé
 | Une carte ne répond plus ou disparaît | L’autre carte continue d’être supervisée. Des valeurs anciennes ne prolongent pas artificiellement un état sain. |
 | Volume sans correspondance Linux ou périphérique renommé | La mesure d’état reste publiée pour le même couple contrôleur–volume. Une association ambiguë est omise. |
 | Disques masqués par le contrôleur | Les membres et leurs états RAID remontent via le module lorsqu’ils sont accessibles. L’absence de périphérique individuel ne génère aucune mesure SMART ni fausse panne disque. |
-| Cadences mixtes | Avec deux cartes simulées et des lectures instantanées, configurer 60 s globalement et 5 min pour une carte. De t=0 à t=300 s inclus, vérifier six départs sur la première et deux sur la seconde, premier cycle compris. Répéter avec scrapes concurrents et ordre de découverte inversé. |
+| Cadences mixtes (prévu, intervalle par contrôleur non implémenté) | Avec deux cartes simulées et des lectures instantanées, configurer 60 s globalement et 5 min pour une carte. De t=0 à t=300 s inclus, vérifier six départs sur la première et deux sur la seconde, premier cycle compris. Répéter avec scrapes concurrents et ordre de découverte inversé. |
 | Collecte sans Prometheus | Avec une horloge de test, avancer de trois périodes sans appel HTTP. Les compteurs du faux pilote attestent des cycles prévus. |
 | Scrapes en rafale | Figer l’horloge entre deux publications. Envoyer 100 requêtes concurrentes à `/metrics`. Toutes lisent les mêmes valeurs et les compteurs de découverte et de lecture matérielle restent inchangés. |
 | Collecte bloquée et publication atomique | Bloquer la lecture d’une carte dans le faux pilote. Vérifier que l’autre carte progresse, que HTTP répond pendant le blocage et que chaque réponse correspond entièrement à une vue publiée. |
@@ -500,3 +502,4 @@ Deux revues indépendantes du dépôt ont été menées. Les corrections immédi
 12. **Dates de succès et caches liés à la carte, non à l'emplacement.** Non retenu : changer une carte PCI impose d'arrêter la machine, donc de relancer l'exporter, qui repart sans dates ni caches.
 13. **Découverte : attributs obligatoires et facultatifs.** Fait : `class`, `vendor`, `device`, `subsystem_vendor`, `subsystem_device` absents, illisibles ou vides et lien `driver` illisible sont des erreurs d'hôte ; un lien `driver` absent signifie « aucun pilote ».
 14. **Masque de capacités calculé sur les cartes préparées.** Fait : seules les capacités des modules dont une carte a tous ses nœuds préparés sont conservées. Reste la recette des profils livrés (image, unité systemd) avec une carte sur la cible documentée.
+15. **Intervalle de collecte par contrôleur** (section 6.8) : seul l'intervalle global existe ; à implémenter si une carte demande une cadence différente des autres.

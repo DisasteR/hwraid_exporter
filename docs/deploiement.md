@@ -22,7 +22,7 @@ La configuration se fait uniquement par la ligne de commande ; il n'y a ni fichi
 | `-uid`, `-gid` | `65534` | identité après l'abandon des privilèges ; root refusé |
 | `-sysfs` | `/sys` | racine de sysfs (tests) |
 
-**Choisir l'intervalle.** Une minute convient : un cycle sur la carte de référence représente une centaine de commandes de lecture. L'intervalle est publié (`hwraid_collection_interval_seconds`) et les règles d'alerte s'y adaptent ; au-delà de 5 minutes, les fenêtres des règles d'état sont à allonger ([alerts.md](alerts.md)). Un intervalle plus court n'apporte rien : Prometheus lit le dernier instantané, une lecture de `/metrics` n'envoie aucune commande.
+**Choisir l'intervalle.** Une minute convient : un cycle sur la carte de référence (5 volumes, 8 disques) envoie 62 commandes de lecture, les capacités et la carte des connecteurs n'étant lues qu'au démarrage. Un intervalle plus long réduit d'autant la sollicitation de la carte, au prix d'une détection plus tardive. L'intervalle est publié (`hwraid_collection_interval_seconds`) et les règles d'alerte s'y adaptent ; au-delà de 5 minutes, les fenêtres des règles d'état sont à allonger ([alerts.md](alerts.md)). Un intervalle plus court n'apporte rien : Prometheus lit le dernier instantané, une lecture de `/metrics` n'envoie aucune commande.
 
 ## Docker
 
@@ -58,11 +58,7 @@ Chaque ligne du profil est justifiée à la section 6.5 du [cahier des charges](
 
 **Profil seccomp.** La capacité `SYS_RAWIO`, que l'exporter garde pour le pilote, autorise aussi les appels système `iopl` et `ioperm` (accès direct aux ports d'entrée-sortie de la machine) : le profil seccomp par défaut de Docker les permet dans ce cas. Le profil [`deploy/docker/seccomp.json`](../deploy/docker/seccomp.json) est celui de Docker 29.8.0, moins cette seule autorisation ; copier le fichier à côté du fichier Compose. Il est vérifié en CI (`iopl` refusé, exporter fonctionnel) et sur l'hôte de référence avec la carte le 2026-11-23 (collecte complète). Sans lui, l'exporter fonctionne aussi, avec le profil par défaut.
 
-**Dépôt privé.** Tant que le dépôt est privé, l'image l'est aussi : se connecter au registre sur l'hôte avec un jeton GitHub limité à `read:packages`.
-
-```bash
-docker login ghcr.io -u <compte-github>
-```
+L'image est publique : aucune authentification n'est nécessaire pour la télécharger.
 
 ## Installation native (systemd)
 

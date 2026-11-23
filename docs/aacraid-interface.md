@@ -67,7 +67,7 @@ Les informations détaillées sont renvoyées par un transfert en plusieurs FIB,
 |---|---|---|
 | Ouverture | `2`, sous-commande, paramètre, `0`, marque, `0xffffffff`, `0`, taille | statut, écho, `0xc9`, taille totale, `0xda`, identifiant du transfert |
 | Morceau n | `2`, `83`, `0xc9` (n = 0) ou `0xc8`, taille totale, `0xda`, identifiant, n, taille totale | les huit mots, puis **432 octets de données** ; `Size` = 496, en-tête compris |
-| Clôture | `2`, `84`, `0xc8`, taille totale, `0xda`, identifiant, dernier n lu, taille totale | `0xc6` au mot 2 |
+| Clôture | `2`, `84`, `0xc8`, taille totale, `0xda`, identifiant, dernier n lu, taille totale | `0xc6` au mot 2 ; `0xc5` observée parfois (voir ci-dessous) |
 
 | Lecture | Sous-commande | Paramètre | Marque | Taille |
 |---|---|---|---|---|
@@ -78,6 +78,8 @@ Les informations détaillées sont renvoyées par un transfert en plusieurs FIB,
 | Liste des membres | 249 | UID du conteneur | 0 | 8 + 32 × nombre de membres |
 
 L'outil de référence laisse au-delà des huit mots des résidus de ses propres tampons ; ils ne font pas partie de la requête et l'exporter envoie des zéros. Une réponse de morceau porte toujours la marque `0xc8` et `Size` = 496 : 32 octets d'en-tête, 32 de mots de contrôle et 432 de données. Le tampon copié par le pilote fait 512 octets, mais la carte n'en écrit pas les 16 derniers : sur les 325 réponses de morceau capturées, ils sont toujours nuls et identiques à la requête, y compris dans les transferts denses. Le pas est donc de 432 octets par morceau ; l'exporter exige la marque et la valeur de `Size`, et n'utilise jamais les octets non écrits.
+
+**Clôture confirmée par `0xc5`.** Sur l'hôte de référence, pendant que maxView interrogeait la carte, deux clôtures sur environ 23 cycles (environ 1 400 transferts) ont été confirmées par `0xc5` au lieu de `0xc6`, toujours avec l'identifiant de notre transfert et après des morceaux conformes ; la marque n'apparaît dans aucune capture de l'outil témoin, qui lit chaque transfert jusqu'au bout. Son sens n'est pas établi [observé]. L'exporter l'accepte comme une clôture pour le même transfert, publie les données déjà validées et compte l'événement (`hwraid_transfer_close_unconfirmed_total`) ; toute autre marque reste une erreur.
 
 L'exporter ne lit que les morceaux nécessaires aux champs qu'il décode, puis clôture le transfert : sur l'hôte de référence, un seul morceau suffit pour chaque lecture. La clôture après le morceau 0 est une forme employée par l'outil de référence ; le firmware de l'hôte de référence l'accepte aussi pour les lectures de 4 096 octets (vérifié le 2026-11-23).
 

@@ -35,6 +35,7 @@ type Controller struct {
 	CollectError           string   // échec d'une lecture firmware
 	Collected              map[string]bool
 	LastSuccess            map[string]time.Time // collecteur → date du dernier succès
+	CloseUnconfirmed       uint64               // clôtures de transfert non nominales cumulées
 	CacheProtection        *module.CacheProtection
 	Volumes                []module.Volume
 	Disks                  []module.Disk
@@ -92,6 +93,7 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 		}
 		if pc.Module != nil {
 			c.Backend = pc.Module.Name()
+			c.CloseUnconfirmed = tracker.Closes(addr)
 			c.NodeChecked = true
 			switch r, ok := results[addr]; {
 			case pc.Err != nil:
@@ -268,6 +270,13 @@ func Render(s Snapshot) string {
 		sort.Strings(names)
 		for _, n := range names {
 			fmt.Fprintf(&b, "hwraid_collection_last_success_timestamp_seconds{%s} %d\n", labels("controller", c.Label, "collector", n), c.LastSuccess[n].Unix())
+		}
+	}
+	fmt.Fprintf(&b, "# HELP %s %s\n# TYPE %s counter\n", "hwraid_transfer_close_unconfirmed_total",
+		"Paged transfers whose close was acknowledged with a non-nominal mark (aacraid: 0xc5).", "hwraid_transfer_close_unconfirmed_total")
+	for _, c := range s.Controllers {
+		if c.Backend != "" {
+			fmt.Fprintf(&b, "hwraid_transfer_close_unconfirmed_total{%s} %d\n", labels("controller", c.Label), c.CloseUnconfirmed)
 		}
 	}
 	gauge("hwraid_collection_success", "1 if the collector's last read succeeded, 0 otherwise.")

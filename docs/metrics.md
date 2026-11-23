@@ -51,6 +51,7 @@ Valeurs réservées pour les modules à venir, non publiées aujourd'hui : `redu
 | `hwraid_collection_success` | `controller`, `collector` | 1 si la dernière lecture du collecteur a abouti, 0 sinon ; absente si elle n'a pas été tentée |
 | `hwraid_collector_supported` | `controller`, `collector` | 0 si la carte ne permet pas ce collecteur ; absente sinon |
 | `hwraid_collection_last_success_timestamp_seconds` | `controller`, `collector` | date Unix du dernier cycle où la lecture a abouti ; absente tant qu'elle n'a jamais abouti depuis le démarrage de l'exporter, et pour un collecteur servi par une réponse gardée en mémoire (`capabilities`) |
+| `hwraid_transfer_close_unconfirmed_total` | `controller` | compteur des transferts paginés dont la clôture a été confirmée par une marque non nominale (aacraid : `0xc5`, observée quand un autre outil, comme maxView, interroge la carte en même temps) ; les données de ces transferts ont été validées et publiées |
 | `hwraid_collection_interval_seconds` | `controller` | intervalle de collecte effectif (option `-interval`), publié pour chaque carte prise en charge |
 
 **Collecte hors délai.** Les cartes sont collectées en parallèle ; une carte qui n'a pas répondu dans le délai (`-collect-timeout`, 30 s par défaut ou l'intervalle s'il est plus court) est publiée avec tous ses collecteurs à 0, sans série d'état, et ses dates de dernier succès sont conservées. Tant que la commande bloquée n'a pas rendu la main, aucune nouvelle commande n'est envoyée à cette carte.

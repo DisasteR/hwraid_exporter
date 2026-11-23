@@ -41,7 +41,13 @@ type Device struct {
 	fd   int
 	path string
 	list *allowlist.List
+	// closeOther compte les clôtures confirmées par la marque 0xc5.
+	closeOther int
 }
+
+// CloseUnconfirmed renvoie le nombre de clôtures confirmées par la marque
+// 0xc5 au lieu de 0xc6 depuis l'ouverture du nœud.
+func (d *Device) CloseUnconfirmed() int { return d.closeOther }
 
 // Open ouvre path en lecture seule, sans suivre de lien, et vérifie sur le
 // descripteur ouvert qu'il s'agit du nœud caractère wantDev.
@@ -153,8 +159,10 @@ func (d *Device) CacheProtection() (present bool, st aacraid.ZMMStatus, err erro
 	return true, st, err
 }
 
-// stop clôture le transfert après le morceau n et vérifie la confirmation
-// (marque 0xc6, même transfert).
+// stop clôture le transfert après le morceau n et vérifie la confirmation :
+// marque 0xc6 et même transfert. La marque 0xc5, observée quand un autre
+// outil interroge la carte en même temps, est acceptée pour le même
+// transfert et comptée : les morceaux ont déjà été validés.
 func (d *Device) stop(r aacraid.PagedRead, head aacraid.PagedResponse, n uint32) error {
 	req := aacraid.StopRequest(head.Total, head.Xfer, n)
 	rsp, err := d.fib(append([]byte(nil), req...))
@@ -165,8 +173,11 @@ func (d *Device) stop(r aacraid.PagedRead, head aacraid.PagedResponse, n uint32)
 	if err != nil {
 		return fmt.Errorf("read %d: stop: %w", r, err)
 	}
-	if s.Mark != 0xc6 || s.Xfer != head.Xfer {
+	if s.Xfer != head.Xfer || (s.Mark != 0xc6 && s.Mark != aacraid.MarkClosedOther) {
 		return fmt.Errorf("read %d: stop not confirmed (mark %#x, transfer %#x)", r, s.Mark, s.Xfer)
+	}
+	if s.Mark == aacraid.MarkClosedOther {
+		d.closeOther++
 	}
 	return nil
 }

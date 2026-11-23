@@ -19,11 +19,12 @@ import (
 type Tracker struct {
 	last   map[string]map[string]time.Time // adresse PCI → collecteur → date
 	serial map[string]string               // adresse PCI → label serial:… établi
+	closes map[string]uint64               // adresse PCI → clôtures non nominales cumulées
 }
 
 // NewTracker crée un suivi vide.
 func NewTracker() *Tracker {
-	return &Tracker{last: map[string]map[string]time.Time{}, serial: map[string]string{}}
+	return &Tracker{last: map[string]map[string]time.Time{}, serial: map[string]string{}, closes: map[string]uint64{}}
 }
 
 // Update enregistre les succès du cycle terminé à now. Une carte n'est
@@ -42,6 +43,16 @@ func (t *Tracker) Update(results map[string]module.Result, present []string, now
 	for addr := range t.serial {
 		if !keep[addr] {
 			delete(t.serial, addr)
+		}
+	}
+	for addr := range t.closes {
+		if !keep[addr] {
+			delete(t.closes, addr)
+		}
+	}
+	for addr, r := range results {
+		if r.CloseUnconfirmed > 0 {
+			t.closes[addr] += uint64(r.CloseUnconfirmed)
 		}
 	}
 	for addr, r := range results {
@@ -88,6 +99,14 @@ func (t *Tracker) serialLabel(addr string) string {
 		return ""
 	}
 	return t.serial[addr]
+}
+
+// Closes renvoie le cumul des clôtures non nominales d'une carte.
+func (t *Tracker) Closes(addr string) uint64 {
+	if t == nil {
+		return 0
+	}
+	return t.closes[addr]
 }
 
 // Known renvoie les adresses des cartes suivies.

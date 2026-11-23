@@ -72,6 +72,9 @@ type Result struct {
 	// (capacités de la carte) : leur succès ne date pas une lecture du
 	// cycle, ils n'ont pas de date de dernier succès.
 	Cached []string
+	// CloseUnconfirmed : clôtures de transfert confirmées par une marque
+	// autre que la marque nominale pendant ce cycle (aacraid : 0xc5).
+	CloseUnconfirmed int
 	// TimedOut : la collecte n'a pas rendu la main avant l'échéance du
 	// cycle. Rien n'a été observé, pas même la validité du nœud.
 	TimedOut bool

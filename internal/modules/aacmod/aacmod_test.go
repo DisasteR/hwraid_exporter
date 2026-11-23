@@ -64,20 +64,21 @@ func TestNodesFollowUniqueID(t *testing.T) {
 }
 
 type fakeDev struct {
-	info    aacraid.HBAInfo
-	err     error
-	sup     aacraid.SupplementInfo
-	supErr  error
-	supCall int
-	supWait chan struct{} // si non nil, SupplementInfo attend sa fermeture
-	started atomic.Int32  // appels à SupplementInfo commencés (lecture concurrente)
-	closed  bool
-	cp      *cpAnswer
-	cpCall  int
-	paged   func(r aacraid.PagedRead, param, size uint32) ([]byte, error)
-	reads   []string
-	cmap    func() (aacraid.ConnectorMap, error) // nil : réponse de référence
-	cmCall  int
+	info       aacraid.HBAInfo
+	err        error
+	sup        aacraid.SupplementInfo
+	supErr     error
+	supCall    int
+	supWait    chan struct{} // si non nil, SupplementInfo attend sa fermeture
+	started    atomic.Int32  // appels à SupplementInfo commencés (lecture concurrente)
+	closed     bool
+	cp         *cpAnswer
+	cpCall     int
+	paged      func(r aacraid.PagedRead, param, size uint32) ([]byte, error)
+	reads      []string
+	cmap       func() (aacraid.ConnectorMap, error) // nil : réponse de référence
+	cmCall     int
+	closeOther int // clôtures 0xc5 simulées
 }
 
 func (f *fakeDev) ConnectorMap() (aacraid.ConnectorMap, error) {
@@ -113,7 +114,8 @@ func (f *fakeDev) SupplementInfo() (aacraid.SupplementInfo, error) {
 	}
 	return f.sup, f.supErr
 }
-func (f *fakeDev) Close() error { f.closed = true; return nil }
+func (f *fakeDev) Close() error          { f.closed = true; return nil }
+func (f *fakeDev) CloseUnconfirmed() int { return f.closeOther }
 
 func (f *fakeDev) CacheProtection() (bool, aacraid.ZMMStatus, error) {
 	f.cpCall++
@@ -831,5 +833,20 @@ func TestCollectStopsAtDeadline(t *testing.T) {
 	}
 	if !r.NodeValid || !errors.Is(r.CollectErr, ErrDeadline) || r.Collected[CapabilitiesCollector] {
 		t.Fatalf("%+v", r)
+	}
+}
+
+// Le nombre de clôtures confirmées par 0xc5 est reporté dans le résultat,
+// y compris quand la collecte s'arrête avant la fin.
+func TestCollectReportsCloseUnconfirmed(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
+	d := &fakeDev{info: hba, sup: arcIo, closeOther: 2}
+	if r := withDev(d, nil).Collect(card("0000:01:00.0", "0"), ref, time.Time{}); r.CloseUnconfirmed != 2 {
+		t.Fatalf("%+v", r)
+	}
+	d = &fakeDev{info: hba, sup: arcIo, closeOther: 1, supErr: errors.New("EIO")}
+	if r := withDev(d, nil).Collect(card("0000:01:00.0", "0"), ref, time.Time{}); r.CloseUnconfirmed != 1 {
+		t.Fatalf("retour anticipé : %+v", r)
 	}
 }
