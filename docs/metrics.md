@@ -49,6 +49,10 @@ Valeurs réservées pour les modules à venir, non publiées aujourd'hui : `redu
 |---|---|---|
 | `hwraid_collection_success` | `controller`, `collector` | 1 si la dernière lecture du collecteur a abouti, 0 sinon ; absente si elle n'a pas été tentée |
 | `hwraid_collector_supported` | `controller`, `collector` | 0 si la carte ne permet pas ce collecteur ; absente sinon |
+| `hwraid_collection_last_success_timestamp_seconds` | `controller`, `collector` | date Unix du dernier cycle où la lecture a abouti ; absente tant qu'elle n'a jamais abouti depuis le démarrage de l'exporter |
+| `hwraid_collection_interval_seconds` | `controller` | intervalle de collecte effectif (option `-interval`), publié pour chaque carte prise en charge |
+
+L'intervalle permet d'écrire des règles qui s'adaptent au réglage, par exemple « aucun succès depuis plus de trois cycles » : `time() - hwraid_collection_last_success_timestamp_seconds > on (controller) group_left 3 * hwraid_collection_interval_seconds`.
 
 Collecteurs du module aacraid : `capabilities` (capacités de la carte), `volumes`, `disks`, `cache_protection`.
 
@@ -85,7 +89,6 @@ Prévues au cahier des charges, pas encore publiées :
 | Métrique | Dépend de |
 |---|---|
 | `hwraid_task_progress_ratio` (reconstruction, vérification…) | décodage de la réponse aux requêtes de tâches (à capturer pendant une reconstruction) |
-| `hwraid_collection_last_success_timestamp_seconds`, `hwraid_collection_interval_seconds` | — |
 | `hwraid_controller_state`, `hwraid_controller_temperature_celsius` | lecture d'état et des capteurs de la carte |
 | `hwraid_disk_info` | lecture d'inventaire des disques, sans numéro de série ni WWN |
 | `hwraid_volume_write_cache_enabled` | position de l'état du cache d'écriture dans la lecture de volume |

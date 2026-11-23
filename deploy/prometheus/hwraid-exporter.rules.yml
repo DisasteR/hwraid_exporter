@@ -80,14 +80,41 @@ groups:
 
   - name: hwraid-visibilite
     rules:
-      - alert: HwraidCollectionFailing
-        expr: hwraid_collection_success == 0
+      - alert: HwraidCollectionStale
+        # S'adapte à l'intervalle configuré : aucun succès depuis plus de
+        # trois cycles de collecte.
+        expr: |
+          time() - hwraid_collection_last_success_timestamp_seconds
+            > on (controller) group_left 3 * hwraid_collection_interval_seconds
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Lecture {{ $labels.collector }} sans succès depuis plus de 3 cycles ({{ $labels.controller }})"
+          description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter."
+
+      - alert: HwraidCollectionNeverSucceeded
+        # Lecture en échec qui n'a jamais réussi depuis le démarrage (pas de
+        # date de dernier succès).
+        expr: |
+          hwraid_collection_success == 0
+            unless on (controller, collector) hwraid_collection_last_success_timestamp_seconds
         for: 15m
         labels:
           severity: warning
         annotations:
-          summary: "Lecture {{ $labels.collector }} en échec ({{ $labels.controller }})"
-          description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter."
+          summary: "Lecture {{ $labels.collector }} jamais réussie ({{ $labels.controller }})"
+          description: "Depuis son démarrage, l'exporter n'a jamais réussi cette lecture. Voir le journal de l'exporter."
+
+      - alert: HwraidCollectionIntervalTooLong
+        # Les fenêtres des règles d'état (max_over_time sur 10 min) ne
+        # couvrent un cycle en échec que si l'intervalle est d'au plus 5 min.
+        expr: hwraid_collection_interval_seconds > 300
+        labels:
+          severity: info
+        annotations:
+          summary: "Intervalle de collecte de {{ $value }} s : allonger les fenêtres des règles d'état ({{ $labels.controller }})"
+          description: "Les règles d'état utilisent max_over_time sur 10 minutes, soit au moins deux cycles pour un intervalle de 5 minutes au plus. Au-delà, passer ces fenêtres à au moins deux fois l'intervalle."
 
       - alert: HwraidManagementNodeInvalid
         expr: hwraid_management_node_valid == 0

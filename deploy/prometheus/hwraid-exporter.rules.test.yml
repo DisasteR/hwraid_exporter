@@ -31,7 +31,7 @@ tests:
               summary: "Volume RAID b3 dégradé, sans reconstruction (serial:A)"
               description: "Le volume fonctionne sans redondance. Remplacer le disque en panne ; une seconde panne dans ce volume serait fatale."
       - eval_time: 17m
-        alertname: HwraidCollectionFailing
+        alertname: HwraidCollectionNeverSucceeded
         exp_alerts: []
       - eval_time: 44m
         alertname: HwraidVolumeRebuilding
@@ -89,12 +89,12 @@ tests:
         alertname: HwraidCacheProtectionNotReady
         exp_alerts: []
       - eval_time: 16m
-        alertname: HwraidCollectionFailing
+        alertname: HwraidCollectionNeverSucceeded
         exp_alerts:
           - exp_labels: {severity: warning, controller: "serial:B", collector: cache_protection}
             exp_annotations:
-              summary: "Lecture cache_protection en échec (serial:B)"
-              description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter."
+              summary: "Lecture cache_protection jamais réussie (serial:B)"
+              description: "Depuis son démarrage, l'exporter n'a jamais réussi cette lecture. Voir le journal de l'exporter."
 
   # Volume disparu alors que la lecture réussit.
   - interval: 1m
@@ -123,3 +123,46 @@ tests:
             exp_annotations:
               summary: "hwraid_exporter ne publie plus de métriques"
               description: "Exporter arrêté ou non collecté par Prometheus : aucune alerte RAID ne peut se déclencher."
+
+  # Péremption adaptée à l'intervalle : dernier succès à t = 0 ; intervalle
+  # de 60 s sur la carte A (alerte après 3 min + 1 min), de 600 s sur la
+  # carte B (pas d'alerte à 20 min, alerte après 30 min + 1 min).
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_collection_last_success_timestamp_seconds{controller="serial:A",collector="volumes"}'
+        values: '0x40'
+      - series: 'hwraid_collection_interval_seconds{controller="serial:A"}'
+        values: '60x40'
+      - series: 'hwraid_collection_last_success_timestamp_seconds{controller="serial:B",collector="volumes"}'
+        values: '0x40'
+      - series: 'hwraid_collection_interval_seconds{controller="serial:B"}'
+        values: '600x40'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: HwraidCollectionStale
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: HwraidCollectionStale
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: "serial:A", collector: volumes}
+            exp_annotations:
+              summary: "Lecture volumes sans succès depuis plus de 3 cycles (serial:A)"
+              description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter."
+      - eval_time: 32m
+        alertname: HwraidCollectionStale
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: "serial:A", collector: volumes}
+            exp_annotations:
+              summary: "Lecture volumes sans succès depuis plus de 3 cycles (serial:A)"
+              description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter."
+          - exp_labels: {severity: warning, controller: "serial:B", collector: volumes}
+            exp_annotations:
+              summary: "Lecture volumes sans succès depuis plus de 3 cycles (serial:B)"
+              description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter."
+      - eval_time: 1m
+        alertname: HwraidCollectionIntervalTooLong
+        exp_alerts:
+          - exp_labels: {severity: info, controller: "serial:B"}
+            exp_annotations:
+              summary: "Intervalle de collecte de 600 s : allonger les fenêtres des règles d'état (serial:B)"
+              description: "Les règles d'état utilisent max_over_time sur 10 minutes, soit au moins deux cycles pour un intervalle de 5 minutes au plus. Au-delà, passer ces fenêtres à au moins deux fois l'intervalle."
