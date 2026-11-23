@@ -5,8 +5,8 @@ Ce document décrit l'interface entre l'exporter et une carte Adaptec gérée pa
 Chaque élément porte sa provenance :
 
 - **[public]** : documenté dans une source publique, citée ;
-- **[observé]** : établi en observant, sur l'hôte de référence, les échanges entre l'outil constructeur et le pilote, puis en les comparant à ce que l'outil affiche. Ces éléments sont valables pour le modèle et le firmware testés. Ils sont requalifiés pour tout autre modèle ou firmware.
-- **[interopérabilité]** : établi par l'analyse de l'outil constructeur, faute de source publique, au titre de l'exception d'interopérabilité (directive 2009/24/CE, article 6 ; code de la propriété intellectuelle, article L122-6-1 IV ; textes et limites : [base-legale-interoperabilite.md](base-legale-interoperabilite.md)). Seul le résultat nécessaire à l'interopérabilité de l'exporter est décrit ici ; la méthode et les éléments internes de l'outil ne sont pas publiés. Ces éléments sont qualifiés pour le modèle et le firmware de référence.
+- **[observé]** : établi en observant, sur l'hôte de référence, les échanges entre l'outil constructeur et le pilote, puis en les comparant à ce que l'outil affiche. Leur domaine de validité est donné à la section 7.
+- **[interopérabilité]** : établi par l'analyse de l'outil constructeur, faute de source publique, au titre de l'exception d'interopérabilité (directive 2009/24/CE, article 6 ; code de la propriété intellectuelle, article L122-6-1 IV ; textes et limites : [base-legale-interoperabilite.md](base-legale-interoperabilite.md)). Seul le résultat nécessaire à l'interopérabilité de l'exporter est décrit ici ; la méthode et les éléments internes de l'outil ne sont pas publiés. Même domaine de validité (section 7).
 
 Tous les entiers sont en little-endian. Les positions sont en octets, à partir de 0.
 
@@ -42,6 +42,7 @@ Commandes d'en-tête utilisées par l'exporter :
 | 500 | `ContainerCommand` | Linux `aacraid.h`, FreeBSD `aacraid_reg.h` |
 | 700 | `AifRequest` | idem |
 | 701, 703, 704 | `CheckRevision`, `RequestAdapterInfo`, `IsAdapterPaused` | FreeBSD `aacraid_reg.h` |
+| 706 | `RequestSupplementAdapterInfo` | Linux `aacraid.h` (`struct aac_supplement_adapter_info`), FreeBSD `aacraid_reg.h` |
 | 803 | `AdapterEnvironmentInfo` (capteurs de température) | FreeBSD `aacraid_reg.h` |
 
 Pour `ContainerCommand`, les données commencent par la commande VM (mot 0) et la sous-commande (mot 1). Valeurs publiques utilisées : `VM_ContainerConfig` = 2, `VM_NameServe` = 1, `VM_NameServe64` = 22 ; sous-commandes `CT_GET_CONTAINER_COUNT` = 4, `CT_GET_SCSI_METHOD` = 64, `CT_CID_TO_32BITS_UID` = 165 (Linux `aacraid.h` et `aachba.c`, FreeBSD `aacraid_reg.h`).
@@ -141,7 +142,22 @@ La façon dont l'état d'un conteneur membre (par exemple un miroir dégradé) s
 | disponible | disque présent, ni membre, ni secours |
 | secours, copie de retour | condition à établir |
 
-## 7. Qualification
+## 7. Domaine de validité [interopérabilité]
+
+Les lectures des sections 4 à 6 forment une interface que le firmware annonce dans la réponse à `RequestSupplementAdapterInfo` (706). Champs publics (`struct aac_supplement_adapter_info`, Linux `aacraid.h` ; FreeBSD `aacraid_reg.h`) :
+
+| Octets | Champ |
+|---|---|
+| 32-35 | `Version` : version de la zone d'extension |
+| 144-147 | `SupportedOptions2` |
+
+Une carte sous `aacraid` utilise ces lectures si `Version` est supérieur à 1 et si le bit `0x08` de `SupportedOptions2` est positionné (`AAC_SUPPORTED_ARCIO_PHYDEV` dans FreeBSD). L'outil constructeur les emploie alors avec les mêmes formats, quel que soit le modèle ou la version du firmware. Si le bit est absent, il emploie une autre interface, que l'exporter ne prend pas en charge : la carte est publiée comme non prise en charge pour l'état des volumes et des disques.
+
+Sur l'hôte de référence : `Version` = 15, `SupportedOptions2` = `0x00c8693c` (bit `0x08` positionné).
+
+Ce critère dit quelles cartes l'outil constructeur interroge de cette façon. Il ne prouve pas qu'un firmware non testé y répond à l'identique : la qualification de la section 8 reste la preuve pour chaque nouveau couple modèle et firmware, et l'exporter publie la version de firmware avec ses métriques.
+
+## 8. Qualification
 
 Chaque lecture utilisée par l'exporter est qualifiée sur le matériel de référence selon l'exigence S4 du cahier des charges :
 
