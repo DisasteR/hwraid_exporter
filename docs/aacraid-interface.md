@@ -77,7 +77,7 @@ Les informations détaillées sont renvoyées par un transfert en plusieurs FIB,
 
 L'outil de référence laisse au-delà des huit mots des résidus de ses propres tampons ; ils ne font pas partie de la requête et l'exporter envoie des zéros. Le champ `Size` des réponses de morceau vaut 496 ; le pas de 448 octets est établi par la reconstitution des transferts.
 
-L'exporter ne lit que les morceaux nécessaires aux champs qu'il décode, puis clôture le transfert : sur l'hôte de référence, un seul morceau suffit pour chaque lecture. La clôture après le morceau 0 est une forme employée par l'outil de référence.
+L'exporter ne lit que les morceaux nécessaires aux champs qu'il décode, puis clôture le transfert : sur l'hôte de référence, un seul morceau suffit pour chaque lecture. La clôture après le morceau 0 est une forme employée par l'outil de référence ; le firmware de l'hôte de référence l'accepte aussi pour les lectures de 4 096 octets (vérifié le 2026-11-23).
 
 Le pilote sérialise chaque ioctl, pas un transfert entier : un autre programme peut intercaler ses propres commandes entre deux morceaux. L'exporter vérifie à chaque réponse le statut (mot 0), l'écho de la sous-commande (mot 1), l'identifiant du transfert et le numéro du morceau ; il refuse une taille totale supérieure à 4 100 octets ; au premier écart il clôture le transfert et rejette le relevé entier du cycle : aucune configuration partielle n'est publiée.
 
