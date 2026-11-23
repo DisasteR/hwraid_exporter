@@ -1,0 +1,125 @@
+# Tests des règles : promtool test rules hwraid-exporter.rules.test.yml
+rule_files:
+  - hwraid-exporter.rules.yml
+evaluation_interval: 1m
+tests:
+  # Miroir dégradé puis en reconstruction ; un trou de lecture de 4 minutes
+  # (séries d'état absentes) ne doit pas éteindre l'alerte.
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_volume_state{controller="serial:A",volume="b3",state="optimal"}'
+        values: '1x4 _x40'
+      # Trou de lecture de 16 à 20 min : l'exporter ne publie plus la série,
+      # Prometheus la marque périmée (stale).
+      - series: 'hwraid_volume_state{controller="serial:A",volume="b3",state="degraded"}'
+        values: '_x5 1x9 stale _x3 1x10 _x15'
+      - series: 'hwraid_volume_state{controller="serial:A",volume="b3",state="degraded_rebuilding"}'
+        values: '_x30 1x14'
+      - series: 'hwraid_collection_success{controller="serial:A",collector="volumes"}'
+        values: '1x14 0x4 1x26'
+      - series: 'hwraid_snapshot_ready'
+        values: '1x45'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: HwraidVolumeDegraded
+        exp_alerts: []
+      - eval_time: 17m
+        alertname: HwraidVolumeDegraded
+        exp_alerts:
+          - exp_labels: {severity: critical, controller: "serial:A", volume: "b3", state: degraded}
+            exp_annotations:
+              summary: "Volume RAID b3 dégradé, sans reconstruction (serial:A)"
+              description: "Le volume fonctionne sans redondance. Remplacer le disque en panne ; une seconde panne dans ce volume serait fatale."
+      - eval_time: 17m
+        alertname: HwraidCollectionFailing
+        exp_alerts: []
+      - eval_time: 44m
+        alertname: HwraidVolumeRebuilding
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: "serial:A", volume: "b3", state: degraded_rebuilding}
+            exp_annotations:
+              summary: "Volume RAID b3 en reconstruction (serial:A)"
+              description: "Redondance absente jusqu'à la fin de la reconstruction. Éviter toute intervention et toute coupure."
+      - eval_time: 44m
+        alertname: HwraidVolumeDegraded
+        exp_alerts: []
+
+  # Disque absent, volume en échec : alertes immédiates.
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_disk_state{controller="serial:A",disk="d7",state="failed"}'
+        values: '1x5'
+      - series: 'hwraid_volume_state{controller="serial:A",volume="b3",state="failed"}'
+        values: '1x5'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: HwraidDiskFailed
+        exp_alerts:
+          - exp_labels: {severity: critical, controller: "serial:A", disk: d7, state: failed}
+            exp_annotations:
+              summary: "Disque d7 en panne (serial:A)"
+              description: "Disque membre d'un volume mais absent de la carte."
+      - eval_time: 1m
+        alertname: HwraidVolumeFailed
+        exp_alerts:
+          - exp_labels: {severity: critical, controller: "serial:A", volume: b3, state: failed}
+            exp_annotations:
+              summary: "Volume RAID b3 en échec (serial:A)"
+              description: "Le volume a perdu plus de membres que sa redondance ne le permet : données inaccessibles ou perdues."
+
+  # Protection du cache : panne après 5 min ; charge normale de 20 min sans
+  # alerte ; lecture en échec prolongée signalée.
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_cache_protection_state{controller="serial:A",state="failed"}'
+        values: '1x10'
+      - series: 'hwraid_cache_protection_state{controller="serial:B",state="charging"}'
+        values: '1x20'
+      - series: 'hwraid_collection_success{controller="serial:B",collector="cache_protection"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: HwraidCacheProtectionFailed
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: "serial:A", state: failed}
+            exp_annotations:
+              summary: "Protection du cache en panne (serial:A)"
+              description: "Le module de protection du cache ne protège plus les données en attente d'écriture. Si le cache d'écriture reste actif, une coupure de courant peut les perdre."
+      - eval_time: 20m
+        alertname: HwraidCacheProtectionNotReady
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: HwraidCollectionFailing
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: "serial:B", collector: cache_protection}
+            exp_annotations:
+              summary: "Lecture cache_protection en échec (serial:B)"
+              description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter."
+
+  # Volume disparu alors que la lecture réussit.
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_volume_info{controller="serial:A",volume="b3",name="x",raid_level="raid1",vendor_level="1",parent=""}'
+        values: '1x5 _x30'
+      - series: 'hwraid_collection_success{controller="serial:A",collector="volumes"}'
+        values: '1x35'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: HwraidVolumeDisappeared
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: "serial:A", volume: b3, name: x, raid_level: raid1, vendor_level: "1"}
+            exp_annotations:
+              summary: "Volume b3 disparu (serial:A)"
+              description: "Le volume était présent il y a 15 minutes et n'apparaît plus alors que la lecture des volumes réussit : suppression ou perte du volume."
+
+  # Exporter absent.
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: HwraidExporterAbsent
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "hwraid_exporter ne publie plus de métriques"
+              description: "Exporter arrêté ou non collecté par Prometheus : aucune alerte RAID ne peut se déclencher."

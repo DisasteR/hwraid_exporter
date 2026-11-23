@@ -63,7 +63,8 @@ type Result struct {
 type Volume struct {
 	ID            string // identifiant stable sur la carte (UID en hexadécimal)
 	Name          string
-	RaidLevel     string // « raid1 », « raid_volume » (termes de l'outil constructeur) ou « unknown »
+	RaidLevel     string // niveau normalisé (docs/metrics.md) : raid1, concat… ou unknown
+	VendorLevel   string // terme de l'outil constructeur, tel qu'il l'affiche
 	Parent        string // ID du conteneur qui l'assemble, vide sinon
 	CapacityBytes uint64
 	State         string
@@ -79,7 +80,8 @@ type Disk struct {
 // CacheProtection décrit le module de protection du cache (ZMM, batterie).
 type CacheProtection struct {
 	Present bool   // module installé
-	Type    string // « zmm »
+	Type    string // type normalisé : flash_supercap, battery
+	Vendor  string // nom constructeur du module : « zmm »
 	State   string // état normalisé, vide si Present est faux
 }
 

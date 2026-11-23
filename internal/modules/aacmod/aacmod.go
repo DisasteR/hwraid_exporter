@@ -209,16 +209,17 @@ func volumesOf(cs []aacraid.Container, ev aacraid.Evaluation) []module.Volume {
 			CapacityBytes: c.Info.Blocks * 512,
 			State:         string(ev.Volumes[c.Info.UID]),
 		}
-		// Niveau RAID dans les termes de l'outil constructeur : son JSON
-		// donne raidLevel 1 aux miroirs et son affichage « RAID_volume » à
-		// l'assemblage (concaténation de volumes). Autre type : non observé.
+		// Niveau normalisé et terme de l'outil constructeur : son JSON
+		// donne raidLevel 1 aux miroirs ; il affiche « RAID_volume » pour
+		// l'assemblage, qu'Adaptec définit comme une concaténation de
+		// grappes. Autre type : non observé, jamais deviné.
 		switch c.Info.Type {
 		case aacraid.TypeMirror:
-			v.RaidLevel = "raid1"
+			v.RaidLevel, v.VendorLevel = "raid1", "1"
 		case aacraid.TypeAssembly:
-			v.RaidLevel = "raid_volume"
+			v.RaidLevel, v.VendorLevel = "concat", "RAID_volume"
 		default:
-			v.RaidLevel = "unknown"
+			v.RaidLevel, v.VendorLevel = "unknown", fmt.Sprintf("type %d", c.Info.Type)
 		}
 		if c.Info.Parent != aacraid.NoUID {
 			v.Parent = uidID(c.Info.Parent)
@@ -263,10 +264,10 @@ func collectCacheProtection(r *module.Result, d device) {
 		r.Unsupported = append(r.Unsupported, CacheProtectionCollector)
 	case st.State == aacraid.CacheProtectionNotInstalled:
 		r.Collected[CacheProtectionCollector] = true
-		r.CacheProtection = &module.CacheProtection{Type: "zmm"}
+		r.CacheProtection = &module.CacheProtection{Type: "flash_supercap", Vendor: "zmm"}
 	default:
 		r.Collected[CacheProtectionCollector] = true
-		r.CacheProtection = &module.CacheProtection{Present: true, Type: "zmm", State: string(st.State)}
+		r.CacheProtection = &module.CacheProtection{Present: true, Type: "flash_supercap", Vendor: "zmm", State: string(st.State)}
 	}
 }
 

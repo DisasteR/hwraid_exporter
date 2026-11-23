@@ -26,6 +26,9 @@ jobs:
       - name: Outil de capture fibcap
         run: sh tools/fibcap/test.sh
 
+      - name: Règles d'alerte (promtool)
+        run: docker run --rm --network none -v "$PWD/deploy/prometheus":/r:ro -w /r --entrypoint promtool prom/prometheus:v3.7.3 test rules hwraid-exporter.rules.test.yml
+
       - name: Vet
         run: go vet ./...
 
