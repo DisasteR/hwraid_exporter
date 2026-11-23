@@ -33,7 +33,7 @@ Valeurs réservées pour les modules à venir, non publiées aujourd'hui : `redu
 | Métrique | Labels | Valeur |
 |---|---|---|
 | `hwraid_snapshot_ready` | — | 0 avant la première découverte publiée, puis 1 |
-| `hwraid_discovery_success` | — | 1 si la dernière découverte des cartes dans sysfs a abouti pour tous les hôtes SCSI ; 0 si sysfs ou au moins un hôte est illisible (une carte peut alors manquer à l'inventaire) |
+| `hwraid_discovery_success` | — | 1 si la dernière découverte des cartes dans sysfs a abouti pour tous les hôtes SCSI ; 0 si sysfs ou au moins un hôte est illisible (une carte peut alors manquer à l'inventaire). Un hôte SCSI sans aucun ancêtre PCI (iSCSI, VMBus, hôte virtuel) est hors périmètre : ignoré, il ne met pas la découverte en échec |
 
 ### Contrôleur
 
