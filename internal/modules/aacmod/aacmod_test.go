@@ -72,6 +72,32 @@ type fakeDev struct {
 	cpCall  int
 	paged   func(r aacraid.PagedRead, param, size uint32) ([]byte, error)
 	reads   []string
+	cmap    func() (aacraid.ConnectorMap, error) // nil : réponse de référence
+	cmCall  int
+}
+
+func (f *fakeDev) ConnectorMap() (aacraid.ConnectorMap, error) {
+	f.cmCall++
+	if f.cmap != nil {
+		return f.cmap()
+	}
+	return referenceConnectorMap()
+}
+
+// referenceConnectorMap décode la réponse 708 enregistrée sur l'hôte de
+// référence (adresse SAS de la carte remplacée).
+func referenceConnectorMap() (aacraid.ConnectorMap, error) {
+	s, err := os.ReadFile("../../aacraid/testdata/708.hex")
+	if err != nil {
+		return aacraid.ConnectorMap{}, err
+	}
+	raw, err := hex.DecodeString(strings.TrimSpace(string(s)))
+	if err != nil {
+		return aacraid.ConnectorMap{}, err
+	}
+	b := make([]byte, aacraid.LargeFIBSize)
+	copy(b, raw)
+	return aacraid.DecodeConnectorMap(b)
 }
 
 func (f *fakeDev) HBAInfo() (aacraid.HBAInfo, error) { return f.info, f.err }
@@ -196,7 +222,8 @@ func TestCollectSupplementGate(t *testing.T) {
 		"version 1":  {Version: 1, SupportedOptions2: 0x08},
 	} {
 		r := withDev(&fakeDev{info: hba, sup: sup}, nil).Collect(c, ref)
-		if !r.NodeValid || len(r.Unsupported) != 3 || r.Unsupported[0] != "volumes" || r.Unsupported[1] != "disks" || r.Unsupported[2] != DiskInventoryCollector {
+		if !r.NodeValid || len(r.Unsupported) != 4 || r.Unsupported[0] != "volumes" || r.Unsupported[1] != "disks" ||
+			r.Unsupported[2] != DiskInventoryCollector || r.Unsupported[3] != DiskLocationCollector {
 			t.Fatalf("%s : %+v", name, r)
 		}
 	}
@@ -455,10 +482,10 @@ func TestCollectRequiresQualification(t *testing.T) {
 		mod(&c)
 		d := &fakeDev{info: hba, sup: arcIo}
 		r := withDev(d, nil).Collect(c, ref)
-		if d.cpCall != 0 || len(d.reads) != 0 {
+		if d.cpCall != 0 || len(d.reads) != 0 || d.cmCall != 0 {
 			t.Fatalf("%s : lectures envoyées (ZMM %d, paginées %v)", name, d.cpCall, d.reads)
 		}
-		want := map[string]bool{"volumes": true, "disks": true, DiskInventoryCollector: true, CacheProtectionCollector: true}
+		want := map[string]bool{"volumes": true, "disks": true, DiskInventoryCollector: true, DiskLocationCollector: true, CacheProtectionCollector: true}
 		for _, u := range r.Unsupported {
 			delete(want, u)
 		}
@@ -511,4 +538,89 @@ func TestBlockedCardDoesNotBlockOthers(t *testing.T) {
 		t.Fatal("la seconde carte attend la première")
 	}
 	close(wait)
+}
+
+// Emplacement : valeurs de la carte des connecteurs, telles que l'outil
+// témoin les affiche (d7 = connecteur 1 « CN1 », device 3, phy 4) ; carte
+// lue une seule fois en trois cycles.
+func TestCollectDiskLocations(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	c := card("0000:01:00.0", "0")
+	d := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}, sup: arcIo}
+	m := withDev(d, nil)
+	var r module.Result
+	for i := 0; i < 3; i++ {
+		r = m.Collect(c, ref)
+	}
+	if d.cmCall != 1 {
+		t.Fatalf("carte des connecteurs lue %d fois en 3 cycles", d.cmCall)
+	}
+	if !r.Collected[DiskLocationCollector] || len(r.DiskLocations) != 8 {
+		t.Fatalf("%+v", r)
+	}
+	for n, l := range r.DiskLocations {
+		want := module.DiskLocation{ID: fmt.Sprintf("d%d", n), Connector: fmt.Sprint(n / 4), ConnectorName: fmt.Sprintf("CN%d", n/4),
+			Device: fmt.Sprint(n % 4), Phy: fmt.Sprint(4*(n/4) + 3 - n%4)}
+		if l != want {
+			t.Fatalf("%+v, attendu %+v", l, want)
+		}
+	}
+}
+
+// Échecs : carte des connecteurs illisible (relue au cycle suivant), phy
+// incohérent (carte oubliée), disque sans entrée (pas d'emplacement pour
+// lui, les autres publiés). L'inventaire reste publié dans tous les cas.
+func TestCollectDiskLocationFailures(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	c := card("0000:01:00.0", "0")
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}
+
+	fail := true
+	d := &fakeDev{info: hba, sup: arcIo, cmap: func() (aacraid.ConnectorMap, error) {
+		if fail {
+			return aacraid.ConnectorMap{}, errors.New("EIO")
+		}
+		return referenceConnectorMap()
+	}}
+	m := withDev(d, nil)
+	r := m.Collect(c, ref)
+	if r.Collected[DiskLocationCollector] || r.DiskLocations != nil || len(r.DiskInventory) != 8 || r.CollectErr == nil {
+		t.Fatalf("échec de lecture : %+v", r)
+	}
+	fail = false
+	if r = m.Collect(c, ref); !r.Collected[DiskLocationCollector] || d.cmCall != 2 {
+		t.Fatalf("pas de nouvelle lecture après échec (%d) : %+v", d.cmCall, r)
+	}
+
+	bad := func() (aacraid.ConnectorMap, error) {
+		cm, err := referenceConnectorMap()
+		cm.Entries[0].Phy = 7 // disque 3 : phy 0 dans 248
+		return cm, err
+	}
+	d = &fakeDev{info: hba, sup: arcIo, cmap: bad}
+	m = withDev(d, nil)
+	r = m.Collect(c, ref)
+	if r.Collected[DiskLocationCollector] || r.DiskLocations != nil || len(r.DiskInventory) != 8 {
+		t.Fatalf("phy incohérent : %+v", r)
+	}
+	m.Collect(c, ref)
+	if d.cmCall != 2 {
+		t.Fatalf("carte incohérente gardée (%d lectures)", d.cmCall)
+	}
+
+	partial := func() (aacraid.ConnectorMap, error) {
+		cm, err := referenceConnectorMap()
+		cm.Entries = cm.Entries[1:] // disque 3 derrière un expandeur
+		return cm, err
+	}
+	d = &fakeDev{info: hba, sup: arcIo, cmap: partial}
+	r = withDev(d, nil).Collect(c, ref)
+	if !r.Collected[DiskLocationCollector] || len(r.DiskLocations) != 7 {
+		t.Fatalf("disque sans entrée : %+v", r)
+	}
+	for _, l := range r.DiskLocations {
+		if l.ID == "d3" {
+			t.Fatal("emplacement publié pour un disque sans entrée")
+		}
+	}
 }

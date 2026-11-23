@@ -312,3 +312,16 @@ func TestDiskInventoryRender(t *testing.T) {
 		t.Fatalf("capacité inconnue publiée :\n%s", out)
 	}
 }
+
+// Emplacement : une série par disque localisé.
+func TestDiskLocationRender(t *testing.T) {
+	p := plan(aacHost("host0", "0000:01:00.0", "S1"))
+	res := map[string]module.Result{"0000:01:00.0": {NodeValid: true, DiskLocations: []module.DiskLocation{
+		{ID: "d7", Connector: "1", ConnectorName: "CN1", Device: "3", Phy: "4"},
+	}}}
+	out := Render(Build(p, true, res, nil, 0))
+	want := `hwraid_disk_location{controller="serial:S1",disk="d7",connector="1",connector_name="CN1",device="3",phy="4"} 1`
+	if !strings.Contains(out, want+"\n") || strings.Count(out, "hwraid_disk_location{") != 1 {
+		t.Fatalf("ligne absente : %s\n%s", want, out)
+	}
+}

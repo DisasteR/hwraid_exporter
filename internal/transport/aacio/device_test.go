@@ -225,6 +225,50 @@ func TestSupplementInfoRoundTrip(t *testing.T) {
 	}
 }
 
+// La requête 708 part par FSACTL_SEND_LARGE_FIB, sur un tampon de 2 048
+// octets, telle que construite ; une réponse non remplie est refusée.
+func TestConnectorMapRoundTrip(t *testing.T) {
+	answer := true
+	calls := fakeIoctl(t, func(req uint32, buf []byte) error {
+		if req != aacraid.IoctlSendLargeFIB || len(buf) != aacraid.LargeFIBSize {
+			t.Fatalf("ioctl %#x, %d octets", req, len(buf))
+		}
+		if !bytes.Equal(buf, aacraid.ConnectorMapRequest()) {
+			t.Fatal("requête transmise différente de la requête qualifiée")
+		}
+		if !answer {
+			return nil
+		}
+		le := binary.LittleEndian
+		le.PutUint16(buf[8:], 32+32+16)
+		d := buf[aacraid.FIBHeaderSize:]
+		le.PutUint32(d[0:], 1)
+		d[4], d[5] = 1, 2
+		d[8], d[20] = 0, 1
+		copy(d[12:], "CN0")
+		copy(d[24:], "CN1")
+		le.PutUint32(d[32:], 7)
+		d[36], d[37], d[38] = 1, 3, 4
+		return nil
+	})
+	d, err := Open("/dev/null", devNull, list(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	m, err := d.ConnectorMap()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e, ok := m.Locate(7); *calls != 1 || !ok || e.Connector != 1 || e.Device != 3 || e.Phy != 4 || m.Names[1] != "CN1" {
+		t.Fatalf("calls=%d %+v", *calls, m)
+	}
+	answer = false
+	if _, err := d.ConnectorMap(); err == nil {
+		t.Fatal("réponse vide acceptée")
+	}
+}
+
 // Une réponse que le firmware n'a pas remplie (Size reste à 4) est refusée.
 func TestSupplementInfoUnansweredRejected(t *testing.T) {
 	fakeIoctl(t, func(uint32, []byte) error { return nil })

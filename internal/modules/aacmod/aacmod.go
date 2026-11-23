@@ -24,6 +24,7 @@ type device interface {
 	SupplementInfo() (aacraid.SupplementInfo, error)
 	CacheProtection() (bool, aacraid.ZMMStatus, error)
 	ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error)
+	ConnectorMap() (aacraid.ConnectorMap, error)
 	Close() error
 }
 
@@ -34,6 +35,10 @@ var StateCollectors = []string{"volumes", "disks"}
 // DiskInventoryCollector est le collecteur de l'inventaire des disques
 // présents (fabricant, modèle, firmware, numéro de série, WWN, capacité).
 const DiskInventoryCollector = "disk_inventory"
+
+// DiskLocationCollector est le collecteur de l'emplacement des disques
+// reliés directement à la carte (connecteur, position, phy).
+const DiskLocationCollector = "disk_location"
 
 // CapabilitiesCollector est le collecteur de la lecture des capacités de la
 // carte (RequestSupplementAdapterInfo), préalable aux collecteurs d'état.
@@ -53,6 +58,9 @@ type Module struct {
 	// de la carte, qui change aussi le nœud. Une lecture en échec n'est pas
 	// gardée et sera retentée au cycle suivant.
 	supplement map[string]aacraid.SupplementInfo
+	// connectors garde de même la carte des connecteurs (708), fixe tant que
+	// la carte n'est pas réinitialisée.
+	connectors map[string]aacraid.ConnectorMap
 }
 
 // New construit le module avec le transport réel et la liste blanche aacraid.
@@ -70,7 +78,7 @@ func (*Module) Match(c module.Card) bool { return c.PCI.Driver == "aacraid" }
 
 // Collectors liste tous les collecteurs du module.
 func (*Module) Collectors() []string {
-	return append([]string{CapabilitiesCollector, CacheProtectionCollector, DiskInventoryCollector}, StateCollectors...)
+	return append([]string{CapabilitiesCollector, CacheProtectionCollector, DiskInventoryCollector, DiskLocationCollector}, StateCollectors...)
 }
 
 // Capabilities : CAP_SYS_RAWIO, exigée par le pilote à chaque ioctl.
@@ -132,7 +140,8 @@ func (m *Module) Collect(c module.Card, refs []module.NodeRef) module.Result {
 			info.AdapterNumber, info.Bus, info.Device, info.Function)}
 	}
 	r := module.Result{NodeValid: true}
-	sup, err := m.supplementInfo(c.PCI.Address+"|"+strconv.FormatUint(refs[0].Dev, 10), d)
+	key := c.PCI.Address + "|" + strconv.FormatUint(refs[0].Dev, 10)
+	sup, err := m.supplementInfo(key, d)
 	r.Collected = map[string]bool{CapabilitiesCollector: err == nil}
 	if err != nil {
 		r.CollectErr = fmt.Errorf("RequestSupplementAdapterInfo : %w", err)
@@ -142,15 +151,15 @@ func (m *Module) Collect(c module.Card, refs []module.NodeRef) module.Result {
 	// firmware qualifié (exigence S4) ; toute autre carte est publiée avec
 	// ces collecteurs non pris en charge.
 	if !Qualified(c) {
-		r.Unsupported = append(append([]string(nil), StateCollectors...), DiskInventoryCollector, CacheProtectionCollector)
+		r.Unsupported = append(append([]string(nil), StateCollectors...), DiskInventoryCollector, DiskLocationCollector, CacheProtectionCollector)
 		return r
 	}
 	if !sup.ArcIoReads() {
-		r.Unsupported = append(append([]string(nil), StateCollectors...), DiskInventoryCollector)
+		r.Unsupported = append(append([]string(nil), StateCollectors...), DiskInventoryCollector, DiskLocationCollector)
 	}
 	collectCacheProtection(&r, d)
 	if sup.ArcIoReads() {
-		collectVolumes(&r, d)
+		m.collectVolumes(&r, d, key)
 	}
 	return r
 }
@@ -199,13 +208,14 @@ func hostOf(c module.Card) (int, sysfs.SCSIHost, error) {
 // jamais de configuration ni d'inventaire partiels. L'inventaire réutilise
 // la liste des disques présents : il n'est pas lu si la configuration ne
 // l'a pas été.
-func collectVolumes(r *module.Result, d device) {
+func (m *Module) collectVolumes(r *module.Result, d device, key string) {
 	vols, disks, present, err := readConfiguration(d)
 	for _, col := range StateCollectors {
 		r.Collected[col] = err == nil
 	}
 	if err != nil {
 		r.Collected[DiskInventoryCollector] = false
+		r.Collected[DiskLocationCollector] = false
 		if r.CollectErr == nil {
 			r.CollectErr = fmt.Errorf("configuration : %w", err)
 		}
@@ -215,20 +225,92 @@ func collectVolumes(r *module.Result, d device) {
 	inv, err := readInventory(d, present)
 	r.Collected[DiskInventoryCollector] = err == nil
 	if err != nil {
+		r.Collected[DiskLocationCollector] = false
 		if r.CollectErr == nil {
 			r.CollectErr = fmt.Errorf("inventaire des disques : %w", err)
 		}
 		return
 	}
-	r.DiskInventory = inv
+	for _, i := range inv {
+		r.DiskInventory = append(r.DiskInventory, module.DiskInfo{ID: diskID(i.Number), Vendor: i.Vendor, Model: i.Model,
+			Firmware: i.Firmware, Serial: i.Serial, WWN: i.WWN, CapacityBytes: i.CapacityBytes()})
+	}
+	locs, err := m.locations(key, d, inv)
+	r.Collected[DiskLocationCollector] = err == nil
+	if err != nil {
+		if r.CollectErr == nil {
+			r.CollectErr = fmt.Errorf("emplacement des disques : %w", err)
+		}
+		return
+	}
+	r.DiskLocations = locs
+}
+
+func diskID(n uint32) string { return fmt.Sprintf("d%d", n) }
+
+// locations donne l'emplacement de chaque disque relié directement à la
+// carte, tel que la carte des connecteurs le décrit et tel que l'outil de
+// référence l'affiche. Le phy de la carte des connecteurs doit être celui
+// de l'information de disque lue pendant le cycle : sinon la carte a changé
+// ou une réponse est incohérente, et aucun emplacement n'est publié. Un
+// disque sans entrée (derrière un expandeur) n'a pas d'emplacement publié.
+func (m *Module) locations(key string, d device, inv []aacraid.DiskInfo) ([]module.DiskLocation, error) {
+	cm, err := m.connectorMap(key, d)
+	if err != nil {
+		return nil, err
+	}
+	var out []module.DiskLocation
+	for _, i := range inv {
+		e, ok := cm.Locate(i.Number)
+		if !ok {
+			continue
+		}
+		if e.Phy != i.Phy {
+			m.forgetConnectorMap(key)
+			return nil, fmt.Errorf("disque %d : phy %d dans la carte des connecteurs, %d dans l'information de disque", i.Number, e.Phy, i.Phy)
+		}
+		out = append(out, module.DiskLocation{ID: diskID(i.Number), Connector: strconv.Itoa(int(e.Connector)),
+			ConnectorName: cm.Names[e.Connector], Device: strconv.Itoa(int(e.Device)), Phy: strconv.Itoa(int(e.Phy))})
+	}
+	return out, nil
+}
+
+// connectorMap lit la carte des connecteurs une fois par carte et par nœud,
+// hors du verrou ; une lecture en échec n'est pas gardée.
+func (m *Module) connectorMap(key string, d device) (aacraid.ConnectorMap, error) {
+	m.mu.Lock()
+	cm, ok := m.connectors[key]
+	m.mu.Unlock()
+	if ok {
+		return cm, nil
+	}
+	cm, err := d.ConnectorMap()
+	if err != nil {
+		return cm, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.connectors == nil {
+		m.connectors = map[string]aacraid.ConnectorMap{}
+	}
+	m.connectors[key] = cm
+	return cm, nil
+}
+
+// forgetConnectorMap oublie la carte gardée : elle sera relue au cycle
+// suivant.
+func (m *Module) forgetConnectorMap(key string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.connectors, key)
 }
 
 // readInventory lit l'information de chaque disque présent. Seul le début
 // de chaque réponse est lu (DiskInfoNeed), puis le transfert est clos.
-func readInventory(d device, nums []uint32) ([]module.DiskInfo, error) {
+func readInventory(d device, nums []uint32) ([]aacraid.DiskInfo, error) {
 	sorted := append([]uint32(nil), nums...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
-	out := make([]module.DiskInfo, 0, len(sorted))
+	out := make([]aacraid.DiskInfo, 0, len(sorted))
 	for _, n := range sorted {
 		raw, err := d.ReadPaged(aacraid.ReadDiskInfo, n, 0, func([]byte) int { return aacraid.DiskInfoNeed })
 		if err != nil {
@@ -241,8 +323,7 @@ func readInventory(d device, nums []uint32) ([]module.DiskInfo, error) {
 		if i.Number != n {
 			return nil, fmt.Errorf("information du disque %d : la réponse désigne le disque %d", n, i.Number)
 		}
-		out = append(out, module.DiskInfo{ID: fmt.Sprintf("d%d", n), Vendor: i.Vendor, Model: i.Model,
-			Firmware: i.Firmware, Serial: i.Serial, WWN: i.WWN, CapacityBytes: i.CapacityBytes()})
+		out = append(out, i)
 	}
 	return out, nil
 }

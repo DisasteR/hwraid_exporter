@@ -114,6 +114,16 @@ func (d *Device) SupplementInfo() (aacraid.SupplementInfo, error) {
 	return aacraid.DecodeSupplementInfo(buf)
 }
 
+// ConnectorMap envoie RequestConnectorMap (708) par FSACTL_SEND_LARGE_FIB,
+// comme l'outil de référence, et décode la réponse.
+func (d *Device) ConnectorMap() (aacraid.ConnectorMap, error) {
+	buf := aacraid.ConnectorMapRequest()
+	if err := d.Do(allowlist.Request{Ioctl: aacraid.IoctlSendLargeFIB, Buf: buf}); err != nil {
+		return aacraid.ConnectorMap{}, err
+	}
+	return aacraid.DecodeConnectorMap(buf)
+}
+
 // fib envoie une requête FIB qualifiée et renvoie la réponse.
 func (d *Device) fib(req []byte) ([]byte, error) {
 	if err := d.Do(allowlist.Request{Ioctl: aacraid.IoctlSendFIB, Buf: req}); err != nil {

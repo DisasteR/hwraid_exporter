@@ -56,7 +56,7 @@ Valeurs réservées pour les modules à venir, non publiées aujourd'hui : `redu
 
 L'intervalle permet d'écrire des règles qui s'adaptent au réglage, par exemple « aucun succès depuis plus de trois cycles » : `time() - hwraid_collection_last_success_timestamp_seconds > on (job, instance, controller) group_left 3 * hwraid_collection_interval_seconds`. Joindre toujours aussi sur `job` et `instance` : deux hôtes peuvent publier le même identifiant `pci:`.
 
-Collecteurs du module aacraid : `capabilities` (capacités de la carte), `volumes`, `disks`, `disk_inventory`, `cache_protection`.
+Collecteurs du module aacraid : `capabilities` (capacités de la carte), `volumes`, `disks`, `disk_inventory`, `disk_location`, `cache_protection`.
 
 ### Volumes
 
@@ -76,8 +76,11 @@ Une grappe à plusieurs niveaux (par exemple quatre miroirs assemblés) publie u
 | `hwraid_disk_state` | `controller`, `disk`, `state` | 1, pour chaque disque membre d'un volume dont l'état est établi |
 | `hwraid_disk_info` | `controller`, `disk`, `vendor`, `model`, `firmware`, `serial`, `wwn` | 1, pour chaque disque présent sur la carte, membre ou non ; `wwn` au format `0x` suivi de 16 chiffres hexadécimaux, vide si la carte n'en donne pas |
 | `hwraid_disk_capacity_bytes` | `controller`, `disk` | capacité brute en octets, absente si la taille de bloc n'est pas reconnue |
+| `hwraid_disk_location` | `controller`, `disk`, `connector`, `connector_name`, `device`, `phy` | 1, pour chaque disque relié directement à la carte : numéro et nom du connecteur, position dans le connecteur, phy de la carte |
 
-L'inventaire est relu à chaque cycle : un disque remplacé au même emplacement change aussitôt de numéro de série. Il ne contient pas d'emplacement physique (connecteur, baie) : pour retrouver un disque, se fier au numéro de série imprimé sur son étiquette. Pour relier un disque à sa santé SMART, joindre sur le numéro de série, par exemple avec smartctl_exporter (label `serial_number` de `smartctl_device`) :
+L'inventaire est relu à chaque cycle : un disque remplacé au même emplacement change aussitôt de numéro de série.
+
+L'emplacement reprend la numérotation de l'outil du constructeur (« Connector n, Device m » d'ARCCONF et de maxView), fournie par la carte. Avec un câble éclaté mini-SAS vers 4 SATA, `device` m correspond à la fiche P(m+1) (vérifié sur l'hôte de référence). Un disque relié par un expandeur ou un fond de panier n'a pas d'emplacement publié. Le numéro de série, imprimé sur l'étiquette du disque, reste la confirmation avant de retirer un disque. Pour relier un disque à sa santé SMART, joindre sur le numéro de série, par exemple avec smartctl_exporter (label `serial_number` de `smartctl_device`) :
 
 ```promql
 hwraid_disk_info * on (serial) group_left (device)
@@ -101,7 +104,7 @@ Prévues au cahier des charges, pas encore publiées :
 |---|---|
 | `hwraid_task_progress_ratio` (reconstruction, vérification…) | décodage de la réponse aux requêtes de tâches (à capturer pendant une reconstruction) |
 | `hwraid_controller_state`, `hwraid_controller_temperature_celsius` | lecture d'état et des capteurs de la carte |
-| Emplacement physique des disques (connecteur, baie) | formule de l'emplacement à établir (absente de la réponse 248) et à vérifier sur le câblage réel |
+| Emplacement des disques derrière un expandeur ou un fond de panier (boîtier, emplacement) | matériel correspondant et capture de l'outil témoin |
 | `hwraid_volume_write_cache_enabled` | position de l'état du cache d'écriture dans la lecture de volume |
 
 ## Exemple
@@ -117,6 +120,7 @@ hwraid_volume_member{controller="serial:XXXX",volume="410734b3",member="d7"} 1
 hwraid_disk_state{controller="serial:XXXX",disk="d7",state="online"} 1
 hwraid_disk_info{controller="serial:XXXX",disk="d7",vendor="ATA",model="ST8000VN0022-2EL",firmware="SC61",serial="XXXXXXXX",wwn="0x5000c500xxxxxxxx"} 1
 hwraid_disk_capacity_bytes{controller="serial:XXXX",disk="d7"} 8001563222016
+hwraid_disk_location{controller="serial:XXXX",disk="d7",connector="1",connector_name="CN1",device="3",phy="4"} 1
 hwraid_cache_protection_present{controller="serial:XXXX",type="flash_supercap",vendor_type="zmm"} 1
 hwraid_cache_protection_state{controller="serial:XXXX",state="failed"} 1
 hwraid_collection_success{controller="serial:XXXX",collector="volumes"} 1
