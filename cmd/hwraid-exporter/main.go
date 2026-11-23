@@ -56,17 +56,17 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage : hwraid-exporter discover [--sysfs /sys] | serve [options] | version")
+	fmt.Fprintln(os.Stderr, "usage: hwraid-exporter discover [--sysfs /sys] | serve [options] | version")
 	os.Exit(2)
 }
 
 func discover(args []string) {
 	fs := flag.NewFlagSet("discover", flag.ExitOnError)
-	root := fs.String("sysfs", "/sys", "racine de sysfs")
+	root := fs.String("sysfs", "/sys", "sysfs root")
 	_ = fs.Parse(args)
 	hosts, herrs, err := sysfs.Discover(*root)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "découverte impossible :", err)
+		fmt.Fprintln(os.Stderr, "discovery failed:", err)
 		os.Exit(1)
 	}
 	out := struct {
@@ -86,52 +86,52 @@ func discover(args []string) {
 
 func serve(args []string) int {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	listen := fs.String("listen", "127.0.0.1:9799", "adresse d'écoute HTTP")
-	root := fs.String("sysfs", "/sys", "racine de sysfs")
-	uid := fs.Uint("uid", 65534, "identité d'exécution après abandon des privilèges")
-	gid := fs.Uint("gid", 65534, "groupe d'exécution après abandon des privilèges")
-	interval := fs.Duration("interval", time.Minute, "intervalle de collecte")
-	timeout := fs.Duration("collect-timeout", 0, "délai maximal de collecte d'une carte par cycle (défaut : le plus petit de 30s et de -interval)")
+	listen := fs.String("listen", "127.0.0.1:9799", "HTTP listen address")
+	root := fs.String("sysfs", "/sys", "sysfs root")
+	uid := fs.Uint("uid", 65534, "user ID after the privilege drop")
+	gid := fs.Uint("gid", 65534, "group ID after the privilege drop")
+	interval := fs.Duration("interval", time.Minute, "collection interval")
+	timeout := fs.Duration("collect-timeout", 0, "maximum time to wait for one card in a cycle (default: the smaller of 30s and -interval)")
 	_ = fs.Parse(args)
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	exporter.Version = version
 	if *interval <= 0 {
-		log.Error("intervalle invalide", "interval", *interval)
+		log.Error("invalid interval", "interval", *interval)
 		return 2
 	}
 	if *timeout == 0 {
 		*timeout = min(30*time.Second, *interval)
 	}
 	if *timeout < 0 || *timeout > *interval {
-		log.Error("délai de collecte invalide : positif et au plus égal à l'intervalle", "collect-timeout", *timeout, "interval", *interval)
+		log.Error("invalid collect timeout: must be positive and at most the interval", "collect-timeout", *timeout, "interval", *interval)
 		return 2
 	}
 	if *uid == 0 || *gid == 0 || *uid >= 1<<32-1 || *gid >= 1<<32-1 {
-		log.Error("identité d'exécution invalide : ni root ni hors plage", "uid", *uid, "gid", *gid)
+		log.Error("invalid run-as identity: must be neither root nor out of range", "uid", *uid, "gid", *gid)
 		return 2
 	}
 
 	// --- Phase de préparation (root) -------------------------------------
 	if os.Geteuid() != 0 {
-		log.Error("la phase de préparation exige de démarrer en root")
+		log.Error("the preparation phase requires starting as root")
 		return 1
 	}
 	list, err := aacraid.NewAllowlist()
 	if err != nil {
-		log.Error("liste blanche invalide", "err", err)
+		log.Error("invalid allowlist", "err", err)
 		return 1
 	}
 	hosts, herrs, err := sysfs.Discover(*root)
 	if err != nil {
-		log.Error("découverte impossible", "err", err)
+		log.Error("discovery failed", "err", err)
 		return 1
 	}
 	for _, e := range herrs {
-		log.Warn("hôte SCSI ignoré", "host", e.Host, "err", e.Err)
+		log.Warn("SCSI host skipped", "host", e.Host, "err", e.Err)
 	}
 	majors, err := readMajors()
 	if err != nil {
-		log.Error("lecture de /proc/devices", "err", err)
+		log.Error("reading /proc/devices", "err", err)
 		return 1
 	}
 	// Chaque module déclare ses nœuds et ses capacités ; le cœur crée seul.
@@ -141,32 +141,32 @@ func serve(args []string) int {
 	complete := len(herrs) == 0
 	for _, pc := range plan.Cards {
 		if pc.Err != nil {
-			log.Warn("carte non préparée", "pci", pc.Card.PCI.Address, "err", pc.Err)
+			log.Warn("card not prepared", "pci", pc.Card.PCI.Address, "err", pc.Err)
 			complete = false
 		}
 	}
 	if !complete {
-		log.Warn("inventaire incomplet : aucun nœud existant ne sera supprimé")
+		log.Warn("incomplete inventory: no existing node will be removed")
 	}
 	rep, err := nodes.Sync(nodesDir, specs, majors, int(*uid), int(*gid), complete)
 	if err != nil {
-		log.Error("préparation des nœuds", "dir", nodesDir, "err", err)
+		log.Error("node preparation", "dir", nodesDir, "err", err)
 		return 1
 	}
-	log.Info("nœuds préparés", "créés", rep.Created, "remplacés", rep.Replaced, "corrigés", rep.Fixed, "supprimés", rep.Removed)
+	log.Info("nodes prepared", "created", rep.Created, "replaced", rep.Replaced, "fixed", rep.Fixed, "removed", rep.Removed)
 
 	// --- Abandon des privilèges ------------------------------------------
 	// Union des capacités des modules ayant une carte : aucune sans carte.
 	keep := plan.Keep
 	if err := privilege.Drop(uint32(*uid), uint32(*gid), keep); err != nil {
-		log.Error("abandon des privilèges", "err", err)
+		log.Error("privilege drop", "err", err)
 		return 1
 	}
 	if err := privilege.VerifyAllThreads(uint32(*uid), uint32(*gid), keep); err != nil {
-		log.Error("vérification des privilèges", "err", err)
+		log.Error("privilege check", "err", err)
 		return 1
 	}
-	log.Info("privilèges abandonnés", "uid", *uid, "gid", *gid, "capacités", fmt.Sprintf("%#x", keep))
+	log.Info("privileges dropped", "uid", *uid, "gid", *gid, "capabilities", fmt.Sprintf("%#x", keep))
 
 	// --- Collecte et service ---------------------------------------------
 	var snap atomic.Pointer[string]
@@ -191,17 +191,17 @@ func serve(args []string) int {
 		// Découverte réussie : sans erreur globale ni hôte illisible.
 		ok := err == nil && len(herrs) == 0
 		if err != nil {
-			log.Warn("découverte en échec", "err", err)
+			log.Warn("discovery failed", "err", err)
 		}
 		var msgs []string
 		for _, e := range herrs {
-			msgs = append(msgs, e.Host+" : "+e.Err.Error())
+			msgs = append(msgs, e.Host+": "+e.Err.Error())
 		}
-		if cur := strings.Join(msgs, " ; "); cur != lastHostErrs {
+		if cur := strings.Join(msgs, "; "); cur != lastHostErrs {
 			if cur != "" {
-				log.Warn("hôtes SCSI illisibles", "err", cur)
+				log.Warn("unreadable SCSI hosts", "err", cur)
 			} else if lastHostErrs != "" {
-				log.Info("hôtes SCSI de nouveau lisibles")
+				log.Info("SCSI hosts readable again")
 			}
 			lastHostErrs = cur
 		}
@@ -213,10 +213,10 @@ func serve(args []string) int {
 		if err == nil {
 			switch m, cerr := readMajors(); {
 			case cerr != nil:
-				log.Error("lecture de /proc/devices : collecte suspendue", "err", cerr)
+				log.Error("reading /proc/devices: collection suspended", "err", cerr)
 				collectOK = false
 			case !sameSpecs(cur.Specs(m), specs):
-				log.Error("les nœuds attendus ont changé depuis la préparation : relance nécessaire")
+				log.Error("expected nodes changed since preparation: restart required")
 				requestExit(exitNodeChanged)
 				collectOK = false
 			}
@@ -255,12 +255,12 @@ func serve(args []string) int {
 		for _, c := range s.Controllers {
 			if c.NodeChecked && !c.NodeValid {
 				// Adresse PCI et non label : le label peut contenir la série (S9).
-				log.Warn("nœud de gestion invalide", "pci", c.PCIAddress, "err", c.NodeError)
+				log.Warn("invalid management node", "pci", c.PCIAddress, "err", c.NodeError)
 			}
 			if c.TimedOut {
-				log.Warn("collecte hors délai", "pci", c.PCIAddress, "délai", *timeout)
+				log.Warn("collection timed out", "pci", c.PCIAddress, "timeout", *timeout)
 			} else if c.CollectError != "" {
-				log.Warn("lecture en échec", "pci", c.PCIAddress, "err", c.CollectError)
+				log.Warn("read failed", "pci", c.PCIAddress, "err", c.CollectError)
 			}
 		}
 		out := exporter.Render(s)
@@ -276,11 +276,11 @@ func serve(args []string) int {
 		ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("serveur HTTP", "err", err)
+			log.Error("HTTP server", "err", err)
 			requestExit(1)
 		}
 	}()
-	log.Info("écoute", "listen", *listen, "version", version)
+	log.Info("listening", "listen", *listen, "version", version)
 
 	go func() {
 		collect()

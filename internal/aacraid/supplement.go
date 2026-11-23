@@ -73,7 +73,7 @@ func qualifiedRequests() [][]byte {
 }
 
 // ErrFIBNotAllowed : la FIB n'est pas une requête qualifiée.
-var ErrFIBNotAllowed = errors.New("FIB non qualifiée")
+var ErrFIBNotAllowed = errors.New("unqualified FIB")
 
 // CheckFIBRequest n'accepte qu'une requête identique, octet pour octet, à
 // une requête qualifiée. Toute autre commande, sous-commande ou valeur est
@@ -91,7 +91,7 @@ func CheckFIBRequest(b []byte) error {
 	if len(b) >= FIBHeaderSize {
 		cmd = int(binary.LittleEndian.Uint16(b[fibCommand:]))
 	}
-	return fmt.Errorf("%w (commande %d, %d octets)", ErrFIBNotAllowed, cmd, len(b))
+	return fmt.Errorf("%w (command %d, %d bytes)", ErrFIBNotAllowed, cmd, len(b))
 }
 
 // Champs publics de struct aac_supplement_adapter_info (Linux aacraid.h,
@@ -126,15 +126,15 @@ func (s SupplementInfo) ArcIoReads() bool {
 // ioctl_send_fib) ; il doit couvrir les champs lus et tenir dans le tampon.
 func DecodeSupplementInfo(b []byte) (SupplementInfo, error) {
 	if len(b) != FIBSize {
-		return SupplementInfo{}, fmt.Errorf("réponse 706 : %d octets reçus, %d attendus", len(b), FIBSize)
+		return SupplementInfo{}, fmt.Errorf("706 response: %d bytes received, %d expected", len(b), FIBSize)
 	}
 	le := binary.LittleEndian
 	if cmd := le.Uint16(b[fibCommand:]); cmd != CmdRequestSupplementAdapterInfo {
-		return SupplementInfo{}, fmt.Errorf("réponse 706 : commande %d dans l'en-tête", cmd)
+		return SupplementInfo{}, fmt.Errorf("706 response: command %d in header", cmd)
 	}
 	size := int(le.Uint16(b[fibSize:]))
 	if size < FIBHeaderSize+supMinData || size > FIBSize {
-		return SupplementInfo{}, fmt.Errorf("réponse 706 : taille %d hors de [%d, %d]", size, FIBHeaderSize+supMinData, FIBSize)
+		return SupplementInfo{}, fmt.Errorf("706 response: size %d outside [%d, %d]", size, FIBHeaderSize+supMinData, FIBSize)
 	}
 	d := b[FIBHeaderSize:]
 	return SupplementInfo{

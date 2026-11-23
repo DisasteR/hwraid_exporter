@@ -32,7 +32,7 @@ var scsiAddress = regexp.MustCompile(`^(\d+):(\d+):(\d+):(\d+)$`)
 func readDevices(hostDir string, host int) ([]SCSIDevice, error) {
 	targets, err := os.ReadDir(hostDir)
 	if err != nil {
-		return nil, fmt.Errorf("périphériques de %s : %w", filepath.Base(hostDir), err)
+		return nil, fmt.Errorf("devices of %s: %w", filepath.Base(hostDir), err)
 	}
 	var out []SCSIDevice
 	for _, t := range targets {
@@ -41,7 +41,7 @@ func readDevices(hostDir string, host int) ([]SCSIDevice, error) {
 		}
 		entries, err := os.ReadDir(filepath.Join(hostDir, t.Name()))
 		if err != nil {
-			return nil, fmt.Errorf("périphériques de %s : %w", t.Name(), err)
+			return nil, fmt.Errorf("devices of %s: %w", t.Name(), err)
 		}
 		for _, e := range entries {
 			m := scsiAddress.FindStringSubmatch(e.Name())
@@ -78,7 +78,7 @@ func generic(dir string) (string, error) {
 		return "", nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("%s : scsi_generic : %w", filepath.Base(dir), err)
+		return "", fmt.Errorf("%s: scsi_generic: %w", filepath.Base(dir), err)
 	}
 	if len(entries) != 1 {
 		return "", nil
@@ -98,7 +98,7 @@ func vpdSerial(dir string) (string, error) {
 		return "", nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("%s : vpd_pg80 : %w", filepath.Base(dir), err)
+		return "", fmt.Errorf("%s: vpd_pg80: %w", filepath.Base(dir), err)
 	}
 	if len(b) < 4 || b[1] != 0x80 {
 		return "", nil

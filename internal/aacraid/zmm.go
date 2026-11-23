@@ -63,22 +63,22 @@ func CacheProtectionStateRequest() []byte {
 // compris ; elle doit couvrir minData octets de données.
 func vmIoctlResponse(b []byte, ioctlCmd uint32, minData int) ([]byte, error) {
 	if len(b) != FIBSize {
-		return nil, fmt.Errorf("réponse VM_Ioctl : %d octets reçus, %d attendus", len(b), FIBSize)
+		return nil, fmt.Errorf("VM_Ioctl response: %d bytes received, %d expected", len(b), FIBSize)
 	}
 	le := binary.LittleEndian
 	if cmd := le.Uint16(b[fibCommand:]); cmd != cmdContainerCommand {
-		return nil, fmt.Errorf("réponse VM_Ioctl : commande %d dans l'en-tête", cmd)
+		return nil, fmt.Errorf("VM_Ioctl response: command %d in header", cmd)
 	}
 	size := int(le.Uint16(b[fibSize:]))
 	if size < FIBHeaderSize+minData || size > FIBSize {
-		return nil, fmt.Errorf("réponse VM_Ioctl : taille %d hors de [%d, %d]", size, FIBHeaderSize+minData, FIBSize)
+		return nil, fmt.Errorf("VM_Ioctl response: size %d outside [%d, %d]", size, FIBHeaderSize+minData, FIBSize)
 	}
 	d := b[FIBHeaderSize:size]
 	if st := le.Uint32(d[0:]); st != 0 {
-		return nil, fmt.Errorf("réponse VM_Ioctl : statut %d", st)
+		return nil, fmt.Errorf("VM_Ioctl response: status %d", st)
 	}
 	if le.Uint32(d[4:]) != ftDrive || le.Uint32(d[8:]) != vmIoctlMethID || le.Uint32(d[16:]) != ioctlCmd {
-		return nil, fmt.Errorf("réponse VM_Ioctl : écho inattendu (%#x, %#x, %#x)", le.Uint32(d[4:]), le.Uint32(d[8:]), le.Uint32(d[16:]))
+		return nil, fmt.Errorf("VM_Ioctl response: unexpected echo (%#x, %#x, %#x)", le.Uint32(d[4:]), le.Uint32(d[8:]), le.Uint32(d[16:]))
 	}
 	return d, nil
 }
@@ -138,7 +138,7 @@ func DecodeCacheProtectionState(b []byte) (ZMMStatus, error) {
 		return ZMMStatus{}, err
 	}
 	if d[stateBlockOff]&1 == 0 {
-		return ZMMStatus{}, fmt.Errorf("réponse d'état : bloc non valide (%#x)", d[stateBlockOff])
+		return ZMMStatus{}, fmt.Errorf("state response: invalid block (%#x)", d[stateBlockOff])
 	}
 	r := binary.LittleEndian.Uint32(d[stateWordOff:])
 	return ZMMStatus{Word: r, State: zmmState(r)}, nil

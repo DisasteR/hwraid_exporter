@@ -40,7 +40,7 @@ type DiskInfo struct {
 // DecodeDiskInfo décode l'information de disque.
 func DecodeDiskInfo(d []byte) (DiskInfo, error) {
 	if len(d) < DiskInfoNeed {
-		return DiskInfo{}, fmt.Errorf("information de disque : %d octets", len(d))
+		return DiskInfo{}, fmt.Errorf("disk info: %d bytes", len(d))
 	}
 	le := binary.LittleEndian
 	i := DiskInfo{

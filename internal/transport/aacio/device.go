@@ -16,7 +16,7 @@ import (
 )
 
 // ErrNodeMismatch : le nœud ouvert n'est pas le périphérique attendu.
-var ErrNodeMismatch = errors.New("le nœud ne correspond pas à la carte attendue")
+var ErrNodeMismatch = errors.New("the node does not match the expected card")
 
 // ioctlFn est l'appel système réel ; les tests le remplacent. Il reçoit le
 // tampon entier, pour que la taille effectivement passée soit observable.
@@ -30,7 +30,7 @@ var ioctlFn = func(fd int, req uint32, buf []byte) error {
 }
 
 // ErrClosed : le nœud a déjà été refermé.
-var ErrClosed = errors.New("nœud de gestion refermé")
+var ErrClosed = errors.New("management node closed")
 
 // Device est un nœud de gestion ouvert pour un cycle de collecte.
 // Il doit être refermé à la fin du cycle (pas de descripteur persistant).
@@ -44,20 +44,20 @@ type Device struct {
 // descripteur ouvert qu'il s'agit du nœud caractère wantDev.
 func Open(path string, wantDev uint64, list *allowlist.List) (*Device, error) {
 	if list == nil {
-		return nil, errors.New("liste blanche absente")
+		return nil, errors.New("missing allowlist")
 	}
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return nil, fmt.Errorf("ouverture de %s : %w", path, err)
+		return nil, fmt.Errorf("opening %s: %w", path, err)
 	}
 	var st unix.Stat_t
 	if err := unix.Fstat(fd, &st); err != nil {
 		unix.Close(fd)
-		return nil, fmt.Errorf("fstat de %s : %w", path, err)
+		return nil, fmt.Errorf("fstat %s: %w", path, err)
 	}
 	if st.Mode&unix.S_IFMT != unix.S_IFCHR || st.Rdev != wantDev {
 		unix.Close(fd)
-		return nil, fmt.Errorf("%w : %s est %d:%d, attendu %d:%d", ErrNodeMismatch, path,
+		return nil, fmt.Errorf("%w: %s is %d:%d, expected %d:%d", ErrNodeMismatch, path,
 			unix.Major(st.Rdev), unix.Minor(st.Rdev), unix.Major(wantDev), unix.Minor(wantDev))
 	}
 	return &Device{fd: fd, path: path, list: list}, nil
@@ -89,7 +89,7 @@ func (d *Device) Do(req allowlist.Request) error {
 		return err
 	}
 	if err := ioctlFn(d.fd, priv.Ioctl, priv.Buf); err != nil {
-		return fmt.Errorf("ioctl %#x sur %s : %w", req.Ioctl, d.path, err)
+		return fmt.Errorf("ioctl %#x on %s: %w", req.Ioctl, d.path, err)
 	}
 	copy(req.Buf, priv.Buf)
 	return nil
@@ -156,14 +156,14 @@ func (d *Device) stop(r aacraid.PagedRead, head aacraid.PagedResponse, n uint32)
 	req := aacraid.StopRequest(head.Total, head.Xfer, n)
 	rsp, err := d.fib(append([]byte(nil), req...))
 	if err != nil {
-		return fmt.Errorf("lecture %d : clôture : %w", r, err)
+		return fmt.Errorf("read %d: stop: %w", r, err)
 	}
 	s, err := aacraid.DecodePagedResponse(req, rsp)
 	if err != nil {
-		return fmt.Errorf("lecture %d : clôture : %w", r, err)
+		return fmt.Errorf("read %d: stop: %w", r, err)
 	}
 	if s.Mark != 0xc6 || s.Xfer != head.Xfer {
-		return fmt.Errorf("lecture %d : clôture non confirmée (marque %#x, transfert %#x)", r, s.Mark, s.Xfer)
+		return fmt.Errorf("read %d: stop not confirmed (mark %#x, transfer %#x)", r, s.Mark, s.Xfer)
 	}
 	return nil
 }
@@ -191,10 +191,10 @@ func (d *Device) ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]
 		return nil, err
 	}
 	if head.Mark != 0xc9 || head.Total == 0 || head.Total > maxPagedTotal {
-		openErr := fmt.Errorf("lecture %d : ouverture refusée (marque %#x, taille %d)", r, head.Mark, head.Total)
+		openErr := fmt.Errorf("read %d: open refused (mark %#x, size %d)", r, head.Mark, head.Total)
 		if head.Total == 0 || head.Total > maxPagedTotal {
 			// Clôture impossible dans les formes qualifiées : le signaler.
-			return nil, fmt.Errorf("%w ; transfert %#x non clôturé (taille hors bornes)", openErr, head.Xfer)
+			return nil, fmt.Errorf("%w; transfer %#x not stopped (size out of bounds)", openErr, head.Xfer)
 		}
 		return nil, errors.Join(openErr, d.stop(r, head, 0))
 	}
@@ -212,21 +212,21 @@ func (d *Device) ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]
 				return err
 			}
 			if c.Xfer != head.Xfer || c.Chunk != n || c.Total != head.Total {
-				return fmt.Errorf("lecture %d : morceau %d incohérent (transfert %#x, morceau %d)", r, n, c.Xfer, c.Chunk)
+				return fmt.Errorf("read %d: inconsistent chunk %d (transfer %#x, chunk %d)", r, n, c.Xfer, c.Chunk)
 			}
 			last = n
 			data = append(data, c.Data...)
 			if len(data) >= int(head.Total) {
 				data = data[:head.Total]
 				if want := need(data); want > len(data) {
-					return fmt.Errorf("lecture %d : %d octets nécessaires, transfert de %d", r, want, len(data))
+					return fmt.Errorf("read %d: %d bytes needed, transfer of %d", r, want, len(data))
 				}
 				return nil
 			}
 			if want := need(data); want <= len(data) {
 				return nil
 			} else if want > int(head.Total) {
-				return fmt.Errorf("lecture %d : %d octets demandés pour un transfert de %d", r, want, head.Total)
+				return fmt.Errorf("read %d: %d bytes requested for a transfer of %d", r, want, head.Total)
 			}
 		}
 		return nil

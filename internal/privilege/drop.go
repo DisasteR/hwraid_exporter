@@ -24,10 +24,10 @@ import (
 )
 
 // ErrNotRoot : la phase de préparation exige de démarrer en root.
-var ErrNotRoot = errors.New("le processus doit démarrer en root pour la phase de préparation")
+var ErrNotRoot = errors.New("the process must start as root for the preparation phase")
 
 // ErrInvalidIdentity : l'identité cible est root ou la valeur spéciale -1.
-var ErrInvalidIdentity = errors.New("identité cible invalide : ni 0 ni 4294967295")
+var ErrInvalidIdentity = errors.New("invalid target identity: must be neither 0 nor 4294967295")
 
 // Drop passe tous les threads à l'identité uid/gid, vide les groupes
 // supplémentaires, ne conserve que les capacités de keep dans les ensembles
@@ -46,11 +46,11 @@ func Drop(uid, gid uint32, keep uint64) error {
 		return err
 	}
 	if keep>>uint(last+1) != 0 {
-		return fmt.Errorf("masque conservé %#x hors des capacités connues (dernière : %d)", keep, last)
+		return fmt.Errorf("kept mask %#x outside the known capabilities (last: %d)", keep, last)
 	}
 	// 1. Conserver l'ensemble permis lors du changement d'UID.
 	if err := prctlAll(unix.PR_SET_KEEPCAPS, 1); err != nil {
-		return fmt.Errorf("PR_SET_KEEPCAPS : %w", err)
+		return fmt.Errorf("PR_SET_KEEPCAPS: %w", err)
 	}
 	// 2. Réduire l'ensemble limite tant que CAP_SETPCAP est encore effective.
 	for c := 0; c <= last; c++ {
@@ -58,33 +58,33 @@ func Drop(uid, gid uint32, keep uint64) error {
 			continue
 		}
 		if err := prctlAll(unix.PR_CAPBSET_DROP, uintptr(c)); err != nil {
-			return fmt.Errorf("PR_CAPBSET_DROP(%d) : %w", c, err)
+			return fmt.Errorf("PR_CAPBSET_DROP(%d): %w", c, err)
 		}
 	}
 	// 3. Vider l'ensemble ambiant.
 	if err := prctlAll(unix.PR_CAP_AMBIENT, unix.PR_CAP_AMBIENT_CLEAR_ALL); err != nil {
-		return fmt.Errorf("PR_CAP_AMBIENT_CLEAR_ALL : %w", err)
+		return fmt.Errorf("PR_CAP_AMBIENT_CLEAR_ALL: %w", err)
 	}
 	// 4. Changer d'identité (tous les threads).
 	if err := syscall.Setgroups(nil); err != nil {
-		return fmt.Errorf("setgroups : %w", err)
+		return fmt.Errorf("setgroups: %w", err)
 	}
 	if err := syscall.Setresgid(int(gid), int(gid), int(gid)); err != nil {
-		return fmt.Errorf("setresgid : %w", err)
+		return fmt.Errorf("setresgid: %w", err)
 	}
 	if err := syscall.Setresuid(int(uid), int(uid), int(uid)); err != nil {
-		return fmt.Errorf("setresuid : %w", err)
+		return fmt.Errorf("setresuid: %w", err)
 	}
 	// 5. Fixer les ensembles effectif, permis et hérité.
 	if err := capsetAll(keep); err != nil {
-		return fmt.Errorf("capset : %w", err)
+		return fmt.Errorf("capset: %w", err)
 	}
 	// 6. Plus aucune acquisition de privilège possible, et keepcaps retiré.
 	if err := prctlAll(unix.PR_SET_NO_NEW_PRIVS, 1); err != nil {
-		return fmt.Errorf("PR_SET_NO_NEW_PRIVS : %w", err)
+		return fmt.Errorf("PR_SET_NO_NEW_PRIVS: %w", err)
 	}
 	if err := prctlAll(unix.PR_SET_KEEPCAPS, 0); err != nil {
-		return fmt.Errorf("PR_SET_KEEPCAPS(0) : %w", err)
+		return fmt.Errorf("PR_SET_KEEPCAPS(0): %w", err)
 	}
 	return nil
 }
@@ -98,7 +98,7 @@ func VerifyAllThreads(uid, gid uint32, keep uint64) error {
 		return err
 	}
 	if len(tasks) == 0 {
-		return errors.New("aucun thread lisible dans /proc/self/task")
+		return errors.New("no readable thread in /proc/self/task")
 	}
 	for _, p := range tasks {
 		f, err := os.Open(p)
@@ -108,10 +108,10 @@ func VerifyAllThreads(uid, gid uint32, keep uint64) error {
 		s, err := procstatus.Parse(f)
 		f.Close()
 		if err != nil {
-			return fmt.Errorf("%s : %w", p, err)
+			return fmt.Errorf("%s: %w", p, err)
 		}
 		if err := s.Verify(want); err != nil {
-			return fmt.Errorf("%s : %w", p, err)
+			return fmt.Errorf("%s: %w", p, err)
 		}
 	}
 	return nil
@@ -150,11 +150,11 @@ func capsetAll(keep uint64) error {
 func lastCap() (int, error) {
 	b, err := os.ReadFile("/proc/sys/kernel/cap_last_cap")
 	if err != nil {
-		return 0, fmt.Errorf("lecture de cap_last_cap : %w", err)
+		return 0, fmt.Errorf("reading cap_last_cap: %w", err)
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
 	if err != nil || n < 0 || n > 63 {
-		return 0, fmt.Errorf("cap_last_cap invalide : %q", b)
+		return 0, fmt.Errorf("invalid cap_last_cap: %q", b)
 	}
 	return n, nil
 }

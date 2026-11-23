@@ -115,12 +115,12 @@ rule_files:
 curl -s http://127.0.0.1:9799/metrics | grep -E '^hwraid_(exporter_build_info|snapshot_ready|discovery_success|management_node_valid|collection_success)'
 ```
 
-Attendu : `hwraid_snapshot_ready 1`, `hwraid_discovery_success 1`, `hwraid_management_node_valid 1` et chaque `hwraid_collection_success` à 1. Le journal du démarrage indique les nœuds préparés, l'identité et les capacités conservées, puis la version.
+Attendu : `hwraid_snapshot_ready 1`, `hwraid_discovery_success 1`, `hwraid_management_node_valid 1` et chaque `hwraid_collection_success` à 1. Le journal du démarrage indique les nœuds préparés (`nodes prepared`), l'identité et les capacités conservées (`privileges dropped`), puis l'adresse d'écoute et la version (`listening`). Les messages du journal et les textes d'aide des métriques sont en anglais.
 
 | Symptôme | Cause probable |
 |---|---|
 | `hwraid_management_node_valid 0` | nœud non préparé ou carte changée : voir le journal du démarrage ; en conteneur, règle `device_cgroup_rules` absente |
 | `collection_success 0` avec une erreur `EPERM` au journal | `userns-remap`, Docker rootless ou capacité `SYS_RAWIO` retirée |
 | `hwraid_collector_supported 0` sur une carte | modèle ou firmware non qualifié : carte inventoriée seulement |
-| `hwraid_discovery_success 0` | sysfs partiellement illisible : voir l'avertissement « hôtes SCSI illisibles » au journal |
+| `hwraid_discovery_success 0` | sysfs partiellement illisible : voir l'avertissement `unreadable SCSI hosts` au journal |
 | le conteneur s'arrête avec le code 3 | nœuds attendus changés depuis le démarrage : `restart: unless-stopped` le relance |

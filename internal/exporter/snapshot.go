@@ -91,13 +91,13 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 			case pc.Err != nil:
 				c.NodeError = pc.Err.Error()
 			case !ok:
-				c.NodeError = "aucune collecte pour cette carte"
+				c.NodeError = "no collection for this card"
 			case r.TimedOut:
 				// Nœud non observé : management_node_valid n'est pas publié.
 				c.NodeChecked, c.TimedOut = false, true
 				c.Collected = r.Collected
 				c.LastSuccess = tracker.Last(addr)
-				c.CollectError = "collecte hors délai"
+				c.CollectError = "collection timed out"
 			case r.Err != nil:
 				c.NodeError = r.Err.Error()
 			default:
@@ -132,57 +132,57 @@ func Render(s Snapshot) string {
 	gauge := func(name, help string) {
 		fmt.Fprintf(&b, "# HELP %s %s\n# TYPE %s gauge\n", name, help, name)
 	}
-	gauge("hwraid_exporter_build_info", "Version de l'exporter et de Go, valeur 1.")
+	gauge("hwraid_exporter_build_info", "Exporter and Go versions, value 1.")
 	fmt.Fprintf(&b, "hwraid_exporter_build_info{%s} 1\n", labels("version", Version, "goversion", runtime.Version()))
-	gauge("hwraid_snapshot_ready", "1 une fois la première découverte publiée.")
+	gauge("hwraid_snapshot_ready", "1 once the first discovery has been published.")
 	fmt.Fprintf(&b, "hwraid_snapshot_ready %d\n", b2i(s.Ready))
 	if !s.Ready {
 		return b.String()
 	}
-	gauge("hwraid_discovery_success", "1 si la dernière découverte a abouti.")
+	gauge("hwraid_discovery_success", "1 if the last discovery succeeded for every SCSI host.")
 	fmt.Fprintf(&b, "hwraid_discovery_success %d\n", b2i(s.DiscoverySuccess))
 
-	gauge("hwraid_controller_info", "Inventaire des contrôleurs RAID.")
+	gauge("hwraid_controller_info", "RAID controller inventory, value 1.")
 	for _, c := range s.Controllers {
 		fmt.Fprintf(&b, "hwraid_controller_info{%s} 1\n", labels(
 			"controller", c.Label, "identity_source", c.IdentitySource, "pci_address", c.PCIAddress,
 			"driver", c.Driver, "backend", c.Backend, "model", c.Model, "firmware", c.Firmware))
 	}
-	gauge("hwraid_controller_backend_supported", "1 si un module sait collecter cette carte.")
+	gauge("hwraid_controller_backend_supported", "1 if a module can collect this card.")
 	for _, c := range s.Controllers {
 		fmt.Fprintf(&b, "hwraid_controller_backend_supported{%s} %d\n", labels("controller", c.Label), b2i(c.Backend != ""))
 	}
-	gauge("hwraid_management_node_valid", "0 si le nœud dédié est absent ou ne correspond pas à la carte.")
+	gauge("hwraid_management_node_valid", "1 if the dedicated management node matches the card, 0 otherwise.")
 	for _, c := range s.Controllers {
 		if c.NodeChecked {
 			fmt.Fprintf(&b, "hwraid_management_node_valid{%s} %d\n", labels("controller", c.Label), b2i(c.NodeValid))
 		}
 	}
-	gauge("hwraid_collector_supported", "0 pour une fonction explicitement non prise en charge par la carte.")
+	gauge("hwraid_collector_supported", "0 for a collector the card does not support.")
 	for _, c := range s.Controllers {
 		for _, col := range c.Unsupported {
 			fmt.Fprintf(&b, "hwraid_collector_supported{%s} 0\n", labels("controller", c.Label, "collector", col))
 		}
 	}
-	gauge("hwraid_volume_info", "Inventaire des volumes (conteneurs) de la carte.")
+	gauge("hwraid_volume_info", "Volumes (containers) of the card, value 1.")
 	for _, c := range s.Controllers {
 		for _, v := range c.Volumes {
 			fmt.Fprintf(&b, "hwraid_volume_info{%s} 1\n", labels("controller", c.Label, "volume", v.ID, "name", v.Name, "raid_level", v.RaidLevel, "vendor_level", v.VendorLevel, "parent", v.Parent))
 		}
 	}
-	gauge("hwraid_volume_state", "État calculé du volume, valeur 1.")
+	gauge("hwraid_volume_state", "Volume state, value 1.")
 	for _, c := range s.Controllers {
 		for _, v := range c.Volumes {
 			fmt.Fprintf(&b, "hwraid_volume_state{%s} 1\n", labels("controller", c.Label, "volume", v.ID, "state", v.State))
 		}
 	}
-	gauge("hwraid_volume_capacity_bytes", "Taille du volume en octets.")
+	gauge("hwraid_volume_capacity_bytes", "Volume size in bytes.")
 	for _, c := range s.Controllers {
 		for _, v := range c.Volumes {
 			fmt.Fprintf(&b, "hwraid_volume_capacity_bytes{%s} %d\n", labels("controller", c.Label, "volume", v.ID), v.CapacityBytes)
 		}
 	}
-	gauge("hwraid_volume_member", "Membres de chaque volume (disque ou volume), valeur 1.")
+	gauge("hwraid_volume_member", "Members of each volume (disk or volume), value 1.")
 	for _, c := range s.Controllers {
 		for _, v := range c.Volumes {
 			for _, m := range v.Members {
@@ -190,33 +190,33 @@ func Render(s Snapshot) string {
 			}
 		}
 	}
-	gauge("hwraid_disk_state", "État calculé des disques membres, valeur 1.")
+	gauge("hwraid_disk_state", "Member disk state, value 1.")
 	for _, c := range s.Controllers {
 		for _, d := range c.Disks {
 			fmt.Fprintf(&b, "hwraid_disk_state{%s} 1\n", labels("controller", c.Label, "disk", d.ID, "state", d.State))
 		}
 	}
-	gauge("hwraid_disk_info", "Inventaire des disques présents sur la carte, valeur 1.")
+	gauge("hwraid_disk_info", "Disks present on the card, value 1.")
 	for _, c := range s.Controllers {
 		for _, d := range c.DiskInventory {
 			fmt.Fprintf(&b, "hwraid_disk_info{%s} 1\n", labels("controller", c.Label, "disk", d.ID, "vendor", d.Vendor,
 				"model", d.Model, "firmware", d.Firmware, "serial", d.Serial, "wwn", d.WWN))
 		}
 	}
-	gauge("hwraid_disk_location", "Emplacement des disques reliés directement à la carte, valeur 1.")
+	gauge("hwraid_disk_location", "Location of disks attached directly to the card, value 1.")
 	for _, c := range s.Controllers {
 		for _, d := range c.DiskLocations {
 			fmt.Fprintf(&b, "hwraid_disk_location{%s} 1\n", labels("controller", c.Label, "disk", d.ID, "connector", d.Connector,
 				"connector_name", d.ConnectorName, "device", d.Device, "phy", d.Phy))
 		}
 	}
-	gauge("hwraid_disk_os_device", "Périphérique SCSI Linux présentant le disque, valeur 1.")
+	gauge("hwraid_disk_os_device", "Linux SCSI device exposing the disk, value 1.")
 	for _, c := range s.Controllers {
 		for _, d := range c.DiskOSDevices {
 			fmt.Fprintf(&b, "hwraid_disk_os_device{%s} 1\n", labels("controller", c.Label, "disk", d.ID, "device", d.Device, "scsi_address", d.Address))
 		}
 	}
-	gauge("hwraid_disk_capacity_bytes", "Capacité brute du disque en octets.")
+	gauge("hwraid_disk_capacity_bytes", "Raw disk capacity in bytes.")
 	for _, c := range s.Controllers {
 		for _, d := range c.DiskInventory {
 			if d.CapacityBytes > 0 {
@@ -224,25 +224,25 @@ func Render(s Snapshot) string {
 			}
 		}
 	}
-	gauge("hwraid_cache_protection_present", "1 si un module de protection du cache est installé.")
+	gauge("hwraid_cache_protection_present", "1 if a cache protection module is installed.")
 	for _, c := range s.Controllers {
 		if cp := c.CacheProtection; cp != nil {
 			fmt.Fprintf(&b, "hwraid_cache_protection_present{%s} %d\n", labels("controller", c.Label, "type", cp.Type, "vendor_type", cp.Vendor), b2i(cp.Present))
 		}
 	}
-	gauge("hwraid_cache_protection_state", "État observé du module de protection du cache, valeur 1.")
+	gauge("hwraid_cache_protection_state", "Cache protection module state, value 1.")
 	for _, c := range s.Controllers {
 		if cp := c.CacheProtection; cp != nil && cp.Present {
 			fmt.Fprintf(&b, "hwraid_cache_protection_state{%s} 1\n", labels("controller", c.Label, "state", cp.State))
 		}
 	}
-	gauge("hwraid_collection_interval_seconds", "Intervalle de collecte effectif de la carte.")
+	gauge("hwraid_collection_interval_seconds", "Effective collection interval for the card.")
 	for _, c := range s.Controllers {
 		if c.Backend != "" && s.Interval > 0 {
 			fmt.Fprintf(&b, "hwraid_collection_interval_seconds{%s} %g\n", labels("controller", c.Label), s.Interval.Seconds())
 		}
 	}
-	gauge("hwraid_collection_last_success_timestamp_seconds", "Date Unix du dernier succès du collecteur.")
+	gauge("hwraid_collection_last_success_timestamp_seconds", "Unix time of the collector's last success.")
 	for _, c := range s.Controllers {
 		names := make([]string, 0, len(c.LastSuccess))
 		for n := range c.LastSuccess {
@@ -253,7 +253,7 @@ func Render(s Snapshot) string {
 			fmt.Fprintf(&b, "hwraid_collection_last_success_timestamp_seconds{%s} %d\n", labels("controller", c.Label, "collector", n), c.LastSuccess[n].Unix())
 		}
 	}
-	gauge("hwraid_collection_success", "Résultat de la dernière lecture du collecteur.")
+	gauge("hwraid_collection_success", "1 if the collector's last read succeeded, 0 otherwise.")
 	for _, c := range s.Controllers {
 		names := make([]string, 0, len(c.Collected))
 		for n := range c.Collected {

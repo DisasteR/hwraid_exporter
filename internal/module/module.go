@@ -156,10 +156,10 @@ type Plan struct {
 }
 
 // ErrAmbiguous : plusieurs modules revendiquent la même carte.
-var ErrAmbiguous = errors.New("correspondance ambiguë entre modules")
+var ErrAmbiguous = errors.New("ambiguous match between modules")
 
 // ErrNameConflict : deux cartes déclarent le même nom de nœud.
-var ErrNameConflict = errors.New("nom de nœud déclaré par plusieurs cartes")
+var ErrNameConflict = errors.New("node name declared by several cards")
 
 // Build regroupe les hôtes par fonction PCI et associe chaque carte à son
 // module. Une carte est retenue si sa classe PCI est RAID ou si un module la
@@ -211,7 +211,7 @@ func Build(hosts []sysfs.SCSIHost, mods []Module) Plan {
 			for i, m := range matched {
 				names[i] = m.Name()
 			}
-			pl.Err = fmt.Errorf("%w : %v", ErrAmbiguous, names)
+			pl.Err = fmt.Errorf("%w: %v", ErrAmbiguous, names)
 		}
 		for _, r := range pl.Requests {
 			owners[r.Name] = append(owners[r.Name], len(p.Cards))
@@ -224,7 +224,7 @@ func Build(hosts []sysfs.SCSIHost, mods []Module) Plan {
 			continue
 		}
 		for _, i := range idx {
-			p.Cards[i].Err = fmt.Errorf("%w : %s", ErrNameConflict, name)
+			p.Cards[i].Err = fmt.Errorf("%w: %s", ErrNameConflict, name)
 			p.Cards[i].Requests = nil
 		}
 	}
@@ -245,7 +245,7 @@ func (p *Plan) Specs(majors map[string]uint32) []nodes.Spec {
 		for _, r := range pc.Requests {
 			m, ok := majors[r.MajorOf]
 			if !ok || m == 0 {
-				pc.Err = fmt.Errorf("major « %s » absent de /proc/devices", r.MajorOf)
+				pc.Err = fmt.Errorf("major %q missing from /proc/devices", r.MajorOf)
 				specs = nil
 				break
 			}

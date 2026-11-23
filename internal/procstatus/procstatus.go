@@ -76,7 +76,7 @@ func Parse(r io.Reader) (Status, error) {
 			continue
 		}
 		if err != nil {
-			return Status{}, fmt.Errorf("champ %s illisible : %w", key, err)
+			return Status{}, fmt.Errorf("unreadable field %s: %w", key, err)
 		}
 		seen[key] = true
 	}
@@ -85,7 +85,7 @@ func Parse(r io.Reader) (Status, error) {
 	}
 	for _, k := range []string{"Uid", "Gid", "Groups", "CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb", "NoNewPrivs"} {
 		if !seen[k] {
-			return Status{}, fmt.Errorf("champ %s absent", k)
+			return Status{}, fmt.Errorf("missing field %s", k)
 		}
 	}
 	return s, nil
@@ -107,7 +107,7 @@ func parseIDs(v string) ([4]uint32, error) {
 	var ids [4]uint32
 	f := strings.Fields(v)
 	if len(f) != 4 {
-		return ids, fmt.Errorf("4 valeurs attendues, %d lues", len(f))
+		return ids, fmt.Errorf("4 values expected, %d read", len(f))
 	}
 	for i, x := range f {
 		n, err := strconv.ParseUint(x, 10, 32)
@@ -159,18 +159,18 @@ func (s Status) Verify(e Expected) error {
 	}
 	for i := range s.UID {
 		if s.UID[i] == 0 || s.GID[i] == 0 {
-			errs = append(errs, "identité root résiduelle")
+			errs = append(errs, "residual root identity")
 			break
 		}
 	}
 	if len(s.Groups) != 0 {
-		errs = append(errs, fmt.Sprintf("groupes supplémentaires non vides : %v", s.Groups))
+		errs = append(errs, fmt.Sprintf("non-empty supplementary groups: %v", s.Groups))
 	}
 	if !s.NoNewPrivs {
 		errs = append(errs, "NoNewPrivs=0")
 	}
 	if len(errs) > 0 {
-		return fmt.Errorf("privilèges non conformes : %s", strings.Join(errs, ", "))
+		return fmt.Errorf("non-compliant privileges: %s", strings.Join(errs, ", "))
 	}
 	return nil
 }
