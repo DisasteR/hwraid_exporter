@@ -44,7 +44,7 @@ func CheckLargeFIBRequest(b []byte) error {
 	if len(b) >= FIBHeaderSize {
 		cmd = int(binary.LittleEndian.Uint16(b[fibCommand:]))
 	}
-	return fmt.Errorf("%w (commande %d, %d octets, tampon large)", ErrFIBNotAllowed, cmd, len(b))
+	return fmt.Errorf("%w (command %d, %d bytes, large buffer)", ErrFIBNotAllowed, cmd, len(b))
 }
 
 // Format de la réponse (données, après l'en-tête). Seule la forme observée
@@ -93,32 +93,32 @@ func (m ConnectorMap) Locate(n uint32) (ConnectorEntry, bool) {
 // DecodeConnectorMap décode la réponse à RequestConnectorMap.
 func DecodeConnectorMap(b []byte) (ConnectorMap, error) {
 	if len(b) != LargeFIBSize {
-		return ConnectorMap{}, fmt.Errorf("réponse 708 : %d octets reçus, %d attendus", len(b), LargeFIBSize)
+		return ConnectorMap{}, fmt.Errorf("708 response: %d bytes received, %d expected", len(b), LargeFIBSize)
 	}
 	le := binary.LittleEndian
 	if cmd := le.Uint16(b[fibCommand:]); cmd != CmdRequestConnectorMap {
-		return ConnectorMap{}, fmt.Errorf("réponse 708 : commande %d dans l'en-tête", cmd)
+		return ConnectorMap{}, fmt.Errorf("708 response: command %d in header", cmd)
 	}
 	size := int(le.Uint16(b[fibSize:]))
 	d := b[FIBHeaderSize:]
 	if size < FIBHeaderSize+cmapEntryBase || size > LargeFIBSize {
-		return ConnectorMap{}, fmt.Errorf("réponse 708 : taille %d", size)
+		return ConnectorMap{}, fmt.Errorf("708 response: size %d", size)
 	}
 	if v := le.Uint32(d[0:]); v != 1 {
-		return ConnectorMap{}, fmt.Errorf("réponse 708 : premier mot %d, forme non qualifiée", v)
+		return ConnectorMap{}, fmt.Errorf("708 response: first word %d, unqualified format", v)
 	}
 	n, nc := int(d[cmapEntries]), int(d[cmapConnectors])
 	if nc != cmapQualifiedConns {
-		return ConnectorMap{}, fmt.Errorf("réponse 708 : %d connecteurs, forme non qualifiée", nc)
+		return ConnectorMap{}, fmt.Errorf("708 response: %d connectors, unqualified format", nc)
 	}
 	if n > cmapMaxEntries || FIBHeaderSize+cmapEntryBase+n*cmapEntrySize > size {
-		return ConnectorMap{}, fmt.Errorf("réponse 708 : %d entrées pour %d octets", n, size)
+		return ConnectorMap{}, fmt.Errorf("708 response: %d entries for %d bytes", n, size)
 	}
 	m := ConnectorMap{Names: map[uint8]string{}}
 	for c := 0; c < nc; c++ {
 		e := d[cmapConnectorBase+c*cmapConnectorSize:]
 		if _, dup := m.Names[e[0]]; dup {
-			return ConnectorMap{}, fmt.Errorf("réponse 708 : connecteur %d en double", e[0])
+			return ConnectorMap{}, fmt.Errorf("708 response: duplicate connector %d", e[0])
 		}
 		m.Names[e[0]] = field(e[4:12])
 	}
@@ -127,10 +127,10 @@ func DecodeConnectorMap(b []byte) (ConnectorMap, error) {
 		e := d[cmapEntryBase+i*cmapEntrySize:]
 		ce := ConnectorEntry{Disk: le.Uint32(e[0:]), Connector: e[4], Device: e[5], Phy: e[6]}
 		if _, ok := m.Names[ce.Connector]; !ok {
-			return ConnectorMap{}, fmt.Errorf("réponse 708 : entrée %d sur un connecteur inconnu (%d)", i, ce.Connector)
+			return ConnectorMap{}, fmt.Errorf("708 response: entry %d on unknown connector %d", i, ce.Connector)
 		}
 		if seen[ce.Disk] {
-			return ConnectorMap{}, fmt.Errorf("réponse 708 : disque %#x en double", ce.Disk)
+			return ConnectorMap{}, fmt.Errorf("708 response: duplicate disk %#x", ce.Disk)
 		}
 		seen[ce.Disk] = true
 		m.Entries = append(m.Entries, ce)

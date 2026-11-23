@@ -85,12 +85,12 @@ func pagedRequest(words ...uint32) []byte {
 func OpenRequest(r PagedRead, param uint32, size uint32) ([]byte, error) {
 	f, ok := pagedForms[r]
 	if !ok || !f.param(param) {
-		return nil, fmt.Errorf("lecture %d, paramètre %#x : non qualifiée", r, param)
+		return nil, fmt.Errorf("read %d, parameter %#x: not qualified", r, param)
 	}
 	if f.size != 0 {
 		size = f.size
 	} else if size < MemberListSize(1) || size > MemberListSize(MaxMembers) || (size-8)%32 != 0 {
-		return nil, fmt.Errorf("lecture %d : taille %d non qualifiée", r, size)
+		return nil, fmt.Errorf("read %d: size %d not qualified", r, size)
 	}
 	return pagedRequest(vmContainerConfig, uint32(r), param, 0, f.mark, 0xffffffff, 0, size), nil
 }
@@ -174,19 +174,19 @@ type PagedResponse struct {
 // renvoie son en-tête. L'écho de la sous-commande et le statut sont exigés.
 func DecodePagedResponse(req, rsp []byte) (PagedResponse, error) {
 	if len(rsp) != FIBSize {
-		return PagedResponse{}, fmt.Errorf("réponse paginée : %d octets", len(rsp))
+		return PagedResponse{}, fmt.Errorf("paged response: %d bytes", len(rsp))
 	}
 	le := binary.LittleEndian
 	if cmd := le.Uint16(rsp[fibCommand:]); cmd != cmdContainerCommand {
-		return PagedResponse{}, fmt.Errorf("réponse paginée : commande %d", cmd)
+		return PagedResponse{}, fmt.Errorf("paged response: command %d", cmd)
 	}
 	d := rsp[FIBHeaderSize:]
 	q := req[FIBHeaderSize:]
 	if st := le.Uint32(d[0:]); st != 0 {
-		return PagedResponse{}, fmt.Errorf("réponse paginée : statut %d", st)
+		return PagedResponse{}, fmt.Errorf("paged response: status %d", st)
 	}
 	if le.Uint32(d[4:]) != le.Uint32(q[4:]) {
-		return PagedResponse{}, fmt.Errorf("réponse paginée : sous-commande %d, attendue %d", le.Uint32(d[4:]), le.Uint32(q[4:]))
+		return PagedResponse{}, fmt.Errorf("paged response: subcommand %d, expected %d", le.Uint32(d[4:]), le.Uint32(q[4:]))
 	}
 	r := PagedResponse{Mark: le.Uint32(d[8:]), Total: le.Uint32(d[12:]), Xfer: le.Uint32(d[20:]), Chunk: le.Uint32(d[24:])}
 	if le.Uint32(q[4:]) == ctContinueData {

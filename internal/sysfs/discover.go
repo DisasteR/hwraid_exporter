@@ -58,12 +58,12 @@ func (e HostError) Unwrap() error { return e.Err }
 // ErrNoPCIParent : aucun ancêtre de l'hôte ne porte une adresse PCI (hôte
 // virtuel, VMBus, iSCSI). Preuve structurelle que l'hôte n'est pas une carte
 // PCI : il est hors périmètre et ignoré par Discover.
-var ErrNoPCIParent = errors.New("aucune fonction PCI parente")
+var ErrNoPCIParent = errors.New("no parent PCI function")
 
 // ErrPCIUnreadable : un ancêtre porte une adresse PCI mais ne publie pas de
 // fichier vendor lisible. Anomalie de lecture : l'hôte reste en erreur, pour
 // qu'une carte ne sorte pas de l'inventaire sur une lecture ratée.
-var ErrPCIUnreadable = errors.New("fonction PCI parente illisible")
+var ErrPCIUnreadable = errors.New("unreadable parent PCI function")
 
 // Discover parcourt <root>/class/scsi_host. root vaut "/sys" en production.
 // Une erreur globale n'est renvoyée que si le répertoire de classe est illisible ;
@@ -73,7 +73,7 @@ func Discover(root string) ([]SCSIHost, []HostError, error) {
 	classDir := filepath.Join(root, "class", "scsi_host")
 	entries, err := os.ReadDir(classDir)
 	if err != nil {
-		return nil, nil, fmt.Errorf("lecture de %s : %w", classDir, err)
+		return nil, nil, fmt.Errorf("reading %s: %w", classDir, err)
 	}
 	var hosts []SCSIHost
 	var herrs []HostError
@@ -118,13 +118,13 @@ func readHostAttrs(root, classDir, name string) (SCSIHost, string, error) {
 	h := SCSIHost{Name: name}
 	n, err := strconv.Atoi(strings.TrimPrefix(name, "host"))
 	if err != nil {
-		return h, "", fmt.Errorf("nom d'hôte invalide : %w", err)
+		return h, "", fmt.Errorf("invalid host name: %w", err)
 	}
 	h.Number = n
 
 	real, err := filepath.EvalSymlinks(filepath.Join(classDir, name))
 	if err != nil {
-		return h, "", fmt.Errorf("résolution du lien : %w", err)
+		return h, "", fmt.Errorf("resolving the link: %w", err)
 	}
 	h.ProcName = readAttr(real, "proc_name")
 	h.UniqueID = readAttr(real, "unique_id")
@@ -159,7 +159,7 @@ func (p PCIFunction) IsRAIDClass() bool { return strings.HasPrefix(p.Class, "0x0
 func pciParent(root, start string) (string, error) {
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		return "", fmt.Errorf("résolution de la racine sysfs : %w", err)
+		return "", fmt.Errorf("resolving the sysfs root: %w", err)
 	}
 	for dir := filepath.Dir(start); ; dir = filepath.Dir(dir) {
 		if dir == realRoot || dir == filepath.Dir(dir) || !strings.HasPrefix(dir, realRoot+string(filepath.Separator)) {
@@ -167,7 +167,7 @@ func pciParent(root, start string) (string, error) {
 		}
 		if pciAddress.MatchString(filepath.Base(dir)) {
 			if _, err := os.Stat(filepath.Join(dir, "vendor")); err != nil {
-				return "", fmt.Errorf("%w : %s : %v", ErrPCIUnreadable, filepath.Base(dir), err)
+				return "", fmt.Errorf("%w: %s: %v", ErrPCIUnreadable, filepath.Base(dir), err)
 			}
 			return dir, nil
 		}

@@ -54,11 +54,11 @@ func CharMajors(r io.Reader) (map[string]uint32, error) {
 		}
 		f := strings.Fields(line)
 		if len(f) != 2 {
-			return nil, fmt.Errorf("ligne inattendue dans /proc/devices : %q", line)
+			return nil, fmt.Errorf("unexpected line in /proc/devices: %q", line)
 		}
 		n, err := strconv.ParseUint(f[0], 10, 32)
 		if err != nil {
-			return nil, fmt.Errorf("major invalide %q : %w", f[0], err)
+			return nil, fmt.Errorf("invalid major %q: %w", f[0], err)
 		}
 		out[f[1]] = uint32(n)
 	}
@@ -71,7 +71,7 @@ type Report struct {
 }
 
 // ErrForeignEntry : une entrée étrangère au schéma a été trouvée ; rien n'a été modifié.
-var ErrForeignEntry = errors.New("entrée étrangère dans le répertoire des nœuds")
+var ErrForeignEntry = errors.New("foreign entry in the node directory")
 
 // Sync met le répertoire dir en conformité avec specs. Les nœuds sont créés
 // en 0600 pour uid:gid ; le répertoire appartient à root:gid en 0750.
@@ -86,13 +86,13 @@ func Sync(dir string, specs []Spec, majors map[string]uint32, uid, gid int, prun
 	want := map[string]Spec{}
 	for _, s := range specs {
 		if !schema.MatchString(s.Name) {
-			return rep, fmt.Errorf("nom de nœud hors schéma : %q", s.Name)
+			return rep, fmt.Errorf("node name outside the naming scheme: %q", s.Name)
 		}
 		if m, ok := majors[s.MajorOf]; !ok || m == 0 || s.Major != m {
-			return rep, fmt.Errorf("major %d refusé pour %s (pilote %q : %d)", s.Major, s.Name, s.MajorOf, m)
+			return rep, fmt.Errorf("major %d refused for %s (driver %q: %d)", s.Major, s.Name, s.MajorOf, m)
 		}
 		if _, dup := want[s.Name]; dup {
-			return rep, fmt.Errorf("nœud en double : %q", s.Name)
+			return rep, fmt.Errorf("duplicate node: %q", s.Name)
 		}
 		want[s.Name] = s
 	}
@@ -103,7 +103,7 @@ func Sync(dir string, specs []Spec, majors map[string]uint32, uid, gid int, prun
 	}
 	defer unix.Close(dfd)
 	if err := unix.Flock(dfd, unix.LOCK_EX); err != nil {
-		return rep, fmt.Errorf("verrou : %w", err)
+		return rep, fmt.Errorf("lock: %w", err)
 	}
 
 	// 1. Inventaire et validation complète avant toute modification.
@@ -122,7 +122,7 @@ func Sync(dir string, specs []Spec, majors map[string]uint32, uid, gid int, prun
 			continue
 		}
 		if err := unix.Unlinkat(dfd, name, 0); err != nil {
-			return rep, fmt.Errorf("suppression de %s : %w", name, err)
+			return rep, fmt.Errorf("removing %s: %w", name, err)
 		}
 		delete(existing, name)
 		rep.Removed = append(rep.Removed, name)
@@ -161,7 +161,7 @@ func Sync(dir string, specs []Spec, majors map[string]uint32, uid, gid int, prun
 			continue
 		}
 		if err := unix.Unlinkat(dfd, name, 0); err != nil {
-			return rep, fmt.Errorf("suppression de %s : %w", name, err)
+			return rep, fmt.Errorf("removing %s: %w", name, err)
 		}
 		rep.Removed = append(rep.Removed, name)
 	}
@@ -176,26 +176,26 @@ func openDir(dir string) (int, error) {
 	switch {
 	case errors.Is(err, unix.ENOENT):
 		if err := unix.Mkdir(dir, 0o750); err != nil {
-			return -1, fmt.Errorf("création de %s : %w", dir, err)
+			return -1, fmt.Errorf("creating %s: %w", dir, err)
 		}
 	case err != nil:
-		return -1, fmt.Errorf("%s : %w", dir, err)
+		return -1, fmt.Errorf("%s: %w", dir, err)
 	case st.Mode&unix.S_IFMT != unix.S_IFDIR:
-		return -1, fmt.Errorf("%s n'est pas un répertoire (lien symbolique ou fichier) : refus", dir)
+		return -1, fmt.Errorf("%s is not a directory (symbolic link or file): refused", dir)
 	}
 	dfd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return -1, fmt.Errorf("ouverture de %s : %w", dir, err)
+		return -1, fmt.Errorf("opening %s: %w", dir, err)
 	}
 	// Un répertoire modifiable par un autre que le processus ouvrirait des
 	// courses entre validation et action : refus, sans rien modifier.
 	if err := unix.Fstat(dfd, &st); err != nil {
 		unix.Close(dfd)
-		return -1, fmt.Errorf("fstat de %s : %w", dir, err)
+		return -1, fmt.Errorf("fstat %s: %w", dir, err)
 	}
 	if st.Uid != uint32(os.Geteuid()) || st.Mode&0o022 != 0 {
 		unix.Close(dfd)
-		return -1, fmt.Errorf("%s appartient à l'UID %d avec le mode %o : refus (propriétaire attendu %d, sans écriture pour le groupe ni les autres)", dir, st.Uid, st.Mode&0o7777, os.Geteuid())
+		return -1, fmt.Errorf("%s is owned by UID %d with mode %o: refused (expected owner %d, not writable by group or others)", dir, st.Uid, st.Mode&0o7777, os.Geteuid())
 	}
 	return dfd, nil
 }
@@ -203,10 +203,10 @@ func openDir(dir string) (int, error) {
 // fixDir impose root:gid et le mode 0750 au répertoire, après validation.
 func fixDir(dfd int, dir string, gid int) error {
 	if err := unix.Fchown(dfd, 0, gid); err != nil {
-		return fmt.Errorf("propriétaire de %s : %w", dir, err)
+		return fmt.Errorf("owner of %s: %w", dir, err)
 	}
 	if err := unix.Fchmod(dfd, 0o750); err != nil {
-		return fmt.Errorf("mode de %s : %w", dir, err)
+		return fmt.Errorf("mode of %s: %w", dir, err)
 	}
 	return nil
 }
@@ -216,19 +216,19 @@ func fixDir(dfd int, dir string, gid int) error {
 func inventory(dfd int) (map[string]unix.Stat_t, error) {
 	f := os.NewFile(uintptr(dupFD(dfd)), "nodes-dir")
 	if f == nil {
-		return nil, errors.New("duplication du descripteur impossible")
+		return nil, errors.New("cannot duplicate the descriptor")
 	}
 	defer f.Close()
 	names, err := f.Readdirnames(-1)
 	if err != nil {
-		return nil, fmt.Errorf("lecture du répertoire : %w", err)
+		return nil, fmt.Errorf("reading the directory: %w", err)
 	}
 	out := map[string]unix.Stat_t{}
 	var foreign []string
 	for _, name := range names {
 		var st unix.Stat_t
 		if err := unix.Fstatat(dfd, name, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
-			return nil, fmt.Errorf("%s : %w", name, err)
+			return nil, fmt.Errorf("%s: %w", name, err)
 		}
 		isChar := st.Mode&unix.S_IFMT == unix.S_IFCHR
 		if isChar && (schema.MatchString(name) || (strings.HasPrefix(name, tmpPrefix) && schema.MatchString(strings.TrimPrefix(name, tmpPrefix)))) {
@@ -239,7 +239,7 @@ func inventory(dfd int) (map[string]unix.Stat_t, error) {
 	}
 	if len(foreign) > 0 {
 		sort.Strings(foreign)
-		return nil, fmt.Errorf("%w : %s", ErrForeignEntry, strings.Join(foreign, ", "))
+		return nil, fmt.Errorf("%w: %s", ErrForeignEntry, strings.Join(foreign, ", "))
 	}
 	return out, nil
 }
@@ -248,7 +248,7 @@ func create(dfd int, s Spec, uid, gid int) error {
 	tmp := tmpPrefix + s.Name
 	_ = unix.Unlinkat(dfd, tmp, 0) // temporaire d'une exécution interrompue
 	if err := unix.Mknodat(dfd, tmp, unix.S_IFCHR|0o600, int(s.Dev())); err != nil {
-		return fmt.Errorf("mknod %s : %w", s.Name, err)
+		return fmt.Errorf("mknod %s: %w", s.Name, err)
 	}
 	if err := fix(dfd, tmp, uid, gid); err != nil {
 		_ = unix.Unlinkat(dfd, tmp, 0)
@@ -256,7 +256,7 @@ func create(dfd int, s Spec, uid, gid int) error {
 	}
 	if err := unix.Renameat(dfd, tmp, dfd, s.Name); err != nil {
 		_ = unix.Unlinkat(dfd, tmp, 0)
-		return fmt.Errorf("renommage de %s : %w", s.Name, err)
+		return fmt.Errorf("renaming %s: %w", s.Name, err)
 	}
 	return nil
 }
@@ -267,10 +267,10 @@ func create(dfd int, s Spec, uid, gid int) error {
 // n'étant modifiable que par le processus, aucun lien n'a pu être substitué.
 func fix(dfd int, name string, uid, gid int) error {
 	if err := unix.Fchmodat(dfd, name, 0o600, 0); err != nil {
-		return fmt.Errorf("mode de %s : %w", name, err)
+		return fmt.Errorf("mode of %s: %w", name, err)
 	}
 	if err := unix.Fchownat(dfd, name, uid, gid, unix.AT_SYMLINK_NOFOLLOW); err != nil {
-		return fmt.Errorf("propriétaire de %s : %w", name, err)
+		return fmt.Errorf("owner of %s: %w", name, err)
 	}
 	return nil
 }

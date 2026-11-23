@@ -46,7 +46,7 @@ type HBAInfo struct {
 // Une réponse dont la taille diffère de HBAInfoSize est refusée.
 func DecodeHBAInfo(b []byte) (HBAInfo, error) {
 	if len(b) != HBAInfoSize {
-		return HBAInfo{}, fmt.Errorf("aac_hba_info : %d octets reçus, %d attendus", len(b), HBAInfoSize)
+		return HBAInfo{}, fmt.Errorf("aac_hba_info: %d bytes received, %d expected", len(b), HBAInfoSize)
 	}
 	le := binary.LittleEndian
 	return HBAInfo{

@@ -25,12 +25,12 @@ func ContainerListNeed(d []byte) int {
 // mot 1 = nombre, puis un numéro par mot à partir de l'octet 8.
 func DecodeContainerList(d []byte) ([]uint32, error) {
 	if len(d) < 8 {
-		return nil, fmt.Errorf("liste des conteneurs : %d octets", len(d))
+		return nil, fmt.Errorf("container list: %d bytes", len(d))
 	}
 	le := binary.LittleEndian
 	n := int(le.Uint32(d[4:]))
 	if n > (len(d)-8)/4 {
-		return nil, fmt.Errorf("liste des conteneurs : %d entrées pour %d octets", n, len(d))
+		return nil, fmt.Errorf("container list: %d entries for %d bytes", n, len(d))
 	}
 	out := make([]uint32, n)
 	for i := range out {
@@ -52,12 +52,12 @@ func DiskListNeed(d []byte) int {
 // nombre, puis un numéro par mot.
 func DecodeDiskList(d []byte) ([]uint32, error) {
 	if len(d) < 4 {
-		return nil, fmt.Errorf("liste des disques : %d octets", len(d))
+		return nil, fmt.Errorf("disk list: %d bytes", len(d))
 	}
 	le := binary.LittleEndian
 	n := int(le.Uint32(d[0:]))
 	if n > (len(d)-4)/4 {
-		return nil, fmt.Errorf("liste des disques : %d entrées pour %d octets", n, len(d))
+		return nil, fmt.Errorf("disk list: %d entries for %d bytes", n, len(d))
 	}
 	out := make([]uint32, n)
 	for i := range out {
@@ -101,7 +101,7 @@ type ContainerInfo struct {
 // DecodeContainerInfo décode l'information de conteneur.
 func DecodeContainerInfo(d []byte) (ContainerInfo, error) {
 	if len(d) < ContainerInfoNeed {
-		return ContainerInfo{}, fmt.Errorf("information de conteneur : %d octets", len(d))
+		return ContainerInfo{}, fmt.Errorf("container info: %d bytes", len(d))
 	}
 	le := binary.LittleEndian
 	name := d[containerName:ContainerInfoNeed]
@@ -117,7 +117,7 @@ func DecodeContainerInfo(d []byte) (ContainerInfo, error) {
 		Name:    printable(name),
 	}
 	if c.Members < 1 || c.Members > MaxMembers {
-		return ContainerInfo{}, fmt.Errorf("information de conteneur %#x : %d membres", c.UID, c.Members)
+		return ContainerInfo{}, fmt.Errorf("container info %#x: %d members", c.UID, c.Members)
 	}
 	return c, nil
 }
@@ -142,12 +142,12 @@ type Member struct {
 // entrée de 32 octets par membre à partir de l'octet 8.
 func DecodeMemberList(d []byte) ([]Member, error) {
 	if len(d) < 8 {
-		return nil, fmt.Errorf("liste des membres : %d octets", len(d))
+		return nil, fmt.Errorf("member list: %d bytes", len(d))
 	}
 	le := binary.LittleEndian
 	n := int(le.Uint32(d[4:]))
 	if n < 1 || n > MaxMembers || n > (len(d)-8)/32 {
-		return nil, fmt.Errorf("liste des membres : %d entrées pour %d octets", n, len(d))
+		return nil, fmt.Errorf("member list: %d entries for %d bytes", n, len(d))
 	}
 	out := make([]Member, n)
 	for i := range out {
@@ -161,7 +161,7 @@ func DecodeMemberList(d []byte) ([]Member, error) {
 			Blocks:   le.Uint64(e[24:]),
 		}
 		if (out[i].Disk == NoUID) == (out[i].ChildUID == NoUID) {
-			return nil, fmt.Errorf("liste des membres : entrée %d ni disque ni conteneur", i)
+			return nil, fmt.Errorf("member list: entry %d is neither a disk nor a container", i)
 		}
 	}
 	return out, nil

@@ -92,11 +92,11 @@ func host(c module.Card) (int, uint32, error) {
 		}
 		uid, err := strconv.ParseUint(h.UniqueID, 10, 8)
 		if err != nil {
-			return 0, 0, fmt.Errorf("%s : unique_id %q invalide", h.Name, h.UniqueID)
+			return 0, 0, fmt.Errorf("%s: invalid unique_id %q", h.Name, h.UniqueID)
 		}
 		return i, uint32(uid), nil
 	}
-	return 0, 0, errors.New("aucun hôte SCSI aacraid sur la carte")
+	return 0, 0, errors.New("no aacraid SCSI host on the card")
 }
 
 // Nodes déclare le nœud aac<unique_id> : major du pilote « aac », minor égal
@@ -116,7 +116,7 @@ func (*Module) Nodes(c module.Card) ([]module.NodeRequest, error) {
 // déclarés non pris en charge et aucune autre lecture n'est tentée.
 func (m *Module) Collect(c module.Card, refs []module.NodeRef) module.Result {
 	if len(refs) != 1 {
-		return module.Result{Err: fmt.Errorf("%d nœud(s) préparé(s), 1 attendu", len(refs))}
+		return module.Result{Err: fmt.Errorf("%d prepared node(s), 1 expected", len(refs))}
 	}
 	_, uid, err := host(c)
 	if err != nil {
@@ -136,7 +136,7 @@ func (m *Module) Collect(c module.Card, refs []module.NodeRef) module.Result {
 		return module.Result{Err: err}
 	}
 	if !info.MatchesPCI(uint8(uid), bus, slot, fn) {
-		return module.Result{Err: fmt.Errorf("GET_HBA_INFO désigne la carte %d en %02x:%02x.%d",
+		return module.Result{Err: fmt.Errorf("GET_HBA_INFO points to card %d at %02x:%02x.%d",
 			info.AdapterNumber, info.Bus, info.Device, info.Function)}
 	}
 	r := module.Result{NodeValid: true}
@@ -144,7 +144,7 @@ func (m *Module) Collect(c module.Card, refs []module.NodeRef) module.Result {
 	sup, err := m.supplementInfo(key, d)
 	r.Collected = map[string]bool{CapabilitiesCollector: err == nil}
 	if err != nil {
-		r.CollectErr = fmt.Errorf("RequestSupplementAdapterInfo : %w", err)
+		r.CollectErr = fmt.Errorf("RequestSupplementAdapterInfo: %w", err)
 		return r
 	}
 	// Lectures firmware au-delà de 706 : seulement vers un couple modèle et
@@ -218,7 +218,7 @@ func (m *Module) collectVolumes(r *module.Result, d device, key string, h sysfs.
 		r.Collected[DiskInventoryCollector] = false
 		r.Collected[DiskLocationCollector] = false
 		if r.CollectErr == nil {
-			r.CollectErr = fmt.Errorf("configuration : %w", err)
+			r.CollectErr = fmt.Errorf("configuration: %w", err)
 		}
 		return
 	}
@@ -228,7 +228,7 @@ func (m *Module) collectVolumes(r *module.Result, d device, key string, h sysfs.
 	if err != nil {
 		r.Collected[DiskLocationCollector] = false
 		if r.CollectErr == nil {
-			r.CollectErr = fmt.Errorf("inventaire des disques : %w", err)
+			r.CollectErr = fmt.Errorf("disk inventory: %w", err)
 		}
 		return
 	}
@@ -241,7 +241,7 @@ func (m *Module) collectVolumes(r *module.Result, d device, key string, h sysfs.
 	r.Collected[DiskLocationCollector] = err == nil
 	if err != nil {
 		if r.CollectErr == nil {
-			r.CollectErr = fmt.Errorf("emplacement des disques : %w", err)
+			r.CollectErr = fmt.Errorf("disk location: %w", err)
 		}
 		return
 	}
@@ -291,7 +291,7 @@ func (m *Module) locations(key string, d device, inv []aacraid.DiskInfo) ([]modu
 		}
 		if e.Phy != i.Phy {
 			m.forgetConnectorMap(key)
-			return nil, fmt.Errorf("disque %d : phy %d dans la carte des connecteurs, %d dans l'information de disque", i.Number, e.Phy, i.Phy)
+			return nil, fmt.Errorf("disk %d: phy %d in the connector map, %d in the disk info", i.Number, e.Phy, i.Phy)
 		}
 		out = append(out, module.DiskLocation{ID: diskID(i.Number), Connector: strconv.Itoa(int(e.Connector)),
 			ConnectorName: cm.Names[e.Connector], Device: strconv.Itoa(int(e.Device)), Phy: strconv.Itoa(int(e.Phy))})
@@ -345,7 +345,7 @@ func readInventory(d device, nums []uint32) ([]aacraid.DiskInfo, error) {
 			return nil, err
 		}
 		if i.Number != n {
-			return nil, fmt.Errorf("information du disque %d : la réponse désigne le disque %d", n, i.Number)
+			return nil, fmt.Errorf("disk %d info: the response is for disk %d", n, i.Number)
 		}
 		out = append(out, i)
 	}
@@ -373,7 +373,7 @@ func readConfiguration(d device) ([]module.Volume, []module.Disk, []uint32, erro
 		}
 		for _, prev := range cs {
 			if prev.Info.UID == info.UID {
-				return nil, nil, nil, fmt.Errorf("UID de conteneur %#x en double (conteneurs %d et %d)", info.UID, prev.Number, n)
+				return nil, nil, nil, fmt.Errorf("duplicate container UID %#x (containers %d and %d)", info.UID, prev.Number, n)
 			}
 		}
 		cs = append(cs, aacraid.Container{Number: n, Info: info})
@@ -459,7 +459,7 @@ func collectCacheProtection(r *module.Result, d device) {
 	case err != nil:
 		r.Collected[CacheProtectionCollector] = false
 		if r.CollectErr == nil {
-			r.CollectErr = fmt.Errorf("protection du cache : %w", err)
+			r.CollectErr = fmt.Errorf("cache protection: %w", err)
 		}
 	case !described || st.State == aacraid.CacheProtectionOtherType:
 		// Format non décrit ou autre type de module : non décodé.
@@ -499,7 +499,7 @@ func (m *Module) supplementInfo(key string, d device) (aacraid.SupplementInfo, e
 func parsePCI(addr string) (bus, slot, fn uint8, err error) {
 	var dom, b, s, f uint
 	if n, e := fmt.Sscanf(addr, "%04x:%02x:%02x.%1x", &dom, &b, &s, &f); e != nil || n != 4 || f > 7 {
-		return 0, 0, 0, fmt.Errorf("adresse PCI invalide %q", addr)
+		return 0, 0, 0, fmt.Errorf("invalid PCI address %q", addr)
 	}
 	return uint8(b), uint8(s), uint8(f), nil
 }
