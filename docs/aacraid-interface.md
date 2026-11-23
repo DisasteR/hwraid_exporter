@@ -171,6 +171,24 @@ La façon dont l'état d'un conteneur membre (par exemple un miroir dégradé) s
 | disponible | disque présent, ni membre ; publié seulement quand l'état de secours sait être établi |
 | secours, copie de retour | condition à établir |
 
+### État du module de protection du cache (ZMM) [interopérabilité]
+
+Deux lectures `ContainerCommand`, commande VM `VM_Ioctl` (3, public), mot 1 = 9, mot 2 = 3, en-tête `SenderSize` = 512 :
+
+1. **Présence** : mot 4 = `0x30000`, 44 octets de données (mots 5 à 10 nuls). Dans la réponse, le mot de 16 bits à l'octet 42 porte le bit `0x2000` quand la carte décrit son module dans la lecture suivante.
+2. **État** : mot 4 = `0x700000`, 76 octets de données (mots 5 à 18 nuls). Dans la réponse, l'octet 20 doit avoir son bit `0x1` (bloc valide) ; le mot d'état R est aux octets 48-51.
+
+| Condition sur R | État |
+|---|---|
+| `R & 0xF0000000` différent de `0x40000000` | autre type de module : non décodé |
+| bit `0x1` absent | module non installé |
+| bit `0x8` absent | **en panne** |
+| bit `0x4` présent | en charge, pas prêt |
+| bit `0x8` présent, bit `0x4` absent | optimal |
+| autre cas | indéterminé |
+
+Sur l'hôte de référence : R = `0x40000081`, module en panne, conforme à l'affichage de l'outil témoin.
+
 ## 7. Domaine de validité [interopérabilité]
 
 Les lectures des sections 4 à 6 forment une interface que le firmware annonce dans la réponse à `RequestSupplementAdapterInfo` (706). Champs publics (`struct aac_supplement_adapter_info`, Linux `aacraid.h` ; FreeBSD `aacraid_reg.h`) :
