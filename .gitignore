@@ -1,0 +1,5 @@
+/preuves-internes/
+arcconf*
+*.reference
+*.zip
+captures/
