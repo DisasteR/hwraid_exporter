@@ -26,6 +26,8 @@ La cible produit inclut tous les contrôleurs RAID matériels de l’hôte, y co
 
 Chaque lecture utilisée par un module est qualifiée par comparaison avec l’outil témoin de sa famille sur le matériel de référence, et inscrite dans la matrice de qualification du dépôt.
 
+**Base légale des informations non documentées.** Lorsqu’aucune source publique ne décrit une information nécessaire (par exemple l’état des membres d’un volume sur les cartes Adaptec), elle est établie par l’analyse de l’outil constructeur, au titre de l’exception d’interopérabilité (directive 2009/24/CE, article 6 ; code de la propriété intellectuelle, article L122-6-1 IV). Ces informations ne sont communiquées que dans la mesure nécessaire à l’interopérabilité de l’exporter : son code et la description de l’interface qu’il utilise ([docs/aacraid-interface.md](../docs/aacraid-interface.md)). L’analyse elle-même (méthode, éléments internes de l’outil) n’est pas publiée.
+
 ## 2. Exigences fonctionnelles
 
 | Objet | Données attendues | Comportement à garantir |
