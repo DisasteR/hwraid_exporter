@@ -6,9 +6,9 @@ Chaque élément porte sa provenance :
 
 - **[public]** : documenté dans une source publique, citée ;
 - **[observé]** : établi en observant, sur l'hôte de référence, les échanges entre l'outil constructeur et le pilote, puis en les comparant à ce que l'outil affiche. Ces éléments sont valables pour le modèle et le firmware testés. Ils sont requalifiés pour tout autre modèle ou firmware.
-- **[interopérabilité]** : établi par l'analyse de l'outil constructeur, faute de source publique, au titre de l'exception d'interopérabilité (directive 2009/24/CE, article 6 ; code de la propriété intellectuelle, article L122-6-1 IV). Seul le résultat nécessaire à l'interopérabilité de l'exporter est décrit ici ; la méthode et les éléments internes de l'outil ne sont pas publiés. Ces éléments sont qualifiés pour le modèle et le firmware de référence.
+- **[interopérabilité]** : établi par l'analyse de l'outil constructeur, faute de source publique, au titre de l'exception d'interopérabilité (directive 2009/24/CE, article 6 ; code de la propriété intellectuelle, article L122-6-1 IV ; textes et limites : [base-legale-interoperabilite.md](base-legale-interoperabilite.md)). Seul le résultat nécessaire à l'interopérabilité de l'exporter est décrit ici ; la méthode et les éléments internes de l'outil ne sont pas publiés. Ces éléments sont qualifiés pour le modèle et le firmware de référence.
 
-Tous les entiers sont en petit-boutiste (*little-endian*). Les positions sont en octets, à partir de 0.
+Tous les entiers sont en little-endian. Les positions sont en octets, à partir de 0.
 
 ## 1. Accès au pilote [public]
 
