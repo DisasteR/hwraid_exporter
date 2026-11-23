@@ -139,3 +139,74 @@ func (d *Device) CacheProtection() (present bool, st aacraid.ZMMStatus, err erro
 	st, err = aacraid.DecodeCacheProtectionState(rsp)
 	return true, st, err
 }
+
+// maxPagedTotal borne la taille d'un transfert accepté (plus grande taille
+// qualifiée : liste des disques, 4 100 octets).
+const maxPagedTotal = 0x1004
+
+// ReadPaged effectue une lecture paginée qualifiée et renvoie au moins
+// need(données lues) octets, ou tout le transfert. Le transfert est clôturé
+// dès que les données suffisent, et dans tous les cas après son ouverture,
+// même en cas d'erreur : le firmware ne garde pas de transfert ouvert.
+func (d *Device) ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error) {
+	open, err := aacraid.OpenRequest(r, param, size)
+	if err != nil {
+		return nil, err
+	}
+	rsp, err := d.fib(append([]byte(nil), open...))
+	if err != nil {
+		return nil, err
+	}
+	head, err := aacraid.DecodePagedResponse(open, rsp)
+	if err != nil {
+		return nil, err
+	}
+	if head.Mark != 0xc9 || head.Total == 0 || head.Total > maxPagedTotal {
+		return nil, fmt.Errorf("lecture %d : ouverture refusée (marque %#x, taille %d)", r, head.Mark, head.Total)
+	}
+	var data []byte
+	last := uint32(0)
+	readErr := func() error {
+		for n := uint32(0); n < (head.Total+aacraid.ChunkData-1)/aacraid.ChunkData; n++ {
+			req := aacraid.ChunkRequest(head.Total, head.Xfer, n)
+			rsp, err := d.fib(append([]byte(nil), req...))
+			if err != nil {
+				return err
+			}
+			c, err := aacraid.DecodePagedResponse(req, rsp)
+			if err != nil {
+				return err
+			}
+			if c.Xfer != head.Xfer || c.Chunk != n || c.Total != head.Total {
+				return fmt.Errorf("lecture %d : morceau %d incohérent (transfert %#x, morceau %d)", r, n, c.Xfer, c.Chunk)
+			}
+			last = n
+			data = append(data, c.Data...)
+			if len(data) >= int(head.Total) {
+				data = data[:head.Total]
+				return nil
+			}
+			if want := need(data); want <= len(data) {
+				return nil
+			} else if want > int(head.Total) {
+				return fmt.Errorf("lecture %d : %d octets demandés pour un transfert de %d", r, want, head.Total)
+			}
+		}
+		return nil
+	}()
+	stop := aacraid.StopRequest(head.Total, head.Xfer, last)
+	stopRsp, stopErr := d.fib(append([]byte(nil), stop...))
+	if stopErr == nil {
+		var s aacraid.PagedResponse
+		if s, stopErr = aacraid.DecodePagedResponse(stop, stopRsp); stopErr == nil && s.Mark != 0xc6 {
+			stopErr = fmt.Errorf("lecture %d : clôture non confirmée (marque %#x)", r, s.Mark)
+		}
+	}
+	if readErr != nil {
+		return nil, readErr
+	}
+	if stopErr != nil {
+		return nil, stopErr
+	}
+	return data, nil
+}

@@ -84,6 +84,9 @@ func CheckFIBRequest(b []byte) error {
 			return nil
 		}
 	}
+	if checkPagedRequest(b) {
+		return nil
+	}
 	cmd := -1
 	if len(b) >= FIBHeaderSize {
 		cmd = int(binary.LittleEndian.Uint16(b[fibCommand:]))

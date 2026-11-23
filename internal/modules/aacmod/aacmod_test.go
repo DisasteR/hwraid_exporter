@@ -1,7 +1,11 @@
 package aacmod
 
 import (
+	"encoding/hex"
 	"errors"
+	"fmt"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/DisasteR/hwraid_exporter/internal/aacraid"
@@ -60,6 +64,8 @@ type fakeDev struct {
 	closed  bool
 	cp      *cpAnswer
 	cpCall  int
+	paged   func(r aacraid.PagedRead, param, size uint32) ([]byte, error)
+	reads   []string
 }
 
 func (f *fakeDev) HBAInfo() (aacraid.HBAInfo, error) { return f.info, f.err }
@@ -75,6 +81,32 @@ func (f *fakeDev) CacheProtection() (bool, aacraid.ZMMStatus, error) {
 		return true, aacraid.ZMMStatus{Word: 0x40000081, State: aacraid.CacheProtectionFailed}, nil
 	}
 	return f.cp.described, f.cp.st, f.cp.err
+}
+
+func (f *fakeDev) ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error) {
+	f.reads = append(f.reads, fmt.Sprintf("%d-%x", r, param))
+	if f.paged == nil {
+		return referencePaged(r, param, size)
+	}
+	return f.paged(r, param, size)
+}
+
+// referencePaged sert les données enregistrées sur l'hôte de référence
+// (internal/aacraid/testdata), et vérifie la taille demandée pour une liste
+// de membres.
+func referencePaged(r aacraid.PagedRead, param, size uint32) ([]byte, error) {
+	s, err := os.ReadFile(fmt.Sprintf("../../aacraid/testdata/%d-%x.hex", r, param))
+	if err != nil {
+		return nil, err
+	}
+	b, err := hex.DecodeString(strings.TrimSpace(string(s)))
+	if err != nil {
+		return nil, err
+	}
+	if r == aacraid.ReadMemberList && uint32(len(b)) != size {
+		return nil, fmt.Errorf("taille demandée %d, liste de %d octets", size, len(b))
+	}
+	return b, nil
 }
 
 type cpAnswer struct {
@@ -265,3 +297,62 @@ func TestCollectCacheProtection(t *testing.T) {
 }
 
 func ptr(b bool) *bool { return &b }
+
+// Configuration de l'hôte de référence : un volume assemblant quatre
+// miroirs, huit disques, tout optimal.
+func TestCollectVolumesReference(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	c := card("0000:01:00.0", "0")
+	d := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}, sup: arcIo}
+	r := withDev(d, nil).Collect(c, ref)
+	if !r.Collected["volumes"] || !r.Collected["disks"] || r.CollectErr != nil {
+		t.Fatalf("%+v", r)
+	}
+	if len(r.Volumes) != 5 || len(r.Disks) != 8 {
+		t.Fatalf("%d volumes, %d disques", len(r.Volumes), len(r.Disks))
+	}
+	top := r.Volumes[0]
+	if top.ID != "1d000000" || top.Name != "Array0" || top.Type != "assembly" || top.Parent != "" ||
+		top.CapacityBytes != 62495109120*512 || top.State != "optimal" || len(top.Members) != 4 {
+		t.Fatalf("volume : %+v", top)
+	}
+	for _, v := range r.Volumes[1:] {
+		if v.Type != "mirror" || v.Parent != "1d000000" || v.State != "optimal" || len(v.Members) != 2 {
+			t.Fatalf("miroir : %+v", v)
+		}
+	}
+	for i, dk := range r.Disks {
+		if dk.ID != fmt.Sprintf("d%d", i) || dk.State != "online" {
+			t.Fatalf("disque : %+v", dk)
+		}
+	}
+	// Séquence : liste, 5 informations, disques, 5 listes de membres.
+	if len(d.reads) != 12 || d.reads[0] != "229-0" || d.reads[6] != "247-0" {
+		t.Fatalf("lectures %v", d.reads)
+	}
+}
+
+// Une lecture en échec annule toute la configuration du cycle ; une carte
+// sans l'interface annoncée n'est pas interrogée.
+func TestCollectVolumesFailureAndGate(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	c := card("0000:01:00.0", "0")
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}
+	for _, failing := range []string{"229-0", "234-fd", "247-0", "249-1d000003"} {
+		d := &fakeDev{info: hba, sup: arcIo, paged: func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
+			if fmt.Sprintf("%d-%x", r, p) == failing {
+				return nil, errors.New("EIO")
+			}
+			return referencePaged(r, p, size)
+		}}
+		r := withDev(d, nil).Collect(c, ref)
+		if r.Volumes != nil || r.Disks != nil || r.Collected["volumes"] || r.Collected["disks"] || r.CollectErr == nil || !r.NodeValid {
+			t.Fatalf("échec sur %s : %+v", failing, r)
+		}
+	}
+	d := &fakeDev{info: hba, sup: aacraid.SupplementInfo{Version: 15, SupportedOptions2: 0}}
+	r := withDev(d, nil).Collect(c, ref)
+	if len(d.reads) != 0 || r.Volumes != nil {
+		t.Fatalf("carte sans interface interrogée : %v", d.reads)
+	}
+}

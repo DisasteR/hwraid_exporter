@@ -60,29 +60,55 @@ Le nom, la capacité, le type et l'identifiant unique d'un conteneur sont donc d
 
 ## 4. Transfert paginé [observé]
 
-Les informations détaillées (volume, disque, liste des membres) sont renvoyées par un transfert en plusieurs FIB, toutes de type `ContainerCommand` / `VM_ContainerConfig` :
+Les informations détaillées sont renvoyées par un transfert en plusieurs FIB, toutes de type `ContainerCommand` / `VM_ContainerConfig`. En-tête de chaque requête : `XferState` = `HostOwned | ApiFib` (`0x00100001`), `StructType` = 1, `Size` = 480, `SenderSize` = 512. Données (huit mots, reste nul) :
 
-1. **Ouverture** : la sous-commande de lecture (par exemple 234 pour un volume, 248 pour un disque, 249 pour une liste de membres), avec le paramètre au mot 2 (numéro de conteneur, numéro de disque ou UID). La réponse donne : mot 0 statut (0 = succès), mot 1 écho de la sous-commande, mot 2 `0xc9`, mot 3 taille totale du transfert, mot 4 `0xda`, mot 5 identifiant du transfert.
-2. **Lecture des morceaux** : sous-commande 83 avec les mots 2 à 6 = `0xc9` (premier morceau) puis `0xc8`, taille totale, `0xda`, identifiant du transfert, numéro du morceau (0, 1…). La réponse reprend les mots 0 à 7 (le mot 7 n'est pas interprété), suivis de **448 octets de données**. Les données sont reconstruites dans la limite de la taille totale : le dernier morceau n'est utile que jusqu'à cette taille.
-3. **Clôture** : sous-commande 84 avec les paramètres du dernier morceau ; la réponse porte `0xc6` au mot 2.
+| Étape | Mots 0 à 7 de la requête | Réponse |
+|---|---|---|
+| Ouverture | `2`, sous-commande, paramètre, `0`, marque, `0xffffffff`, `0`, taille | statut, écho, `0xc9`, taille totale, `0xda`, identifiant du transfert |
+| Morceau n | `2`, `83`, `0xc9` (n = 0) ou `0xc8`, taille totale, `0xda`, identifiant, n, taille totale | les huit mots, puis **448 octets de données** |
+| Clôture | `2`, `84`, `0xc8`, taille totale, `0xda`, identifiant, dernier n lu, taille totale | `0xc6` au mot 2 |
 
-Le pilote sérialise chaque ioctl, pas un transfert entier : un autre programme (outil constructeur) peut intercaler ses propres commandes entre deux morceaux. Le décodeur de l'exporter doit donc, avant d'utiliser un transfert :
+| Lecture | Sous-commande | Paramètre | Marque | Taille |
+|---|---|---|---|---|
+| Liste des conteneurs | 229 | 0 | `0xda` | 1 032 |
+| Information de conteneur | 234 | numéro du conteneur | `0xda` | 4 096 |
+| Liste des disques présents | 247 | 0 | 0 | 4 100 |
+| Liste des membres | 249 | UID du conteneur | 0 | 8 + 32 × nombre de membres |
 
-- vérifier à chaque réponse le statut (mot 0), l'écho de la sous-commande (mot 1), l'identifiant du transfert et le numéro du morceau attendu ;
-- refuser une taille totale supérieure à la borne fixée pour la lecture concernée, avant toute allocation ;
-- arrêter la lecture au premier écart, envoyer la clôture si le transfert a été ouvert, et rejeter le relevé entier : aucune donnée partielle n'est publiée.
+L'outil de référence laisse au-delà des huit mots des résidus de ses propres tampons ; ils ne font pas partie de la requête et l'exporter envoie des zéros. Le champ `Size` des réponses de morceau vaut 496 ; le pas de 448 octets est établi par la reconstitution des transferts.
 
-Exemples sur l'hôte de référence : 4 096 octets (10 morceaux) pour un volume ou un disque, 136 ou 72 octets (1 morceau) pour une liste de membres.
+L'exporter ne lit que les morceaux nécessaires aux champs qu'il décode, puis clôture le transfert : sur l'hôte de référence, un seul morceau suffit pour chaque lecture. La clôture après le morceau 0 est une forme employée par l'outil de référence.
+
+Le pilote sérialise chaque ioctl, pas un transfert entier : un autre programme peut intercaler ses propres commandes entre deux morceaux. L'exporter vérifie à chaque réponse le statut (mot 0), l'écho de la sous-commande (mot 1), l'identifiant du transfert et le numéro du morceau ; il refuse une taille totale supérieure à 4 100 octets ; au premier écart il clôture le transfert et rejette le relevé entier du cycle : aucune configuration partielle n'est publiée.
 
 ## 5. Formats observés [observé]
+
+### Liste des conteneurs (sous-commande 229, paramètre : 0)
+
+| Octets | Champ |
+|---|---|
+| 4-7 | nombre de conteneurs |
+| 8-… | un numéro de conteneur par mot |
+
+Sur l'hôte de référence : 5 conteneurs, numéros 0, `0xfc`, `0xfd`, `0xfe`, `0xff`.
+
+### Liste des disques présents (sous-commande 247, paramètre : 0)
+
+| Octets | Champ |
+|---|---|
+| 0-3 | nombre de disques |
+| 4-… | un numéro de disque par mot |
 
 ### Information de volume (sous-commande 234, paramètre : numéro de conteneur)
 
 | Octets | Champ | Valeur de référence |
 |---|---|---|
 | 16-19 | identifiant unique | égal au « Unique Identifier » affiché par l'outil témoin |
+| 48-51 | type : 1 = assemblage de conteneurs, 3 = miroir de deux disques (seuls types observés) | 1 (volume), 3 (miroirs) |
+| 52-55 | UID du conteneur qui l'assemble, `0xffffffff` sinon | `0xffffffff` (volume), UID du volume (miroirs) |
+| 56-59 | nombre de membres | 4 (volume), 2 (miroirs) |
 | 64-71 | taille en blocs de 512 octets | 62 495 109 120 (= 30 515 190 Mio) |
-| 296-… | nom, chaîne terminée par un octet nul (longueur maximale non établie) | `Array0` |
+| 296-311 | nom, chaîne terminée par un octet nul, lue sur 16 octets au plus (longueur maximale non établie) | `Array0` |
 
 ### Liste des membres (sous-commande 249, paramètre : UID du conteneur)
 
@@ -149,27 +175,22 @@ Un membre est aussi **défaillant** lorsque le disque qu'il désigne (octets 0-3
 
 ### État d'un conteneur
 
-L'état d'un conteneur ne figure pas tel quel dans les réponses : il se calcule à partir de ses membres et de son niveau RAID. La règle s'applique à chaque conteneur séparément : un RAID 10 construit comme un assemblage de miroirs (cas de l'hôte de référence) est évalué miroir par miroir.
+L'état d'un conteneur ne figure pas tel quel dans les réponses : il se calcule à partir de ses membres et de son type. Seuls les types observés sur l'hôte de référence sont évalués :
 
-1. Si un membre est **indéterminé**, ou si la liste des membres ou des disques n'a pas été lue complètement dans le cycle, l'état du conteneur est **indéterminé**.
-2. On compte les membres défaillants. Un membre en reconstruction ne contribue pas encore à la redondance : il est compté avec eux.
-3. Aucun membre compté : **optimal**.
-4. Sinon, selon la tolérance du niveau RAID :
-   - tolérance d'un membre (miroir, RAID 5 et apparentés) : un membre compté → **dégradé**, ou **dégradé en reconstruction** si un membre se reconstruit ; deux ou plus → **en échec** ;
-   - tolérance de deux membres (RAID 6 et apparentés) : un membre compté → **redondance réduite**, ou **redondance réduite en reconstruction** ; deux → **dégradé**, ou **dégradé en reconstruction** ; davantage → **en échec** ;
-   - sans tolérance (RAID 0, volume simple) : un membre compté → **en échec**.
+- **miroir** (type 3, deux disques) : si un membre a un drapeau inconnu, ou si la liste des membres ne compte pas les deux membres annoncés, l'état est **indéterminé**. Sinon on compte les membres défaillants et en reconstruction : aucun → **optimal** ; un, en reconstruction → **dégradé en reconstruction** ; un, défaillant → **dégradé** ; deux → **en échec** ;
+- **assemblage** (type 1) : **optimal** si tous ses conteneurs membres le sont ; sinon **indéterminé**, la façon dont l'état d'un conteneur membre se reporte sur l'assemblage n'étant pas établie. Les miroirs publient leur propre état : une perte de redondance reste visible à leur niveau ;
+- tout autre type : **indéterminé**.
 
-La façon dont l'état d'un conteneur membre (par exemple un miroir dégradé) se reporte sur le conteneur qui l'assemble reste à établir. D'ici là, l'exporter publie l'état de chaque conteneur membre, et l'état du conteneur qui les assemble est **indéterminé** dès qu'un de ses conteneurs membres n'est pas optimal.
+Toutes les lectures du cycle (liste des conteneurs, informations, liste des disques, listes des membres) doivent aboutir ; sinon aucun état n'est publié pour ce cycle.
 
 ### État d'un disque
 
 | État | Condition |
 |---|---|
-| en ligne | disque présent, membre d'un conteneur |
+| en ligne | disque présent, membre d'un conteneur, sans drapeau |
 | en reconstruction | disque portant un membre dont le bit `0x2` est positionné |
-| en panne | disque désigné par un membre mais absent de la liste des disques |
-| disponible | disque présent, ni membre ; publié seulement quand l'état de secours sait être établi |
-| secours, copie de retour | condition à établir |
+| en panne | disque désigné par un membre mais absent de la liste des disques présents |
+| non publié | disque présent dont le membre porte le bit `0x4` ou un drapeau inconnu ; disque présent qui n'est membre d'aucun conteneur (secours, disponible : condition à établir) |
 
 ### État du module de protection du cache (ZMM) [interopérabilité]
 
