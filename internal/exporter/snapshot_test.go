@@ -2,6 +2,7 @@ package exporter
 
 import (
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -98,7 +99,10 @@ func TestNodeValidity(t *testing.T) {
 }
 
 func TestRenderExposition(t *testing.T) {
-	if out := Render(Snapshot{}); out != "# HELP hwraid_snapshot_ready 1 une fois la première découverte publiée.\n# TYPE hwraid_snapshot_ready gauge\nhwraid_snapshot_ready 0\n" {
+	initial := "# HELP hwraid_exporter_build_info Version de l'exporter et de Go, valeur 1.\n# TYPE hwraid_exporter_build_info gauge\n" +
+		`hwraid_exporter_build_info{version="` + Version + `",goversion="` + runtime.Version() + `"} 1` + "\n" +
+		"# HELP hwraid_snapshot_ready 1 une fois la première découverte publiée.\n# TYPE hwraid_snapshot_ready gauge\nhwraid_snapshot_ready 0\n"
+	if out := Render(Snapshot{}); out != initial {
 		t.Fatalf("vue initiale :\n%s", out)
 	}
 	p := plan(aacHost("host0", "0000:01:00.0", `A"B\C`))
@@ -335,6 +339,18 @@ func TestDiskOSDeviceRender(t *testing.T) {
 	out := Render(Build(p, true, res, nil, 0))
 	want := `hwraid_disk_os_device{controller="serial:S1",disk="d7",device="sg8",scsi_address="0:1:7:0"} 1`
 	if !strings.Contains(out, want+"\n") || strings.Count(out, "hwraid_disk_os_device{") != 1 {
+		t.Fatalf("ligne absente : %s\n%s", want, out)
+	}
+}
+
+// Version publiée dès l'instantané initial, avant toute collecte.
+func TestBuildInfo(t *testing.T) {
+	old := Version
+	Version = "v9.9.9"
+	defer func() { Version = old }()
+	out := Render(Snapshot{})
+	want := `hwraid_exporter_build_info{version="v9.9.9",goversion="` + runtime.Version() + `"} 1`
+	if !strings.Contains(out, want+"\n") {
 		t.Fatalf("ligne absente : %s\n%s", want, out)
 	}
 }

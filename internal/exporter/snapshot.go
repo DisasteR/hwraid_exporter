@@ -5,6 +5,7 @@ package exporter
 
 import (
 	"fmt"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -47,6 +48,10 @@ type Snapshot struct {
 	// Interval est l'intervalle de collecte effectif.
 	Interval time.Duration
 }
+
+// Version est la version de l'exporter, fixée au démarrage
+// (hwraid_exporter_build_info).
+var Version = "dev"
 
 // Build construit l'instantané d'un cycle à partir du plan (cartes et
 // modules) et des résultats de collecte, indexés par adresse PCI. Une carte
@@ -127,6 +132,8 @@ func Render(s Snapshot) string {
 	gauge := func(name, help string) {
 		fmt.Fprintf(&b, "# HELP %s %s\n# TYPE %s gauge\n", name, help, name)
 	}
+	gauge("hwraid_exporter_build_info", "Version de l'exporter et de Go, valeur 1.")
+	fmt.Fprintf(&b, "hwraid_exporter_build_info{%s} 1\n", labels("version", Version, "goversion", runtime.Version()))
 	gauge("hwraid_snapshot_ready", "1 une fois la première découverte publiée.")
 	fmt.Fprintf(&b, "hwraid_snapshot_ready %d\n", b2i(s.Ready))
 	if !s.Ready {

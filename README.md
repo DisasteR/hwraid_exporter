@@ -2,7 +2,7 @@
 
 Prometheus exporter for hardware RAID controllers. It talks directly to the Linux drivers and needs no vendor tool (ARCCONF, StorCLI, ssacli) at runtime.
 
-> **Status: in development, no release yet.** First target: Adaptec 6805 (`aacraid` driver), validated on real hardware: volume and disk states, RAID levels, cache protection (ZMM) state. Not yet available: release, Docker image, task progress (rebuild), write-cache state, controller statistics.
+> **Status: first release (v0.1.0).** First target: Adaptec 6805 (`aacraid` driver), validated on real hardware: volume and disk states, RAID levels, disk inventory, location and Linux device, cache protection (ZMM) state. Not yet available: task progress (rebuild), write-cache state, controller statistics.
 
 ## How it works
 
@@ -48,7 +48,7 @@ No component is needed on the host. Reference Compose profile, validated on the 
 ```yaml
 services:
   hwraid-exporter:
-    image: <registry>/hwraid-exporter:<version>
+    image: ghcr.io/disaster/hwraid_exporter:v0.1.0
     read_only: true
     cap_drop: [ALL]
     cap_add: [MKNOD, CHOWN, SETUID, SETGID, SETPCAP, SYS_RAWIO]
@@ -63,12 +63,13 @@ services:
     restart: unless-stopped
 ```
 
-The nodes are created in the container's own `/dev`, not on the host. Why each capability is needed: [CDC §6.5](cdc/cahier-des-charges-aacraid-exporter.md). No image is published yet.
+The nodes are created in the container's own `/dev`, not on the host. Why each capability is needed: [CDC §6.5](cdc/cahier-des-charges-aacraid-exporter.md). Full deployment guide, including the systemd unit for native installs: [docs/deploiement.md](docs/deploiement.md).
 
 ## Documentation
 
 - [Specification (CDC)](cdc/cahier-des-charges-aacraid-exporter.md): requirements, security model, metrics contract, test plan.
 - [aacraid interface](docs/aacraid-interface.md): commands and response formats used by the exporter, with the provenance of each item.
+- [Deployment and configuration](docs/deploiement.md): Docker, systemd, options, Prometheus.
 - [Metrics](docs/metrics.md): every exposed metric, its labels and the normalized vocabularies shared by all drivers.
 - [Alert rules](docs/alerts.md): example Prometheus rules, tested with `promtool` ([rules](deploy/prometheus/hwraid-exporter.rules.yml)).
 - [Legal basis](docs/base-legale-interoperabilite.md): why information not documented by the vendor can be used and published (interoperability exception).

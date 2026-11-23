@@ -1,0 +1,49 @@
+name: release
+
+# Publication de l'image sur un tag de version (vX.Y.Z) seulement : le tag
+# est immuable, aucune étiquette flottante (latest) n'est publiée.
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    env:
+      IMAGE: ghcr.io/disaster/hwraid_exporter
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Tag de version valide
+        run: echo "$GITHUB_REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'
+
+      - name: Contenu publiable
+        run: sh scripts/check-public.sh
+
+      - name: Construction
+        run: docker build --build-arg VERSION="$GITHUB_REF_NAME" -t "$IMAGE:$GITHUB_REF_NAME" .
+
+      - name: Essai au profil du NAS (sans carte)
+        run: |
+          docker run -d --name hw --read-only \
+            --cap-drop ALL --cap-add MKNOD --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add SYS_RAWIO \
+            --device-cgroup-rule 'c *:* r' --security-opt no-new-privileges \
+            -p 127.0.0.1:9800:9799 "$IMAGE:$GITHUB_REF_NAME"
+          for i in $(seq 1 20); do curl -fsS http://127.0.0.1:9800/metrics > m.txt 2>/dev/null && grep -q '^hwraid_snapshot_ready 1$' m.txt && break; sleep 0.5; done
+          docker logs hw; cat m.txt
+          grep -qx 'hwraid_snapshot_ready 1' m.txt
+          grep -q "^hwraid_exporter_build_info{version=\"$GITHUB_REF_NAME\"," m.txt
+          pid=$(docker inspect -f '{{.State.Pid}}' hw)
+          grep -qE '^Uid:\s+65534\s+65534\s+65534\s+65534$' /proc/$pid/status
+          grep -qE '^NoNewPrivs:\s+1$' /proc/$pid/status
+          docker rm -f hw
+
+      - name: Publication
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker push "$IMAGE:$GITHUB_REF_NAME"
+          docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$GITHUB_REF_NAME"

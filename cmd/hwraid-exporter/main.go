@@ -29,6 +29,9 @@ import (
 	"github.com/DisasteR/hwraid_exporter/internal/sysfs"
 )
 
+// version est fixée à la compilation (-ldflags "-X main.version=v0.1.0").
+var version = "dev"
+
 // nodesDir est fixe (section 6.2 du cahier des charges).
 const nodesDir = "/dev/hwraid_exporter"
 
@@ -45,13 +48,15 @@ func main() {
 		discover(os.Args[2:])
 	case "serve":
 		os.Exit(serve(os.Args[2:]))
+	case "version":
+		fmt.Println(version)
 	default:
 		usage()
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage : hwraid-exporter discover [--sysfs /sys] | serve [options]")
+	fmt.Fprintln(os.Stderr, "usage : hwraid-exporter discover [--sysfs /sys] | serve [options] | version")
 	os.Exit(2)
 }
 
@@ -89,6 +94,7 @@ func serve(args []string) int {
 	timeout := fs.Duration("collect-timeout", 0, "délai maximal de collecte d'une carte par cycle (défaut : le plus petit de 30s et de -interval)")
 	_ = fs.Parse(args)
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	exporter.Version = version
 	if *interval <= 0 {
 		log.Error("intervalle invalide", "interval", *interval)
 		return 2
@@ -274,7 +280,7 @@ func serve(args []string) int {
 			requestExit(1)
 		}
 	}()
-	log.Info("écoute", "listen", *listen)
+	log.Info("écoute", "listen", *listen, "version", version)
 
 	go func() {
 		collect()
