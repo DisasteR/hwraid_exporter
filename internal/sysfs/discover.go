@@ -39,6 +39,10 @@ type SCSIHost struct {
 	SerialNumber string
 	Model        string
 	Firmware     string // hba_kernel_version pour aacraid
+
+	// Devices : périphériques SCSI de l'hôte, vide si leur lecture a échoué
+	// (l'erreur est alors signalée par Discover, l'hôte reste retenu).
+	Devices []SCSIDevice
 }
 
 // HostError signale un hôte qui n'a pas pu être rattaché ou lu.
@@ -78,7 +82,7 @@ func Discover(root string) ([]SCSIHost, []HostError, error) {
 		if !strings.HasPrefix(name, "host") {
 			continue
 		}
-		h, err := readHost(root, classDir, name)
+		h, devErr, err := readHost(root, classDir, name)
 		if errors.Is(err, ErrNoPCIParent) {
 			continue // hôte non PCI : hors périmètre
 		}
@@ -86,23 +90,41 @@ func Discover(root string) ([]SCSIHost, []HostError, error) {
 			herrs = append(herrs, HostError{Host: name, Err: err})
 			continue
 		}
+		if devErr != nil {
+			// Liste des périphériques illisible : l'hôte reste retenu (la
+			// carte ne sort pas de l'inventaire), l'erreur est signalée.
+			herrs = append(herrs, HostError{Host: name, Err: devErr})
+		}
 		hosts = append(hosts, h)
 	}
 	sort.Slice(hosts, func(i, j int) bool { return hosts[i].Number < hosts[j].Number })
 	return hosts, herrs, nil
 }
 
-func readHost(root, classDir, name string) (SCSIHost, error) {
+// readHost lit un hôte. devErr signale une liste de périphériques
+// illisible, sans invalider l'hôte.
+func readHost(root, classDir, name string) (h SCSIHost, devErr, err error) {
+	h, real, err := readHostAttrs(root, classDir, name)
+	if err != nil {
+		return h, nil, err
+	}
+	// real = …/hostN/scsi_host/hostN : le répertoire de l'hôte est deux
+	// niveaux plus haut.
+	h.Devices, devErr = readDevices(filepath.Dir(filepath.Dir(real)), h.Number)
+	return h, devErr, nil
+}
+
+func readHostAttrs(root, classDir, name string) (SCSIHost, string, error) {
 	h := SCSIHost{Name: name}
 	n, err := strconv.Atoi(strings.TrimPrefix(name, "host"))
 	if err != nil {
-		return h, fmt.Errorf("nom d'hôte invalide : %w", err)
+		return h, "", fmt.Errorf("nom d'hôte invalide : %w", err)
 	}
 	h.Number = n
 
 	real, err := filepath.EvalSymlinks(filepath.Join(classDir, name))
 	if err != nil {
-		return h, fmt.Errorf("résolution du lien : %w", err)
+		return h, "", fmt.Errorf("résolution du lien : %w", err)
 	}
 	h.ProcName = readAttr(real, "proc_name")
 	h.UniqueID = readAttr(real, "unique_id")
@@ -112,7 +134,7 @@ func readHost(root, classDir, name string) (SCSIHost, error) {
 
 	pciDir, err := pciParent(root, real)
 	if err != nil {
-		return h, err
+		return h, "", err
 	}
 	h.PCI = PCIFunction{
 		Address:         filepath.Base(pciDir),
@@ -125,7 +147,7 @@ func readHost(root, classDir, name string) (SCSIHost, error) {
 	if drv, err := filepath.EvalSymlinks(filepath.Join(pciDir, "driver")); err == nil {
 		h.PCI.Driver = filepath.Base(drv)
 	}
-	return h, nil
+	return h, real, nil
 }
 
 // IsRAIDClass indique une classe PCI « contrôleur de stockage RAID » (0x0104xx).

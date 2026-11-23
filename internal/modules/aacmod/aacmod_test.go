@@ -624,3 +624,50 @@ func TestCollectDiskLocationFailures(t *testing.T) {
 		}
 	}
 }
+
+// Lien disque → périphérique Linux : disque N de la carte = adresse
+// H:1:N:0, publié seulement si le numéro de série du noyau est celui de
+// l'information de disque. Le volume (canal 0, même cible) n'est jamais
+// pris pour un disque.
+func TestCollectDiskOSDevices(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}
+	devices := func() []sysfs.SCSIDevice {
+		out := []sysfs.SCSIDevice{{Address: "0:0:0:0", Channel: 0, Target: 0, Generic: "sg0", Serial: "TESTSN00"}}
+		for n := 0; n < 8; n++ {
+			out = append(out, sysfs.SCSIDevice{Address: fmt.Sprintf("0:1:%d:0", n), Channel: 1, Target: n,
+				Generic: fmt.Sprintf("sg%d", n+1), Serial: fmt.Sprintf("TESTSN0%d", n)})
+		}
+		return out
+	}
+	run := func(devs []sysfs.SCSIDevice) map[string]module.DiskOSDevice {
+		c := card("0000:01:00.0", "0")
+		c.Hosts[0].Devices = devs
+		r := withDev(&fakeDev{info: hba, sup: arcIo}, nil).Collect(c, ref)
+		got := map[string]module.DiskOSDevice{}
+		for _, o := range r.DiskOSDevices {
+			got[o.ID] = o
+		}
+		return got
+	}
+	got := run(devices())
+	if len(got) != 8 || got["d7"] != (module.DiskOSDevice{ID: "d7", Device: "sg8", Address: "0:1:7:0"}) ||
+		got["d0"] != (module.DiskOSDevice{ID: "d0", Device: "sg1", Address: "0:1:0:0"}) {
+		t.Fatalf("%+v", got)
+	}
+	devs := devices()
+	devs[8].Serial = "AUTRE" // 0:1:7:0 : autre disque que d7
+	devs[1].Generic = ""     // 0:1:0:0 : pas de nœud générique
+	devs[4].LUN = 1          // 0:1:3:1 : LUN non nul
+	if got := run(devs); len(got) != 5 || got["d7"].ID != "" || got["d0"].ID != "" || got["d3"].ID != "" {
+		t.Fatalf("contrôles : %+v", got)
+	}
+	// Disque absent du canal 1 : le volume au canal 0, même cible et même
+	// numéro de série, n'est pas retenu.
+	if got := run(devices()[:1]); len(got) != 0 {
+		t.Fatalf("volume pris pour un disque : %+v", got)
+	}
+	if got := run(nil); len(got) != 0 {
+		t.Fatalf("sans liste : %+v", got)
+	}
+}

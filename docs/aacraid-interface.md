@@ -19,6 +19,7 @@ Tous les entiers sont en little-endian. Les positions sont en octets, à partir 
 | Plage copiée par le pilote | `max(Size + 32, SenderSize)` octets, au plus 2 048, à l'aller et au retour | `commctrl.c` (`ioctl_send_fib`) |
 | Informations de la carte sans commande firmware | `FSACTL_GET_HBA_INFO` = `0x42198`, réponse de 200 octets construite par le pilote | `commctrl.c` (`aac_get_hba_info`), `aacraid.h` (`struct aac_hba_info`) |
 | Droits | `CAP_SYS_RAWIO` à chaque ioctl | `linit.c` (`aac_cfg_ioctl`) |
+| Disques présentés à Linux | disque de la carte (canal c, cible t) présenté à l'adresse SCSI Linux (H, c + 1, t, 0), le canal 0 portant les volumes ; vérifié sur l'hôte de référence (8 disques, numéros de série de la page VPD 0x80 identiques à ceux de la lecture 248) | `aacraid.h` (`aac_phys_to_logical`) |
 | Sérialisation | un mutex par carte pour chaque ioctl (relâché pendant `FSACTL_RESET_IOP`, que l'exporter n'emploie pas) | `commctrl.c` (`aac_do_ioctl`) |
 
 ## 2. Bloc de commande firmware (FIB) [public]

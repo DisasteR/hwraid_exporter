@@ -58,6 +58,8 @@ type Result struct {
 	DiskInventory []DiskInfo
 	// DiskLocations : emplacement des disques reliés directement à la carte.
 	DiskLocations []DiskLocation
+	// DiskOSDevices : nœud Linux de chaque disque présenté par le pilote.
+	DiskOSDevices []DiskOSDevice
 	// Collected donne, pour chaque collecteur tenté pendant le cycle, le
 	// résultat de sa lecture (hwraid_collection_success). Un collecteur
 	// absent n'a pas été tenté.
@@ -100,6 +102,14 @@ type DiskLocation struct {
 	ConnectorName string // nom donné par la carte (« CN1 »)
 	Device        string // position dans le connecteur
 	Phy           string // phy de la carte
+}
+
+// DiskOSDevice relie un disque de la carte au périphérique SCSI que le
+// pilote présente à Linux.
+type DiskOSDevice struct {
+	ID      string // « d<N> »
+	Device  string // nœud SCSI générique (sg8)
+	Address string // adresse SCSI Linux H:C:T:L
 }
 
 // CacheProtection décrit le module de protection du cache (ZMM, batterie).

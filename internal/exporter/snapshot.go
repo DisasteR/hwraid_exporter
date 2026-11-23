@@ -36,6 +36,7 @@ type Controller struct {
 	Disks                  []module.Disk
 	DiskInventory          []module.DiskInfo
 	DiskLocations          []module.DiskLocation
+	DiskOSDevices          []module.DiskOSDevice
 }
 
 // Snapshot est une vue complète et immuable.
@@ -100,7 +101,7 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 				c.Collected = r.Collected
 				c.CacheProtection = r.CacheProtection
 				c.LastSuccess = tracker.Last(addr)
-				c.Volumes, c.Disks, c.DiskInventory, c.DiskLocations = r.Volumes, r.Disks, r.DiskInventory, r.DiskLocations
+				c.Volumes, c.Disks, c.DiskInventory, c.DiskLocations, c.DiskOSDevices = r.Volumes, r.Disks, r.DiskInventory, r.DiskLocations, r.DiskOSDevices
 				if r.CollectErr != nil {
 					c.CollectError = r.CollectErr.Error()
 				}
@@ -200,6 +201,12 @@ func Render(s Snapshot) string {
 		for _, d := range c.DiskLocations {
 			fmt.Fprintf(&b, "hwraid_disk_location{%s} 1\n", labels("controller", c.Label, "disk", d.ID, "connector", d.Connector,
 				"connector_name", d.ConnectorName, "device", d.Device, "phy", d.Phy))
+		}
+	}
+	gauge("hwraid_disk_os_device", "Périphérique SCSI Linux présentant le disque, valeur 1.")
+	for _, c := range s.Controllers {
+		for _, d := range c.DiskOSDevices {
+			fmt.Fprintf(&b, "hwraid_disk_os_device{%s} 1\n", labels("controller", c.Label, "disk", d.ID, "device", d.Device, "scsi_address", d.Address))
 		}
 	}
 	gauge("hwraid_disk_capacity_bytes", "Capacité brute du disque en octets.")
