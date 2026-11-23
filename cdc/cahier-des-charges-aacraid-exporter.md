@@ -73,13 +73,16 @@ L’attribut `reset_host` est inscriptible et réinitialise la carte : sysfs res
 
 ### 3.3 Lectures à travers le firmware
 
-| Fonction | Base publique | Ce qui reste à établir |
+| Fonction | Base publique | État de l’établissement sur la 6805 (firmware 5.3-0[19204]) |
 |---|---|---|
-| Liste et noms des volumes | `VM_NameServe`, `CT_READ_NAME` (130), `CT_CID_TO_32BITS_UID` (165) dans les sources Linux. | Format complet de la réponse retenue. |
-| État de redondance d’un volume | Aucune commande documentée publiquement ne porte cet état. Le drapeau « lecture seule » d’un conteneur n’est qu’un indice. | À établir sur la 6805 contre le témoin (jalon 1). |
-| Progression des tâches | FreeBSD documente le contenu des rapports de progression : `aac_AifJobProgressReport` (`status`, `finalTick`, `currentTick`) et l’énumération des types de tâche. Ce contenu est transmis par notification d’événement. | Une lecture synchrone donnant ces rapports sans abonnement aux événements (section 6.3). |
-| Inventaire physique et appartenance | Aucune documentation publique complète. | À établir sur la 6805 contre le témoin. |
-| Protection du cache (ZMM) | FreeBSD documente des états de batterie (`NVBATTSTATUS_*`, `PLATFORM_BAT_*`) pour les générations précédentes. Leur validité pour un module flash AFM‑600 n’est pas établie. | Lecture et correspondance des états, à établir sur la 6805 contre le témoin. |
+| Liste, noms, taille, type et identifiant des volumes | `VM_NameServe`, `VM_NameServe64`, `CT_CID_TO_32BITS_UID` (165), utilisés par le pilote Linux, dont le résultat est publié dans sysfs (`level`). | Voie publique retenue. Les informations détaillées de volume (transfert paginé, sous-commande 234) sont établies par observation : identifiant, taille et nom concordent avec le témoin. |
+| Composition des volumes (membres) | Aucune documentation publique. | Établie par observation : liste des membres (sous-commande 249), avec pour chaque membre le disque ou le conteneur, le rang, le début et la taille. Décomposition de l’hôte de référence (volume de quatre miroirs, huit disques) identique à celle du témoin. |
+| État de redondance d’un volume | Aucune commande documentée publiquement ne porte cet état. Le drapeau « lecture seule » d’un conteneur n’est qu’un indice. | Établi : l’état d’un conteneur se déduit de l’état de ses membres, de la présence de leurs disques et du niveau RAID, puis remonte aux conteneurs qui l’assemblent. Décodage qualifié sur l’état optimal de l’hôte de référence ; les états dégradé, en reconstruction et en échec seront couverts par des tests sur données construites, puis à observer sur matériel. |
+| Inventaire des disques | Aucune documentation publique complète. | Établi par observation (sous-commande 248) : numéro, capacités, fabricant, modèle, firmware, numéro de série, WWN. |
+| Progression des tâches | Interrogation synchrone publique : `AifRequest` / `AifReqJobsForCtr` (101, par conteneur) et `AifReqJobsForScsi` (102, par disque). FreeBSD documente le contenu des rapports de progression : `aac_AifJobProgressReport` (`status`, `finalTick`, `currentTick`) et l’énumération des types de tâche. | Format de la réponse à établir. |
+| Protection du cache (ZMM) | FreeBSD documente des états de batterie (`NVBATTSTATUS_*`, `PLATFORM_BAT_*`) pour les générations précédentes. Leur validité pour un module flash AFM‑600 n’est pas établie. | À établir. L’hôte de référence présente un module en panne, observable sans rien dégrader. |
+
+Le détail des formats et du protocole paginé figure dans [docs/aacraid-interface.md](../docs/aacraid-interface.md).
 
 [FreeBSD aacreg.h](https://cgit.freebsd.org/src/tree/sys/dev/aac/aacreg.h) · [FreeBSD aacraid_reg.h](https://cgit.freebsd.org/src/tree/sys/dev/aacraid/aacraid_reg.h)
 
