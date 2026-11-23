@@ -141,3 +141,21 @@ func TestCollectorSupported(t *testing.T) {
 		t.Fatalf("série inattendue :\n%s", out)
 	}
 }
+
+// hwraid_collection_success reprend le résultat de chaque collecteur tenté,
+// dans un ordre stable ; rien n'est publié pour une carte sans collecte.
+func TestCollectionSuccess(t *testing.T) {
+	p := plan(aacHost("host0", "0000:01:00.0", "S1"))
+	res := map[string]module.Result{"0000:01:00.0": {NodeValid: true,
+		Collected: map[string]bool{"volumes": true, "capabilities": false}}}
+	out := Render(Build(p, true, res))
+	a := `hwraid_collection_success{controller="serial:S1",collector="capabilities"} 0` + "\n"
+	b := `hwraid_collection_success{controller="serial:S1",collector="volumes"} 1` + "\n"
+	if !strings.Contains(out, a+b) {
+		t.Fatalf("séries absentes ou dans le désordre :\n%s", out)
+	}
+	res = map[string]module.Result{"0000:01:00.0": {Err: errors.New("EPERM")}}
+	if out := Render(Build(p, true, res)); strings.Contains(out, "hwraid_collection_success{") {
+		t.Fatalf("série publiée sans collecte :\n%s", out)
+	}
+}

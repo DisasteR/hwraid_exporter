@@ -160,3 +160,28 @@ func TestCollectSupplementGate(t *testing.T) {
 		t.Fatal("706 envoyée sur un nœud qui ne désigne pas la carte")
 	}
 }
+
+// hwraid_collection_success : la lecture des capacités est rapportée à
+// chaque cycle (1 si la valeur est connue, 0 si la lecture vient d'échouer),
+// et n'est pas rapportée si elle n'a pas été tentée (nœud d'une autre carte).
+func TestCollectReportsCapabilitiesCollection(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	c := card("0000:01:00.0", "0")
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1}
+
+	f := &fakeDev{info: hba, supErr: errors.New("EIO")}
+	m := withDev(f, nil)
+	if r := m.Collect(c, ref); len(r.Collected) != 1 || r.Collected[CapabilitiesCollector] {
+		t.Fatalf("échec : %+v", r.Collected)
+	}
+	f.supErr, f.sup = nil, arcIo
+	for i := 0; i < 2; i++ { // lecture réelle, puis valeur gardée
+		if r := m.Collect(c, ref); !r.Collected[CapabilitiesCollector] {
+			t.Fatalf("cycle %d : %+v", i, r.Collected)
+		}
+	}
+	other := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 1, Bus: 2}, sup: arcIo}
+	if r := withDev(other, nil).Collect(c, ref); r.Collected != nil {
+		t.Fatalf("lecture non tentée rapportée : %+v", r.Collected)
+	}
+}

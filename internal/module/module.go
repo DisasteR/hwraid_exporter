@@ -46,6 +46,10 @@ type Result struct {
 	Unsupported []string
 	// CollectErr : échec d'une lecture firmware, sans effet sur NodeValid.
 	CollectErr error
+	// Collected donne, pour chaque collecteur tenté pendant le cycle, le
+	// résultat de sa lecture (hwraid_collection_success). Un collecteur
+	// absent n'a pas été tenté.
+	Collected map[string]bool
 }
 
 // Module est le contrat d'un module de pilote.
