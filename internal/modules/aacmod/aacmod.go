@@ -27,6 +27,10 @@ type device interface {
 // volume, de membres et de disque (docs/aacraid-interface.md, section 7).
 var StateCollectors = []string{"volumes", "disks"}
 
+// CapabilitiesCollector est le collecteur de la lecture des capacités de la
+// carte (RequestSupplementAdapterInfo), préalable aux collecteurs d'état.
+const CapabilitiesCollector = "capabilities"
+
 // Module implémente module.Module pour aacraid.
 type Module struct {
 	open func(path string, dev uint64) (device, error)
@@ -112,6 +116,7 @@ func (m *Module) Collect(c module.Card, refs []module.NodeRef) module.Result {
 	}
 	r := module.Result{NodeValid: true}
 	sup, err := m.supplementInfo(c.PCI.Address+"|"+strconv.FormatUint(refs[0].Dev, 10), d)
+	r.Collected = map[string]bool{CapabilitiesCollector: err == nil}
 	if err != nil {
 		r.CollectErr = fmt.Errorf("RequestSupplementAdapterInfo : %w", err)
 		return r

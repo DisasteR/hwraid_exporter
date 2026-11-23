@@ -5,6 +5,7 @@ package exporter
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/DisasteR/hwraid_exporter/internal/module"
@@ -26,6 +27,7 @@ type Controller struct {
 	NodeError              string
 	Unsupported            []string // collecteurs non pris en charge par la carte
 	CollectError           string   // échec d'une lecture firmware
+	Collected              map[string]bool
 }
 
 // Snapshot est une vue complète et immuable.
@@ -72,6 +74,7 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result) Sn
 			default:
 				c.NodeValid = r.NodeValid
 				c.Unsupported = r.Unsupported
+				c.Collected = r.Collected
 				if r.CollectErr != nil {
 					c.CollectError = r.CollectErr.Error()
 				}
@@ -125,6 +128,17 @@ func Render(s Snapshot) string {
 	for _, c := range s.Controllers {
 		for _, col := range c.Unsupported {
 			fmt.Fprintf(&b, "hwraid_collector_supported{%s} 0\n", labels("controller", c.Label, "collector", col))
+		}
+	}
+	gauge("hwraid_collection_success", "Résultat de la dernière lecture du collecteur.")
+	for _, c := range s.Controllers {
+		names := make([]string, 0, len(c.Collected))
+		for n := range c.Collected {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			fmt.Fprintf(&b, "hwraid_collection_success{%s} %d\n", labels("controller", c.Label, "collector", n), b2i(c.Collected[n]))
 		}
 	}
 	return b.String()
