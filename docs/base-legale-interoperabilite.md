@@ -55,7 +55,7 @@ La licence d'ARCCONF déclare que l'outil contient des secrets d'affaires et int
 La licence d'ARCCONF (§12) désigne le droit californien, sauf pour le droit d'auteur, soumis au droit fédéral américain. Deux règlements européens limitent la portée de ce choix pour un utilisateur établi dans l'Union :
 
 - **Règlement (CE) 864/2007 (Rome II), art. 8** (lu sur <https://eur-lex.europa.eu/legal-content/FR/TXT/?uri=CELEX:32007R0864>) : la loi applicable à une atteinte à un droit de propriété intellectuelle est « celle du pays pour lequel la protection est revendiquée ». « Il ne peut être dérogé à la loi applicable en vertu du présent article par un accord ». La loi applicable dépend donc du pays pour lequel une protection serait revendiquée : pour une revendication portant sur la France, c'est le droit français, exceptions comprises. Une diffusion en ligne peut faire revendiquer une protection pour plusieurs pays.
-- **Règlement (CE) 593/2008 (Rome I)** (lu sur <https://eur-lex.europa.eu/legal-content/FR/TXT/?uri=CELEX:32008R0593>) : pour un contrat conclu par un consommateur, le choix de loi « ne peut cependant avoir pour résultat de priver le consommateur de la protection » des dispositions impératives de sa résidence habituelle (art. 6 §2), lorsque le professionnel dirige son activité vers ce pays (art. 6 §1). Les lois de police du juge saisi restent applicables (art. 9 §2). Qu'une installation sur un équipement personnel relève d'un contrat de consommation, et que l'article L122-6-1 du CPI soit une loi de police, n'est pas établi [Supposition].
+- **Règlement (CE) 593/2008 (Rome I)** (lu sur <https://eur-lex.europa.eu/legal-content/FR/TXT/?uri=CELEX:32008R0593>) : pour un contrat conclu par un consommateur, le choix de loi « ne peut cependant avoir pour résultat de priver le consommateur de la protection » des dispositions impératives de sa résidence habituelle (art. 6 §2), lorsque le professionnel dirige son activité vers ce pays (art. 6 §1). Les lois de police du juge saisi restent applicables (art. 9 §2). Ces deux règles ne sont qu'un appui secondaire : la qualification de contrat de consommation et celle de loi de police pour l'article L122-6-1 du CPI n'ont pas été tranchées par la jurisprudence pour ce cas.
 
 ## 3. France
 
@@ -72,7 +72,7 @@ Version en vigueur depuis le 26 novembre 2021 : <https://www.legifrance.gouv.fr/
 - **L151-3** (<https://www.legifrance.gouv.fr/codes/article_lc/LEGIARTI000037266559>) : l'observation, l'étude, le démontage ou le test d'un produit détenu de façon licite est un mode d'obtention licite d'un secret des affaires, « sauf stipulation contractuelle interdisant ou limitant l'obtention du secret ».
 - **L151-7** (<https://www.legifrance.gouv.fr/codes/article_lc/LEGIARTI000037266571>) : « Le secret des affaires n'est pas opposable lorsque l'obtention, l'utilisation ou la divulgation du secret est requise ou autorisée par le droit de l'Union européenne […] ou le droit national ».
 
-Pris seul, L151-3 donne effet à la clause de la licence. Mais l'obtention et la communication limitées à l'interopérabilité sont autorisées par l'article L122-6-1 du CPI, qui annule la clause contraire : L151-7 rendrait alors le secret inopposable à ces actes [Probable]. Cet argument est conditionnel : il suppose que l'information soit un secret des affaires au sens de L151-1, et il s'apprécie séparément pour l'obtention, l'utilisation et la divulgation (L151-4 à L151-6). Hors de ce périmètre (méthode, éléments internes de l'outil), la clause garde son effet : c'est une raison de plus pour ne pas les publier.
+Pris seul, L151-3 donne effet à la clause de la licence. Mais l'obtention et la communication limitées à l'interopérabilité sont autorisées par l'article L122-6-1 du CPI, qui annule la clause contraire : L151-7 rend alors le secret inopposable à ces actes. Cet argument est conditionnel : il suppose que l'information soit un secret des affaires au sens de L151-1, et il s'apprécie séparément pour l'obtention, l'utilisation et la divulgation (L151-4 à L151-6). Hors de ce périmètre (méthode, éléments internes de l'outil), la clause garde son effet : c'est une raison de plus pour ne pas les publier.
 
 ## 4. États-Unis
 
@@ -148,18 +148,18 @@ Une lecture stricte de l'article 6 §2 b) pourrait n'admettre que des communicat
 
 | Condition | Situation du projet | Appréciation |
 |---|---|---|
-| §1 a) Actes faits par une personne ayant le droit d'utiliser une copie | L'analyse a été faite par l'utilisateur de la copie d'ARCCONF fournie par le constructeur pour cette carte et installée sur son propre serveur | Remplie [Probable : suppose une licence acceptée régulièrement par cet utilisateur] |
-| §1 b) Informations pas déjà facilement accessibles | Format des échanges avec le firmware : aucune source publique. Sources publiques et observation utilisées d'abord ; décompilation seulement pour ce qu'elles ne montrent pas (tableau ci-dessous) | Remplie pour le format des échanges [Probable] |
-| §1 c) Actes limités aux parties nécessaires | Analyse ciblée sur les lectures utilisées par l'exporter | Remplie [Probable] |
+| §1 a) Actes faits par une personne ayant le droit d'utiliser une copie | ARCCONF est fourni gratuitement par le constructeur avec ses cartes, sous la licence jointe à l'outil. L'analyse a été faite par l'acheteur de la carte, utilisateur de l'outil installé sur son propre serveur, sur une copie identique octet pour octet à cette installation (empreinte SHA-256 vérifiée) | Remplie |
+| §1 b) Informations pas déjà facilement accessibles | Format des échanges avec le firmware : aucune source publique. Sources publiques et observation utilisées d'abord ; décompilation seulement pour ce qu'elles ne montrent pas (tableau ci-dessus) | Remplie pour le format des échanges |
+| §1 c) Actes limités aux parties nécessaires | L'analyse a porté uniquement sur : l'envoi des commandes au pilote et la création du nœud de gestion (pour cohabiter avec l'outil), la lecture des volumes, des membres et des disques, le calcul de leurs états, le choix de l'interface selon la carte, et l'affichage de l'état du module de protection du cache. Rien sur la configuration, la gestion des volumes, la mise à jour du firmware ni les autres fonctions de l'outil | Remplie |
 | §2 a) Pas d'autre fin que l'interopérabilité | Les informations servent seulement à lire l'état | Remplie |
 | §2 b) Communication à des tiers seulement si nécessaire | Voir « Ce qui est communiqué, et pourquoi » | Argumentée artefact par artefact ; c'est la condition la plus discutable |
 | §2 c) Pas de programme fondamentalement similaire | L'exporter ne gère pas la carte et ne reprend ni interface ni code de l'outil | Remplie |
-| §3 Pas de préjudice injustifié | L'outil constructeur reste nécessaire pour gérer la carte | Remplie [Probable] |
+| §3 Pas de préjudice injustifié | L'exporter ne fait que lire l'état ; l'outil constructeur, gratuit et lié à la carte, reste nécessaire pour la gérer. L'exporter ne redistribue pas l'outil et n'en reprend pas le code | Remplie |
 
 ### Clauses de la licence d'ARCCONF
 
 - **§2 (interdiction de la rétro-ingénierie)** : nulle pour les actes couverts par l'art. 5 §3 et l'art. 6 (directive, art. 8 ; CPI, dernier alinéa de L122-6-1 ; CDPA s.296A ; UrhG § 69g ; Copyright Act australien s.47H).
-- **§4 (confidentialité)** : ne peut pas empêcher une communication que l'art. 6 §2 b) permet, puisque l'art. 8 annule toute clause contraire à l'article 6 [Probable]. Elle reste applicable au reste : la méthode et les éléments internes ne sont pas publiés.
+- **§4 (confidentialité)** : ne peut pas empêcher une communication que l'art. 6 §2 b) permet, puisque l'art. 8 annule toute clause contraire à l'article 6. Elle reste applicable au reste : la méthode et les éléments internes ne sont pas publiés.
 - **§12 (droit californien)** : voir la section 2 (loi applicable) et la section 7.
 
 ## 7. Risques identifiés
