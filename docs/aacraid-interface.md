@@ -162,6 +162,8 @@ Une carte sous `aacraid` annonce ces lectures si `Version` est supérieur à 1 e
 
 Sur l'hôte de référence : `Version` = 15, `SupportedOptions2` = `0x00c8693c` (bit `0x08` positionné).
 
+Ce critère, les tailles de structures de la section 5 et les règles de la section 6 sont les mêmes dans les versions 2.05 (2017) et 3.07 (2023) de l'outil constructeur ; la 3.07 est la dernière version de l'outil qui gère les cartes `aacraid`.
+
 Ce critère dit quelles cartes annoncent cette interface. Il ne prouve pas qu'un firmware non testé y répond à l'identique : la qualification de la section 8 reste la preuve pour chaque nouveau couple modèle et firmware, et l'exporter publie la version de firmware avec ses métriques.
 
 ## 8. Qualification
