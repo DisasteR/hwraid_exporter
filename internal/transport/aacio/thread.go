@@ -11,11 +11,13 @@ import (
 )
 
 // Un signal reçu pendant qu'une commande de gestion attend la carte
-// interrompt l'attente dans le pilote aacraid. Celui-ci ne rend alors jamais
-// le bloc de commande (FIB) à sa petite réserve partagée : chaque
-// interruption en perd un jusqu'au redémarrage de la machine, et la réserve
-// vide bloque toute gestion de la carte (ENOMEM). Le noyau relance de plus
-// l'ioctl, qui envoie la commande une seconde fois.
+// interrompt l'attente dans le pilote aacraid. Si la réponse n'est pas
+// encore arrivée (retour -ERESTARTSYS), le pilote ne rend jamais le bloc de
+// commande (FIB) à sa petite réserve partagée (chemin aac_intr_normal, série
+// 6) : chaque interruption en perd un jusqu'au redémarrage de la machine, et
+// la réserve vide bloque toute gestion de la carte (ENOMEM). Si le
+// gestionnaire du signal est installé avec SA_RESTART (cas de Go), le noyau
+// relance de plus l'ioctl, qui envoie la commande une seconde fois.
 //
 // Le runtime Go envoie lui-même des signaux à ses threads (SIGURG, pour la
 // préemption asynchrone) et le noyau peut livrer à n'importe quel thread un

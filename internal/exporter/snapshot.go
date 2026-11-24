@@ -152,10 +152,14 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 				for _, col := range c.Unsupported {
 					skip[col] = true
 				}
+				// Comme hors délai, un collecteur servi par une réponse gardée
+				// en mémoire qui a réussi sur la même carte (capabilities)
+				// reste à 1 : il n'a pas de date de dernier succès, et un 0
+				// le ferait passer pour jamais réussi.
 				c.Collected = map[string]bool{}
 				for _, col := range pc.Module.Collectors() {
 					if !skip[col] {
-						c.Collected[col] = false
+						c.Collected[col] = capHist.Held(addr)[col]
 					}
 				}
 				out := map[string]time.Time{}

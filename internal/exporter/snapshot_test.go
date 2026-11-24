@@ -21,7 +21,7 @@ type fakeMod struct{}
 func (fakeMod) Name() string             { return "aacraid" }
 func (fakeMod) Match(c module.Card) bool { return c.PCI.Driver == "aacraid" }
 func (fakeMod) Capabilities() uint64     { return 1 << 17 }
-func (fakeMod) Collectors() []string     { return []string{"volumes"} }
+func (fakeMod) Collectors() []string     { return []string{"capabilities", "volumes"} }
 
 // Nodes déclare, comme le module aacraid, un nœud par carte (nom tiré de
 // l'adresse PCI pour rester unique).
@@ -176,8 +176,9 @@ func TestCollectionSuccess(t *testing.T) {
 	// chaque collecteur du module est publié en échec, aucun en succès.
 	res = map[string]module.Result{"0000:01:00.0": {Err: errors.New("EPERM")}}
 	out = Render(Build(p, true, res, nil, 0))
-	if !strings.Contains(out, `hwraid_collection_success{controller="serial:S1",collector="volumes"} 0`+"\n") ||
-		strings.Contains(out, "} 1\n"+`hwraid_collection_success`) || strings.Count(out, "hwraid_collection_success{") != 1 {
+	if !strings.Contains(out, `hwraid_collection_success{controller="serial:S1",collector="capabilities"} 0`+"\n") ||
+		!strings.Contains(out, `hwraid_collection_success{controller="serial:S1",collector="volumes"} 0`+"\n") ||
+		strings.Count(out, "hwraid_collection_success{") != 2 {
 		t.Fatalf("nœud en erreur : collecteurs non publiés en échec :\n%s", out)
 	}
 }

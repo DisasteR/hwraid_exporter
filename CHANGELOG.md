@@ -2,7 +2,7 @@
 
 ## v0.1.2 — 2026-11-24
 
-Changes since v0.1.1. The `aacraid` driver loses one management command block, until the next reboot, each time a signal interrupts a program waiting for the card (cards answered through `aac_intr_normal`, series 6 included, kernel 4.6 and later); once its pool of 8 is empty, no management tool can reach the card and the shutdown cache flush command cannot be sent. Most of this release protects against it: see `docs/aacraid-defaut-pilote.md`.
+Changes since v0.1.1. The `aacraid` driver loses one management command block, until the next reboot, each time a signal ends the wait of a program for the card before its answer arrives (`-ERESTARTSYS`; cards answered through `aac_intr_normal`, series 6 included, kernel 4.6 and later); once its pool of 8 is empty, no management tool can reach the card and the shutdown cache flush command cannot be sent. Most of this release protects against it: see `docs/aacraid-defaut-pilote.md`.
 
 ### Card commands and stop
 
@@ -25,7 +25,7 @@ Changes since v0.1.1. The `aacraid` driver loses one management command block, u
 ### Per-card tracking
 
 - The history kept per card (last success dates, `0xc5` counter, memory-served success, unsupported collectors) and the 706 and 708 answers kept in memory are tied to the card's hardware identity, one definition shared by the exporter and the module: serial number, PCI IDs, model, firmware (plus the address and device node). Any field read differently shows another card or firmware: the history is forgotten and the answers are read again. An unreadable field alone proves neither continuity nor replacement: nothing is forgotten, but nothing is kept in memory either (706 read every cycle), and memory-served successes and unsupported collectors are reused only after an effective collection under a complete identity.
-- During a collection timeout, a collector served from memory (`capabilities`) stays successful if its last read succeeded on the same card, and collectors known as unsupported stay unsupported. While the node check fails, every supported collector is published as failed (its prerequisite failed), with its last success date, and collectors known as unsupported stay published as such, so that losing all readings is reported even if those cycles alternate with timeouts, before or after a first success.
+- During a collection timeout or a failed node check, a collector served from memory (`capabilities`) stays successful if its last read succeeded on the same card, and collectors known as unsupported stay unsupported. While the node check fails, every other supported collector is published as failed (its prerequisite failed), with its last success date, and collectors known as unsupported stay published as such, so that losing all readings is reported even if those cycles alternate with timeouts, before or after a first success.
 - `hwraid_transfer_close_unconfirmed_total` counts rejected reads, those of a collection finished after its timeout included: counted for the card of the cycle if returned within it, otherwise at the next collection of the same PCI address, and dropped if another card is observed there at that collection. Known limit: if the other card was observed at an earlier cycle, they are counted for it (a card swap requires a power cycle in practice, which restarts the exporter).
 
 ### Alert rules

@@ -61,8 +61,14 @@ func TestPublisherStaleView(t *testing.T) {
 func TestViewMaxAge(t *testing.T) {
 	for _, interval := range []time.Duration{15 * time.Second, time.Minute, 2 * time.Minute, 5 * time.Minute} {
 		for _, timeout := range []time.Duration{time.Second, min(30*time.Second, interval)} {
-			if got, need := ViewMaxAge(interval, timeout), 2*interval+timeout; got < need {
+			got := ViewMaxAge(interval, timeout)
+			if need := 2*interval + timeout; got < need {
 				t.Errorf("intervalle %v, délai %v : vue retirée après %v, avant %v (cycle lent mais vivant)", interval, timeout, got, need)
+			}
+			// Borne annoncée (docs/metrics.md, CHANGELOG) : une boucle figée
+			// ne sert pas sa vue plus longtemps.
+			if promised := 3*interval + timeout; got > promised {
+				t.Errorf("intervalle %v, délai %v : vue servie %v, au-delà des %v annoncés", interval, timeout, got, promised)
 			}
 		}
 	}

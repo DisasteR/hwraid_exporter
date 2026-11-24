@@ -868,3 +868,56 @@ func TestNodeErrorAndTimeoutAlternateBeforeFirstSuccess(t *testing.T) {
 		tr.Remember(s)
 	}
 }
+
+// Nœud en erreur après une 706 réussie et gardée en mémoire (identité
+// complète) : capabilities, sans date de dernier succès, reste à 1, comme
+// hors délai ; sinon la règle « jamais réussi » se déclencherait à tort.
+// Une 706 jamais réussie reste à 0.
+func TestNodeErrorKeepsHeldCapabilities(t *testing.T) {
+	const addr = "0000:01:00.0"
+	t0 := time.Unix(1_000_000, 0)
+	nodeErr := map[string]module.Result{addr: {Err: errors.New("GET_HBA_INFO: EIO")}}
+	for _, tc := range []struct {
+		name string
+		cap  bool
+		want string
+	}{
+		{"706 réussie", true, "1"},
+		{"706 en échec", false, "0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := NewTracker()
+			first := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"capabilities": tc.cap}, Cached: []string{"capabilities"}}}
+			tr.Update(first, []string{addr}, t0)
+			tr.Remember(Build(plan(aacHost("host0", addr, "S1")), true, first, tr, time.Minute))
+			for i := 1; i <= 2; i++ { // l'identité établie est confirmée au cycle suivant
+				tr.Update(nodeErr, []string{addr}, t0.Add(time.Duration(i)*time.Minute))
+				s := Build(plan(aacHost("host0", addr, "S1")), true, nodeErr, tr, time.Minute)
+				want := `hwraid_collection_success{controller="serial:S1",collector="capabilities"} ` + tc.want
+				if out := Render(s); !strings.Contains(out, want+"\n") {
+					t.Fatalf("cycle %d : %s attendu\n%s", i, want, out)
+				}
+				tr.Remember(s)
+			}
+		})
+	}
+}
+
+// Nœud en erreur avec une autre carte à la même adresse (autre numéro de
+// série) : la réponse gardée de l'ancienne carte n'est pas reprise.
+func TestNodeErrorDoesNotInheritHeldCapabilities(t *testing.T) {
+	const addr = "0000:01:00.0"
+	t0 := time.Unix(1_000_000, 0)
+	tr := NewTracker()
+	ok := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"capabilities": true}, Cached: []string{"capabilities"}}}
+	tr.Update(ok, []string{addr}, t0)
+	tr.Remember(Build(plan(aacHost("host0", addr, "S1")), true, ok, tr, time.Minute))
+	tr.Update(ok, []string{addr}, t0.Add(time.Minute))
+	tr.Remember(Build(plan(aacHost("host0", addr, "S1")), true, ok, tr, time.Minute))
+	nodeErr := map[string]module.Result{addr: {Err: errors.New("GET_HBA_INFO: EIO")}}
+	tr.Update(nodeErr, []string{addr}, t0.Add(2*time.Minute))
+	out := Render(Build(plan(aacHost("host0", addr, "S2")), true, nodeErr, tr, time.Minute))
+	if want := `hwraid_collection_success{controller="serial:S2",collector="capabilities"} 0`; !strings.Contains(out, want+"\n") {
+		t.Fatalf("réponse gardée d'une autre carte reprise : %s\n%s", want, out)
+	}
+}
