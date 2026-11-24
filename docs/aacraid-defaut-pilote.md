@@ -30,7 +30,21 @@ Tout signal reçu par un programme pendant qu'une de ses commandes de gestion at
 - Ctrl+C sur ARCCONF, un `timeout` ou un `kill` autour d'ARCCONF ;
 - `SIGKILL` : `docker kill`, `docker rm -f`, ou la fin du délai de grâce de `docker stop` ;
 - l'arrêt d'un conteneur dont le processus principal sort aussitôt sur `SIGTERM` : le noyau tue alors tous les autres processus du conteneur, ARCCONF compris, quel que soit `stop_grace_period` ;
-- pour un programme Go, les signaux que le runtime s'envoie lui-même (`SIGURG`, préemption asynchrone). On a vérifié localement qu'ils interrompent un appel système bloqué dans un autre thread. Jusqu'à la v0.1.1, l'exporter pouvait donc perdre des blocs sans qu'aucun arrêt n'ait lieu.
+- pour un programme Go, les signaux que le runtime s'envoie lui-même (`SIGURG`, préemption asynchrone). On a vérifié localement qu'ils interrompent un appel système bloqué dans un autre thread. Jusqu'à la v0.1.1, l'exporter pouvait donc perdre des blocs sans qu'aucun arrêt n'ait lieu ;
+- un programme tué alors qu'il attend son tour. Le pilote ne traite qu'une commande de gestion à la fois par carte (`ioctl_mutex`, `aac_do_ioctl`, `commctrl.c`). Un programme qui attend ce verrou ne peut pas être interrompu : une fois le verrou obtenu, il envoie sa commande, puis l'abandonne aussitôt, car le signal est déjà là. [Probable, déduit du code]
+
+### Origine, état amont et reproduction
+
+- **Origine.** En 2009, le commit `cacb6dc3d7fe` (« [SCSI] aacraid: fix File System going into read-only mode ») a introduit l'abandon `done = 2` et libérait le bloc dans `aac_intr_normal`. En 2016, le commit `6bf3b630d0a7` (« aacraid: SCSI blk tag support », Linux 4.6) a retiré ces libérations lors du passage des entrées-sorties aux étiquettes du bloc layer ; le cas d'un bloc de gestion abandonné a été perdu au passage. Depuis ce commit, la liste libre ne contient plus que les 8 blocs de gestion. Tous les noyaux à partir de 4.6 sont touchés.
+- **Pilote du constructeur.** Le pilote hors arbre de Microchip 1.2.1-60001 (2021) libère le bloc au même endroit. Sa fonction `aac_fib_free` ne remet dans la liste libre que les blocs de gestion. [Certain : lu ; non testé sur une carte]
+- **État amont.** Au 2026-11-24, aucun correctif n'existe dans le noyau 7.4-rc4 ni dans la file SCSI de 7.5, et aucun signalement de ce défaut n'a été trouvé sur linux-scsi ni sur bugzilla.kernel.org.
+- **Reproduction**, sur l'hôte de référence (Adaptec 6805, Linux 5.10), le 2026-11-24. Des sondes du noyau étaient posées sur `aac_fib_send`, `aac_fib_complete` et `aac_fib_free`, puis ARCCONF a été tué pendant une commande :
+  - avant : 1 000 commandes de gestion, toutes sur le même bloc ;
+  - ARCCONF reçoit `-512` sur ce bloc ;
+  - 1,9 ms plus tard, la réponse de la carte arrive en interruption : le bloc est terminé, mais jamais libéré ;
+  - après : 812 commandes, toutes sur un autre bloc ; le bloc abandonné n'est plus jamais réutilisé.
+
+  Ce test a coûté volontairement un bloc, qui n'est rendu qu'au redémarrage suivant.
 
 ## Conséquence à l'arrêt : cache non vidé
 
