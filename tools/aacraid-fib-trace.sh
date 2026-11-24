@@ -152,10 +152,22 @@ cleanup() {
 			i=$((i + 1))
 		done
 		sleep 1
+		killed=0
 		if ours; then
 			kill -KILL "$READER" 2>/dev/null || true
+			killed=1
 		fi
-		wait "$READER" 2>/dev/null || true
+		# Statut du lecteur, lu même s'il s'est arrêté seul entre-temps
+		# (processus zombie jusqu'à ce wait) : seul l'arrêt envoyé ici
+		# (SIGKILL, 137) est attendu ; une limite ou une erreur le reste.
+		rrc=0
+		wait "$READER" 2>/dev/null || rrc=$?
+		READER=
+		if [ "$rrc" -eq 153 ] || [ "$(wc -c < "$OUT")" -ge "$MAX" ]; then
+			LIMIT=1
+		elif [ "$killed" -eq 0 ] || [ "$rrc" -ne 137 ]; then
+			READER_FAILED=1
+		fi
 	fi
 	# 3. Bilan des pertes, lu avant le retrait.
 	missed=$(awk -v e="$EV" '$1 == e || $1 == "aacfib/" e {print $3}' "$T/kprobe_profile" 2>/dev/null || true)
@@ -214,6 +226,7 @@ cleanup() {
 on_exit() {
 	rc=$?
 	cleanup || rc=1
+	[ "$READER_FAILED" -eq 0 ] || rc=1
 	exit "$rc"
 }
 trap on_exit EXIT
@@ -241,6 +254,9 @@ trap 'PENDING=1' HUP INT TERM
 	# shellcheck disable=SC3045
 	ulimit -c 0 2>/dev/null || true
 	ulimit -f "$((MAX / 512))"
+	# Un signal adressé à tout le groupe (Ctrl+C, SIGTERM au groupe)
+	# n'arrête pas le lecteur avant le vidage : seul le nettoyage l'arrête.
+	trap '' HUP INT TERM
 	exec cat "$I/trace_pipe"
 ) >&3 &
 READER=$!

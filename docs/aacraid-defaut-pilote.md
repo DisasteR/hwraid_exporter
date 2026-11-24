@@ -84,10 +84,11 @@ Depuis la v0.1.2 :
 | Délai de cycle | Le délai d'un cycle n'interrompt jamais une commande en cours : il empêche seulement d'en lancer de nouvelles. |
 | Diagnostic | Un `ENOMEM` sur une commande de gestion est journalisé avec ses deux causes possibles : réserve probablement épuisée, ou tampon d'une grande commande non alloué. |
 
-**Grandes commandes interrompues.** Pour une commande plus grande qu'un bloc (la carte des connecteurs de l'exporter, 2 048 octets, ou celles d'autres outils), le pilote alloue un tampon séparé. D'après le code lu, il libère ce tampon dès l'interruption, alors que la réponse de la carte peut encore arriver dedans [Probable : déduit du code, non reproduit]. Tuer un outil pendant une telle commande peut donc coûter plus qu'un bloc de la réserve. L'exporter n'interrompt jamais ses commandes ; ce risque concerne un `SIGKILL` (fin du délai du superviseur) et les autres outils.
+**Grandes commandes interrompues.** Pour une commande plus grande qu'un bloc (la carte des connecteurs de l'exporter, 2 048 octets, ou celles d'autres outils), le pilote alloue un tampon séparé. D'après le code lu, il libère ce tampon dès l'interruption, alors que la réponse de la carte peut encore arriver dedans [Probable : déduit du code, non reproduit]. Tuer un outil pendant une telle commande peut donc coûter plus qu'un bloc de la réserve. L'exporter n'interrompt pas ses commandes de lui-même ; ce risque concerne un `SIGKILL` (fin du délai du superviseur), le gel du conteneur et les autres outils.
 
 **Ce que l'exporter ne protège pas :**
 - un `SIGKILL` (`docker kill`, `docker rm -f`, fin du délai de grâce), ni un `SIGQUIT`, qui garde son rôle Go de diagnostic (piles et sortie immédiate) ;
+- le gel du conteneur ou du service (`docker pause`, `systemctl freeze`, freezer cgroup v2) : le noyau réveille alors le thread pour le geler, sans signal que le masque puisse bloquer, et l'attente de la carte peut s'achever sur `-ERESTARTSYS` [Probable : déduit du code du noyau, non essayé]. Arrêter l'exporter avant tout gel ;
 - les blocs perdus par les autres outils.
 
 **Décision : le délai d'arrêt du superviseur reste borné (30 s dans les profils livrés).** Une commande qui ne rend jamais la main serait tuée à 30 s, et son bloc perdu. Un arrêt sans limite (`TimeoutStopSec=infinity`) l'éviterait, mais une carte figée bloquerait alors `systemctl stop` et le redémarrage de toute la machine. Perdre un bloc est préféré à une machine qui ne redémarre plus. Allonger ce délai reste possible, pour qui accepte ce risque.

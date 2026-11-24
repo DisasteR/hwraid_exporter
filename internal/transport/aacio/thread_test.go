@@ -176,6 +176,13 @@ func TestCloseStopsQuietThread(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("la goroutine du thread ne se termine pas")
 	}
+	// Thread initial du processus (TID = PID) : le runtime Go le gare au lieu
+	// de le détruire quand la goroutine verrouillée se termine. Seule la fin
+	// de la goroutine est vérifiable.
+	if tid == os.Getpid() {
+		t.Logf("thread %d : thread initial, gardé par le runtime", tid)
+		return
+	}
 	for end := time.Now().Add(2 * time.Second); ; time.Sleep(10 * time.Millisecond) {
 		if _, err := os.Stat(task); os.IsNotExist(err) {
 			return

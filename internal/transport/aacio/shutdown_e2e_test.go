@@ -6,6 +6,7 @@ package aacio_test
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"os"
 	"os/signal"
 	"sync"
@@ -124,17 +125,14 @@ func TestShutdownDuringBlockedCommand(t *testing.T) {
 			stopSig()
 			release()
 			// L'ioctl réel n'est rétabli qu'après la fin effective de la boucle
-			// et de la collecte : un retard est signalé, puis attendu.
-			select {
-			case <-loopDone:
-			case <-time.After(10 * time.Second):
-				t.Errorf("late=%v : boucle de collecte toujours active au nettoyage", late)
-				<-loopDone
+			// et de la collecte. Au-delà de la borne, le processus de test
+			// s'arrête (panic) plutôt que de rétablir l'ioctl réel sous une
+			// collecte encore active, ou d'attendre le délai global de go test.
+			if !waitBounded(loopDone, 10*time.Second) {
+				panic(fmt.Sprintf("late=%v : boucle de collecte toujours active au nettoyage", late))
 			}
 			if !runner.Drain(10 * time.Second) {
-				t.Errorf("late=%v : collecte toujours en cours au nettoyage", late)
-				for !runner.Drain(time.Second) {
-				}
+				panic(fmt.Sprintf("late=%v : collecte toujours en cours au nettoyage", late))
 			}
 		})
 		select {
@@ -218,5 +216,15 @@ func TestBlockedCommandIsFollowedWithoutShutdown(t *testing.T) {
 	aacmod.New(list).Collect(context.Background(), c, refs)
 	if got := rec.sent(); len(got) < 3 {
 		t.Fatalf("ioctl : %#x (des commandes après 706 attendues)", got)
+	}
+}
+
+// waitBounded attend la fermeture de done au plus d.
+func waitBounded(done <-chan struct{}, d time.Duration) bool {
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
 	}
 }

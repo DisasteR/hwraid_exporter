@@ -141,7 +141,7 @@ func (r *Runner) Run(ctx context.Context, jobs map[string]func() module.Result, 
 		}
 		if n, e := r.late[addr], r.lateErr[addr]; n > 0 || e != nil {
 			res := out[addr]
-			res.CloseUnconfirmed += n
+			res.LateCloseUnconfirmed += n
 			res.LateErr = e
 			out[addr] = res
 			delete(r.late, addr)

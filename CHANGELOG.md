@@ -14,7 +14,7 @@
 - `HwraidVolumeDisappeared` and `HwraidControllerDisappeared` raise one alert per object, even after a rename or a firmware update. They keep firing 10 minutes through a failed read.
 - `HwraidCollectionStale` ignores a collector that has become unsupported.
 - aacraid: the cached 706 and 708 answers are tied to the card as sysfs describes it (address, node, PCI IDs, serial number, firmware), and forgotten when it changes: a replaced card, an updated or downgraded firmware is read again.
-- The history kept per card (last success dates, `0xc5` counter, memory-served success, unsupported collectors) is tied to the card identity (label, PCI IDs, model, firmware) and forgotten when another card or firmware is observed at the same address. During a collection timeout, collectors known as unsupported stay unsupported.
+- The history kept per card (last success dates, `0xc5` counter, memory-served success, unsupported collectors) is tied to the card identity (serial number as read, PCI IDs, model, firmware, device nodes) and forgotten when another card or firmware is observed at the same address. An unreadable serial number or device node proves neither continuity nor replacement: nothing is forgotten, but memory-served successes and unsupported collectors are not reused until the identity is established again. During a collection timeout, collectors known as unsupported stay unsupported. Known limit: `0xc5` rejections of a collection returned after its timeout are attached to the PCI address; if another card is observed there before they are returned, they are counted for it (a card swap requires a power cycle in practice, which restarts the exporter).
 - Upgrade notes: the first stop of a v0.1.1 process is not protected (docs/deploiement.md).
 - `HwraidCollectionIntermittent`: at least six success/failure transitions of a collector in an hour (about three failures), which would otherwise keep `for` delays from ever completing.
 - aacraid: every paged response must announce the size the card always uses (496 bytes, from 1 057 captured responses): a truncated open or close response is rejected instead of reusing request bytes as the card's answer. After a chunk error, a read closed with `0xc5` is not retried.
@@ -22,6 +22,10 @@
 - aacraid: a ZMM state word with status bits but without the installed bit no longer publishes `hwraid_cache_protection_present 1`: presence is omitted and the state published as `unknown`. A word with no status bit still means no module installed.
 - The systemd unit is attached to each GitHub release and listed in `SHA256SUMS`.
 - `scripts/check-public.sh` rejects email addresses outside `lore.kernel.org` links.
+- Alert rule `HwraidVolumesNotMonitored` (warning, 1 h): a card recognised by a module whose volumes are not read (model or firmware not qualified); neither `HwraidControllerUnsupported` nor `HwraidCollectionStale` covered it.
+- `HwraidVolumeWriteCacheUnprotected` now asks to check every affected volume in ARCCONF after the change, rather than the exporter metric, which may predate it.
+- `tools/aacraid-fib-trace.sh`: a signal sent to the whole process group (Ctrl+C) no longer stops the trace reader before the buffer is drained, and a reader that stops on its own during cleanup (write error, size limit) is reported instead of being taken for a requested stop.
+- Documentation: freezing the container or service (`docker pause`, `systemctl freeze`) can interrupt a card command despite the signal mask; stop the exporter first.
 
 ## v0.1.1 — 2026-11-23
 

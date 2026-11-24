@@ -34,9 +34,12 @@ type Controller struct {
 	NodeError              string
 	Unsupported            []string // collecteurs non pris en charge par la carte
 	CollectError           string   // échec d'une lecture firmware
-	// Identity : identité de la carte pour le suivi d'un cycle à l'autre
-	// (label, identifiants PCI, modèle, firmware) ; non publiée.
+	// Identity : identité matérielle de la carte pour le suivi d'un cycle à
+	// l'autre (numéro de série lu, identifiants PCI, modèle, firmware, nœuds),
+	// indépendante du label publié ; non publiée. IdentityKnown : numéro de
+	// série et nœuds lus, identité établie.
 	Identity         string
+	IdentityKnown    bool
 	LateError        string // erreurs d'une collecte tardive non publiée
 	Collected        map[string]bool
 	LastSuccess      map[string]time.Time // collecteur → date du dernier succès
@@ -96,21 +99,31 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 		default:
 			c.Label, c.IdentitySource = "pci:"+addr, "pci"
 		}
-		// Nœuds déclarés (nom et minor) compris, comme dans la clé des
-		// réponses gardées par le module : le major est fixe tant que les
-		// nœuds préparés sont valides (sinon l'exporter redémarre).
-		id := []string{c.Label, pc.Card.PCI.Vendor, pc.Card.PCI.Device, pc.Card.PCI.SubsystemVendor,
+		// Identité matérielle, la même que la clé des réponses gardées par le
+		// module : numéro de série lu (pas le label, qui peut être conservé),
+		// identifiants PCI, modèle, firmware et nœuds déclarés (nom et minor ;
+		// le major est fixe tant que les nœuds préparés sont valides).
+		id := []string{s, pc.Card.PCI.Vendor, pc.Card.PCI.Device, pc.Card.PCI.SubsystemVendor,
 			pc.Card.PCI.SubsystemDevice, c.Model, c.Firmware}
 		for _, rq := range pc.Requests {
 			id = append(id, rq.Name+":"+strconv.FormatUint(uint64(rq.Minor), 10))
 		}
 		c.Identity = strings.Join(id, "|")
-		// Historique d'une autre carte (ou d'un autre firmware) à la même
-		// adresse : rien n'en est repris ; seuls les apports de ce cycle sont
-		// publiés.
-		hist := tracker
-		if !tracker.Same(addr, c.Identity) {
+		c.IdentityKnown = s != "" && len(pc.Requests) > 0
+		// hist : dates et compteur. Repris tant que rien ne prouve un
+		// changement de carte ; identité établie et différente : seuls les
+		// apports de ce cycle.
+		// capHist : réponses gardées et collecteurs non pris en charge. Repris
+		// seulement pour une identité établie et inchangée : sinon le module
+		// relit ses capacités, et seul ce cycle compte.
+		same := tracker.Same(addr, c.Identity)
+		hist, capHist := tracker, tracker
+		switch {
+		case c.IdentityKnown && !same:
 			hist = tracker.CycleOnly(addr)
+			capHist = hist
+		case !c.IdentityKnown || !tracker.Established(addr, c.Identity):
+			capHist = tracker.CycleOnly(addr)
 		}
 		if pc.Module != nil {
 			c.Backend = pc.Module.Name()
@@ -131,7 +144,7 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 				// (capabilities) restent valides : pas d'échec publié pour eux.
 				// Les collecteurs connus comme non pris en charge le restent
 				// (même carte, même firmware) : ni échec ni succès publié.
-				c.Unsupported = hist.Unsupported(addr)
+				c.Unsupported = capHist.Unsupported(addr)
 				skip := map[string]bool{}
 				for _, col := range c.Unsupported {
 					skip[col] = true
@@ -139,7 +152,7 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 				c.Collected = map[string]bool{}
 				for col, ok := range r.Collected {
 					if !skip[col] {
-						c.Collected[col] = ok || hist.Held(addr)[col]
+						c.Collected[col] = ok || capHist.Held(addr)[col]
 					}
 				}
 				c.LastSuccess = hist.Last(addr)

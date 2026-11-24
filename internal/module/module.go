@@ -77,6 +77,10 @@ type Result struct {
 	// CloseUnconfirmed : clôtures de transfert confirmées par une marque
 	// autre que la marque nominale pendant ce cycle (aacraid : 0xc5).
 	CloseUnconfirmed int
+	// LateCloseUnconfirmed : rejets 0xc5 d'une collecte précédente de la même
+	// adresse, terminée après son échéance ; renseigné par l'ordonnanceur. Ils
+	// appartiennent à la carte présente alors, pas forcément à l'actuelle.
+	LateCloseUnconfirmed int
 	// TimedOut : la collecte n'a pas rendu la main avant l'échéance du
 	// cycle. Rien n'a été observé, pas même la validité du nœud.
 	TimedOut bool

@@ -27,11 +27,15 @@ type Tracker struct {
 	// unsupported : collecteurs déclarés non pris en charge par la dernière
 	// collecte effective ; conservés pendant un dépassement de délai.
 	unsupported map[string][]string
-	// ident : identité de la carte (Controller.Identity) vue au dernier
-	// instantané. Quand elle change à la même adresse, tout l'historique
+	// ident : identité matérielle établie de la carte (Controller.Identity,
+	// seulement si IdentityKnown) vue au dernier instantané. Quand elle change à la même adresse, tout l'historique
 	// de l'adresse (dates, compteur, held, unsupported) est oublié : il
 	// appartenait à une autre carte, ou à un autre firmware.
 	ident map[string]string
+	// uncertain : adresses dont le dernier instantané avait une identité
+	// incomplète. Le module a alors changé la clé de ses réponses gardées :
+	// elles ne sont réutilisées qu'après un cycle sous identité établie.
+	uncertain map[string]bool
 	// cycle : apports du dernier Update seul, par adresse (succès,
 	// clôtures 0xc5, réponses gardées). Au premier cycle d'une nouvelle
 	// identité, ils sont publiés et conservés, sans l'historique de l'ancienne.
@@ -48,7 +52,7 @@ type contrib struct {
 // NewTracker crée un suivi vide.
 func NewTracker() *Tracker {
 	return &Tracker{last: map[string]map[string]time.Time{}, serial: map[string]string{}, closes: map[string]uint64{},
-		held: map[string]map[string]bool{}, unsupported: map[string][]string{}, ident: map[string]string{}}
+		held: map[string]map[string]bool{}, unsupported: map[string][]string{}, ident: map[string]string{}, uncertain: map[string]bool{}}
 }
 
 // Update enregistre les succès du cycle terminé à now. Une carte n'est
@@ -89,6 +93,11 @@ func (t *Tracker) Update(results map[string]module.Result, present []string, now
 			delete(t.ident, addr)
 		}
 	}
+	for addr := range t.uncertain {
+		if !keep[addr] {
+			delete(t.uncertain, addr)
+		}
+	}
 	t.cycle = map[string]contrib{}
 	for addr, r := range results {
 		c := contrib{last: map[string]time.Time{}, held: map[string]bool{}, closes: uint64(r.CloseUnconfirmed)}
@@ -107,8 +116,8 @@ func (t *Tracker) Update(results map[string]module.Result, present []string, now
 		t.cycle[addr] = c
 	}
 	for addr, r := range results {
-		if r.CloseUnconfirmed > 0 {
-			t.closes[addr] += uint64(r.CloseUnconfirmed)
+		if n := r.CloseUnconfirmed + r.LateCloseUnconfirmed; n > 0 {
+			t.closes[addr] += uint64(n)
 		}
 	}
 	for addr, r := range results {
@@ -145,6 +154,16 @@ func (t *Tracker) Same(addr, id string) bool {
 	}
 	old, ok := t.ident[addr]
 	return !ok || old == id
+}
+
+// Established indique si l'identité établie id était déjà celle de la carte
+// au cycle précédent : condition pour réutiliser ses réponses gardées.
+func (t *Tracker) Established(addr, id string) bool {
+	if t == nil {
+		return false
+	}
+	old, ok := t.ident[addr]
+	return ok && old == id && !t.uncertain[addr]
 }
 
 // Held rend les collecteurs de la carte servis par une réponse gardée en
@@ -213,12 +232,19 @@ func (t *Tracker) Remember(s Snapshot) {
 		return
 	}
 	for _, c := range s.Controllers {
-		// Changement d'identité observé, même pendant un dépassement de
-		// délai ou sans collecte effective : l'historique est oublié.
-		if old, ok := t.ident[c.PCIAddress]; ok && old != c.Identity {
-			t.forget(c.PCIAddress)
+		// Changement d'identité établie observé, même pendant un dépassement
+		// de délai ou sans collecte effective : l'historique est oublié. Une
+		// identité incomplète (numéro de série ou nœud illisible) ne prouve
+		// ni continuité ni changement : rien n'est oublié ni enregistré.
+		if c.IdentityKnown {
+			if old, ok := t.ident[c.PCIAddress]; ok && old != c.Identity {
+				t.forget(c.PCIAddress)
+			}
+			t.ident[c.PCIAddress] = c.Identity
+			delete(t.uncertain, c.PCIAddress)
+		} else {
+			t.uncertain[c.PCIAddress] = true
 		}
-		t.ident[c.PCIAddress] = c.Identity
 		if !c.TimedOut && c.NodeValid {
 			t.unsupported[c.PCIAddress] = append([]string(nil), c.Unsupported...)
 		}

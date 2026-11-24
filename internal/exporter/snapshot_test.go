@@ -18,11 +18,17 @@ import (
 
 type fakeMod struct{}
 
-func (fakeMod) Name() string                                    { return "aacraid" }
-func (fakeMod) Match(c module.Card) bool                        { return c.PCI.Driver == "aacraid" }
-func (fakeMod) Capabilities() uint64                            { return 1 << 17 }
-func (fakeMod) Collectors() []string                            { return []string{"volumes"} }
-func (fakeMod) Nodes(module.Card) ([]module.NodeRequest, error) { return nil, nil }
+func (fakeMod) Name() string             { return "aacraid" }
+func (fakeMod) Match(c module.Card) bool { return c.PCI.Driver == "aacraid" }
+func (fakeMod) Capabilities() uint64     { return 1 << 17 }
+func (fakeMod) Collectors() []string     { return []string{"volumes"} }
+
+// Nodes déclare, comme le module aacraid, un nœud par carte (nom tiré de
+// l'adresse PCI pour rester unique).
+func (fakeMod) Nodes(c module.Card) ([]module.NodeRequest, error) {
+	name := "aac" + strings.NewReplacer(":", "", ".", "").Replace(c.PCI.Address)
+	return []module.NodeRequest{{Name: name, MajorOf: "aac", Minor: 0}}, nil
+}
 func (fakeMod) Collect(context.Context, module.Card, []module.NodeRef) module.Result {
 	return module.Result{NodeValid: true}
 }

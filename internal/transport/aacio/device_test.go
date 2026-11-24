@@ -866,29 +866,34 @@ func TestAdmitChecksDeadlineClock(t *testing.T) {
 // ni morceau ni clôture ; clôture tronquée : lecture en échec, aucune donnée.
 func TestReadPagedTruncatedResponses(t *testing.T) {
 	need := func([]byte) int { return aacraid.ContainerInfoNeed }
-	f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: -1, openSize: aacraid.FIBHeaderSize + 16}
-	f.ioctl(t)
-	d, err := Open("/dev/null", devNull, list(t))
-	if err != nil {
-		t.Fatal(err)
+	// open : nœud ouvert sur le faux firmware, fermé par le nettoyage du
+	// sous-test (avant le rétablissement de l'ioctl réel), échec compris.
+	open := func(t *testing.T, f *fakeFirmware) *Device {
+		f.ioctl(t)
+		d, err := Open("/dev/null", devNull, list(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { d.Close() })
+		return d
 	}
-	if _, err := d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, need); err == nil {
-		t.Fatal("ouverture tronquée acceptée")
-	}
-	if got := f.subs(); len(got) != 1 {
-		t.Fatalf("requêtes après une ouverture tronquée : %v", got)
-	}
-	d.Close()
-	f = &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: -1, stopSize: aacraid.FIBHeaderSize + 16}
-	f.ioctl(t)
-	d, err = Open("/dev/null", devNull, list(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-	if data, err := d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, need); err == nil || data != nil {
-		t.Fatalf("clôture tronquée acceptée (err=%v)", err)
-	}
+	t.Run("ouverture", func(t *testing.T) {
+		f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: -1, openSize: aacraid.FIBHeaderSize + 16}
+		d := open(t, f)
+		if _, err := d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, need); err == nil {
+			t.Fatal("ouverture tronquée acceptée")
+		}
+		if got := f.subs(); len(got) != 1 {
+			t.Fatalf("requêtes après une ouverture tronquée : %v", got)
+		}
+	})
+	t.Run("clôture", func(t *testing.T) {
+		f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: -1, stopSize: aacraid.FIBHeaderSize + 16}
+		d := open(t, f)
+		if data, err := d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, need); err == nil || data != nil {
+			t.Fatalf("clôture tronquée acceptée (err=%v)", err)
+		}
+	})
 }
 
 // Morceau en échec puis clôture confirmée par 0xc5 : la lecture est en

@@ -73,10 +73,10 @@ func TestRunnerDeadlineAndSingleFlight(t *testing.T) {
 		t.Fatalf("résultat tardif repris ou pas de relance (%d appels) : %+v", slowCalls.Load(), s)
 	}
 	// Seules ses lectures rejetées sont reportées, une seule fois.
-	if out[slow].CloseUnconfirmed != 2 {
+	if out[slow].LateCloseUnconfirmed != 2 {
 		t.Fatalf("rejets 0xc5 du résultat tardif perdus : %+v", out[slow])
 	}
-	if out = r.Run(within(t, time.Second), jobs, cols); out[slow].CloseUnconfirmed != 0 {
+	if out = r.Run(within(t, time.Second), jobs, cols); out[slow].LateCloseUnconfirmed != 0 {
 		t.Fatalf("rejets tardifs comptés deux fois : %+v", out[slow])
 	}
 }
@@ -186,8 +186,8 @@ func TestRunnerSingleDeadline(t *testing.T) {
 		}
 		r.Drain(time.Second)
 		out = r.Run(within(t, time.Second), map[string]func() module.Result{addr: func() module.Result { return module.Result{} }}, cols)
-		if res.CloseUnconfirmed+out[addr].CloseUnconfirmed != 1 {
-			t.Fatalf("%s : rejet tardif compté %d fois", name, res.CloseUnconfirmed+out[addr].CloseUnconfirmed)
+		if n := res.LateCloseUnconfirmed + out[addr].LateCloseUnconfirmed; n != 1 {
+			t.Fatalf("%s : rejet tardif compté %d fois", name, n)
 		}
 	}
 }
@@ -212,7 +212,7 @@ func TestRunnerHarvestsAbsentCard(t *testing.T) {
 		t.Fatal("collecte tardive d'une carte absente non récoltée")
 	}
 	out := r.Run(within(t, time.Second), map[string]func() module.Result{a: func() module.Result { return module.Result{} }}, nil)
-	if out[a].CloseUnconfirmed != 3 {
+	if out[a].LateCloseUnconfirmed != 3 {
 		t.Fatalf("rejets perdus : %+v", out[a])
 	}
 }
@@ -390,6 +390,61 @@ func TestTimedOutHeldIdentityChange(t *testing.T) {
 	}
 }
 
+// Numéro de série momentanément illisible : le module change la clé de ses
+// réponses gardées et relit la 706. Si cette relecture se bloque, au cycle
+// illisible comme au retour du numéro, le succès gardé de l'ancienne clé
+// n'est pas publié. Les dates, elles, ne sont pas oubliées : rien ne prouve
+// un changement de carte.
+func TestTimedOutHeldAfterUnreadableSerial(t *testing.T) {
+	const addr = "0000:01:00.0"
+	t0 := time.Unix(1_000_000, 0)
+	ok := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"capabilities": true, "volumes": true}, Cached: []string{"capabilities"}}}
+	timedOut := map[string]module.Result{addr: {TimedOut: true, Collected: map[string]bool{"capabilities": false, "volumes": false}}}
+	capFail := `hwraid_collection_success{controller="serial:S1",collector="capabilities"} 0`
+	for _, tc := range []struct {
+		name   string
+		middle map[string]module.Result // cycle au numéro illisible
+	}{
+		{"relecture bloquée au cycle illisible", nil},
+		{"relecture bloquée au retour du numéro", ok},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := NewTracker()
+			tr.Update(ok, []string{addr}, t0)
+			tr.Remember(Build(plan(aacHost("host0", addr, "S1")), true, ok, tr, time.Minute))
+			at := t0.Add(time.Minute)
+			if tc.middle != nil {
+				tr.Update(tc.middle, []string{addr}, at)
+				tr.Remember(Build(plan(aacHost("host0", addr, "")), true, tc.middle, tr, time.Minute))
+				at = at.Add(time.Minute)
+			}
+			// Le label serial:S1 est conservé pendant le cycle illisible.
+			serial, want := "S1", capFail
+			if tc.middle == nil {
+				serial = ""
+			}
+			tr.Update(timedOut, []string{addr}, at)
+			s := Build(plan(aacHost("host0", addr, serial)), true, timedOut, tr, time.Minute)
+			out := Render(s)
+			if !strings.Contains(out, want+"\n") {
+				t.Fatalf("succès 706 d'une autre clé publié : %s\n%s", want, out)
+			}
+			if s.Controllers[0].LastSuccess["volumes"].IsZero() {
+				t.Fatal("date du dernier succès oubliée sans preuve d'un changement de carte")
+			}
+			tr.Remember(s)
+		})
+	}
+	// Témoin : sans passage par un numéro illisible, la réponse gardée sert.
+	tr := NewTracker()
+	tr.Update(ok, []string{addr}, t0)
+	tr.Remember(Build(plan(aacHost("host0", addr, "S1")), true, ok, tr, time.Minute))
+	tr.Update(timedOut, []string{addr}, t0.Add(time.Minute))
+	if out := Render(Build(plan(aacHost("host0", addr, "S1")), true, timedOut, tr, time.Minute)); !strings.Contains(out, strings.Replace(capFail, "} 0", "} 1", 1)+"\n") {
+		t.Fatalf("témoin : réponse gardée non servie\n%s", out)
+	}
+}
+
 // Arrêt alors que la collecte finit au même moment : quel que soit l'ordre
 // dans lequel Run voit l'annulation et le résultat, l'erreur n'est pas
 // rendue dans le cycle (qui ne sera pas publié) mais reste dans
@@ -550,5 +605,52 @@ func TestNoHistoryAcrossNodeChange(t *testing.T) {
 	out := Render(Build(withNode(1), true, timedOut, tr, time.Minute))
 	if want := `hwraid_collection_success{controller="serial:S1",collector="capabilities"} 0`; !strings.Contains(out, want+"\n") {
 		t.Fatalf("succès repris malgré un autre nœud : %s\n%s", want, out)
+	}
+}
+
+// Nœud momentanément illisible (inventaire incomplet, pas de Requests) :
+// rien ne prouve un changement de carte, l'historique n'est pas effacé. Au
+// retour du même nœud, un échec de collecte publie toujours la date du
+// dernier succès.
+func TestNoForgetOnUnreadableNode(t *testing.T) {
+	const addr = "0000:01:00.0"
+	tr := NewTracker()
+	t0 := time.Unix(1_000_000, 0)
+	ok := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"capabilities": true, "volumes": true}, Cached: []string{"capabilities"}}}
+	tr.Update(ok, []string{addr}, t0)
+	tr.Remember(Build(plan(aacHost("host0", addr, "S1")), true, ok, tr, time.Minute))
+	noNode := plan(aacHost("host0", addr, "S1"))
+	noNode.Cards[0].Requests = nil
+	failed := map[string]module.Result{addr: {NodeValid: false}}
+	tr.Update(failed, []string{addr}, t0.Add(time.Minute))
+	tr.Remember(Build(noNode, true, failed, tr, time.Minute))
+	tr.Update(failed, []string{addr}, t0.Add(2*time.Minute))
+	s := Build(plan(aacHost("host0", addr, "S1")), true, failed, tr, time.Minute)
+	if got := s.Controllers[0].LastSuccess["volumes"]; !got.Equal(t0) {
+		t.Fatalf("date du dernier succès perdue après un nœud illisible : %v", got)
+	}
+}
+
+// Rejet 0xc5 tardif de l'ancienne carte récolté au cycle où une autre carte
+// est observée à la même adresse : il n'est ni publié ni conservé pour la
+// nouvelle carte, qui garde ses propres rejets du cycle.
+func TestLateCloseNotLeftToReplacementCard(t *testing.T) {
+	const addr = "0000:01:00.0"
+	tr := NewTracker()
+	t0 := time.Unix(1_000_000, 0)
+	ok := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"capabilities": true}, Cached: []string{"capabilities"}}}
+	tr.Update(ok, []string{addr}, t0)
+	tr.Remember(Build(plan(aacHost("host0", addr, "S1")), true, ok, tr, time.Minute))
+	mixed := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"capabilities": true}, Cached: []string{"capabilities"},
+		CloseUnconfirmed: 1, LateCloseUnconfirmed: 2}}
+	tr.Update(mixed, []string{addr}, t0.Add(time.Minute))
+	s := Build(plan(aacHost("host0", addr, "S2")), true, mixed, tr, time.Minute)
+	if got := s.Controllers[0].CloseUnconfirmed; got != 1 {
+		t.Fatalf("rejets publiés pour la nouvelle carte : %d, attendu 1 (les siens)", got)
+	}
+	tr.Remember(s)
+	tr.Update(ok, []string{addr}, t0.Add(2*time.Minute))
+	if got := Build(plan(aacHost("host0", addr, "S2")), true, ok, tr, time.Minute).Controllers[0].CloseUnconfirmed; got != 1 {
+		t.Fatalf("rejets conservés pour la nouvelle carte : %d, attendu 1", got)
 	}
 }
