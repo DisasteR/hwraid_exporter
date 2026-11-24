@@ -77,7 +77,9 @@ func TestQuietThreadMask(t *testing.T) {
 			t.Errorf("%v non bloqué sur le thread des ioctl (masque %#x)", s, m)
 		}
 	}
-	for _, s := range syncSignals {
+	// Signaux de faute attendus débloqués, déclarés ici indépendamment de
+	// la liste de l'implémentation (syncSignals).
+	for _, s := range []unix.Signal{unix.SIGSEGV, unix.SIGBUS, unix.SIGFPE, unix.SIGILL, unix.SIGTRAP, unix.SIGSYS} {
 		if m&bit(s) != 0 {
 			t.Errorf("%v bloqué : une faute du thread ne serait plus traitée (masque %#x)", s, m)
 		}

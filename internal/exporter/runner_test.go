@@ -835,7 +835,36 @@ func TestNodeErrorKeepsLastSuccess(t *testing.T) {
 			t.Fatalf("ligne absente : %s\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, `collector="cache_protection"`) {
-		t.Fatalf("date publiée pour un collecteur non pris en charge\n%s", out)
+	if strings.Contains(out, `last_success_timestamp_seconds{controller="serial:S1",collector="cache_protection"}`) ||
+		strings.Contains(out, `hwraid_collection_success{controller="serial:S1",collector="cache_protection"}`) {
+		t.Fatalf("date ou échec publié pour un collecteur non pris en charge\n%s", out)
+	}
+	if want := `hwraid_collector_supported{controller="serial:S1",collector="cache_protection"} 0`; !strings.Contains(out, want+"\n") {
+		t.Fatalf("non-prise en charge perdue en erreur de nœud : %s\n%s", want, out)
+	}
+}
+
+// Avant tout premier succès, des cycles qui alternent erreur de nœud et
+// dépassement de délai publient chacun hwraid_collection_success 0 pour
+// chaque collecteur : la série reste continue et la règle « jamais réussi »
+// peut atteindre son délai.
+func TestNodeErrorAndTimeoutAlternateBeforeFirstSuccess(t *testing.T) {
+	const addr = "0000:01:00.0"
+	t0 := time.Unix(1_000_000, 0)
+	tr := NewTracker()
+	nodeErr := map[string]module.Result{addr: {Err: errors.New("GET_HBA_INFO: EIO")}}
+	timedOut := map[string]module.Result{addr: {TimedOut: true, Collected: map[string]bool{"volumes": false}}}
+	want := `hwraid_collection_success{controller="serial:S1",collector="volumes"} 0`
+	for i := 0; i < 4; i++ {
+		res := nodeErr
+		if i%2 == 1 {
+			res = timedOut
+		}
+		tr.Update(res, []string{addr}, t0.Add(time.Duration(i)*time.Minute))
+		s := Build(plan(aacHost("host0", addr, "S1")), true, res, tr, time.Minute)
+		if out := Render(s); !strings.Contains(out, want+"\n") {
+			t.Fatalf("cycle %d : série absente : %s\n%s", i, want, out)
+		}
+		tr.Remember(s)
 	}
 }

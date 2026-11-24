@@ -172,9 +172,13 @@ func TestCollectionSuccess(t *testing.T) {
 	if !strings.Contains(out, a+b) {
 		t.Fatalf("séries absentes ou dans le désordre :\n%s", out)
 	}
+	// Nœud en erreur : aucune lecture tentée, faute de leur prérequis ;
+	// chaque collecteur du module est publié en échec, aucun en succès.
 	res = map[string]module.Result{"0000:01:00.0": {Err: errors.New("EPERM")}}
-	if out := Render(Build(p, true, res, nil, 0)); strings.Contains(out, "hwraid_collection_success{") {
-		t.Fatalf("série publiée sans collecte :\n%s", out)
+	out = Render(Build(p, true, res, nil, 0))
+	if !strings.Contains(out, `hwraid_collection_success{controller="serial:S1",collector="volumes"} 0`+"\n") ||
+		strings.Contains(out, "} 1\n"+`hwraid_collection_success`) || strings.Count(out, "hwraid_collection_success{") != 1 {
+		t.Fatalf("nœud en erreur : collecteurs non publiés en échec :\n%s", out)
 	}
 }
 

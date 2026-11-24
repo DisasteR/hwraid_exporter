@@ -425,6 +425,55 @@ tests:
               summary: "Lecture volumes sans succès depuis plus de 3 cycles (serial:A)"
               description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter ; « cannot allocate memory » sur toutes les lectures signale probablement la réserve de commandes du pilote aacraid épuisée : avec le réglage par défaut du pilote, un redémarrage ne videra alors pas le cache de la carte ; lire docs/aacraid-defaut-pilote.md avant de redémarrer."
 
+  # Avant tout premier succès, alternance d'erreurs de nœud et de cycles
+  # hors délai : l'exporter publie collection_success 0 à chaque cycle (en
+  # erreur de nœud aussi), la série est continue et la lecture « jamais
+  # réussie » est signalée, alors que HwraidManagementNodeInvalid, dont la
+  # série est périmée un cycle sur deux, ne l'est pas.
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_management_node_valid{controller="serial:A"}'
+        values: '0 stale 0 stale 0 stale 0 stale 0 stale 0 stale 0 stale 0 stale 0 stale 0 stale 0'
+      - series: 'hwraid_collection_success{controller="serial:A",collector="volumes"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: HwraidManagementNodeInvalid
+        exp_alerts: []
+      - eval_time: 18m
+        alertname: HwraidCollectionNeverSucceeded
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: "serial:A", collector: volumes}
+            exp_annotations:
+              summary: "Lecture volumes jamais réussie (serial:A)"
+              description: "Depuis son démarrage, l'exporter n'a jamais réussi cette lecture. Voir le journal de l'exporter ; « cannot allocate memory » sur toutes les lectures signale probablement la réserve de commandes du pilote aacraid épuisée : avec le réglage par défaut du pilote, un redémarrage ne videra alors pas le cache de la carte ; lire docs/aacraid-defaut-pilote.md avant de redémarrer."
+
+  # Protection du cache en charge à chaque lecture réussie, mais un échec
+  # de lecture toutes les 40 min : HwraidCacheProtectionNotReady (2 h) ne
+  # se déclenche jamais, et la fenêtre courte de HwraidCollectionIntermittent
+  # ne voit que trois passages par heure ; la fenêtre de quatre heures
+  # signale la perte de visibilité. Un seul échec en quatre heures (B) :
+  # rien.
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_cache_protection_state{controller="serial:A",state="charging"}'
+        values: '1x39 stale 1x39 stale 1x39 stale 1x39 stale 1x39 stale 1x39 stale'
+      - series: 'hwraid_collection_success{controller="serial:A",collector="cache_protection"}'
+        values: '1x39 0 1x39 0 1x39 0 1x39 0 1x39 0 1x39 0'
+      - series: 'hwraid_collection_success{controller="serial:B",collector="cache_protection"}'
+        values: '1x100 0 1x139'
+    alert_rule_test:
+      - eval_time: 235m
+        alertname: HwraidCacheProtectionNotReady
+        exp_alerts: []
+      - eval_time: 235m
+        alertname: HwraidCollectionIntermittent
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: "serial:A", collector: cache_protection}
+            exp_annotations:
+              summary: "Lecture cache_protection en échec intermittent (serial:A)"
+              description: "La lecture échoue régulièrement, entre des succès (trois fois en une heure, ou deux fois en quatre heures) : les alertes d'état qui demandent une condition continue (for), jusqu'à 2 h, peuvent ne jamais se déclencher. Vérifier l'état de la carte avec l'outil du constructeur et consulter le journal de l'exporter (délais dépassés, autre outil interrogeant la carte en même temps)."
+
   # Carte reconnue (backend pris en charge), firmware non qualifié : volumes
   # non lus, alerte après 1 h. La lecture des capacités réussit, et
   # HwraidCollectionStale ne voit rien. Une carte qualifiée (B) ne publie
@@ -517,18 +566,18 @@ tests:
           - exp_labels: {severity: warning, controller: "serial:A", collector: volumes}
             exp_annotations:
               summary: "Lecture volumes en échec intermittent (serial:A)"
-              description: "La lecture échoue régulièrement, entre des succès : les alertes d'état qui demandent plusieurs minutes de condition continue (for) peuvent ne jamais se déclencher. Vérifier l'état de la carte avec l'outil du constructeur et consulter le journal de l'exporter (délais dépassés, autre outil interrogeant la carte en même temps)."
+              description: "La lecture échoue régulièrement, entre des succès (trois fois en une heure, ou deux fois en quatre heures) : les alertes d'état qui demandent une condition continue (for), jusqu'à 2 h, peuvent ne jamais se déclencher. Vérifier l'état de la carte avec l'outil du constructeur et consulter le journal de l'exporter (délais dépassés, autre outil interrogeant la carte en même temps)."
           - exp_labels: {severity: warning, controller: "serial:C", collector: volumes}
             exp_annotations:
               summary: "Lecture volumes en échec intermittent (serial:C)"
-              description: "La lecture échoue régulièrement, entre des succès : les alertes d'état qui demandent plusieurs minutes de condition continue (for) peuvent ne jamais se déclencher. Vérifier l'état de la carte avec l'outil du constructeur et consulter le journal de l'exporter (délais dépassés, autre outil interrogeant la carte en même temps)."
+              description: "La lecture échoue régulièrement, entre des succès (trois fois en une heure, ou deux fois en quatre heures) : les alertes d'état qui demandent une condition continue (for), jusqu'à 2 h, peuvent ne jamais se déclencher. Vérifier l'état de la carte avec l'outil du constructeur et consulter le journal de l'exporter (délais dépassés, autre outil interrogeant la carte en même temps)."
       - eval_time: 39m
         alertname: HwraidCollectionIntermittent
         exp_alerts:
           - exp_labels: {severity: warning, controller: "serial:A", collector: volumes}
             exp_annotations:
               summary: "Lecture volumes en échec intermittent (serial:A)"
-              description: "La lecture échoue régulièrement, entre des succès : les alertes d'état qui demandent plusieurs minutes de condition continue (for) peuvent ne jamais se déclencher. Vérifier l'état de la carte avec l'outil du constructeur et consulter le journal de l'exporter (délais dépassés, autre outil interrogeant la carte en même temps)."
+              description: "La lecture échoue régulièrement, entre des succès (trois fois en une heure, ou deux fois en quatre heures) : les alertes d'état qui demandent une condition continue (for), jusqu'à 2 h, peuvent ne jamais se déclencher. Vérifier l'état de la carte avec l'outil du constructeur et consulter le journal de l'exporter (délais dépassés, autre outil interrogeant la carte en même temps)."
 
   # Contrôleur mis à jour (firmware x puis y) puis retiré alors que la
   # découverte réussit : une seule alerte.

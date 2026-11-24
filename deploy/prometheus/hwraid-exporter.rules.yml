@@ -204,22 +204,26 @@ groups:
           description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter ; « cannot allocate memory » sur toutes les lectures signale probablement la réserve de commandes du pilote aacraid épuisée : avec le réglage par défaut du pilote, un redémarrage ne videra alors pas le cache de la carte ; lire docs/aacraid-defaut-pilote.md avant de redémarrer."
 
       - alert: HwraidCollectionIntermittent
-        # Au moins six passages succès/échec en une heure, soit environ trois
-        # échecs entre des succès (un échec encadré compte deux passages). Ces trous remettent
-        # à zéro le délai « for » des autres alertes, qui peuvent alors ne
-        # jamais se déclencher, sans que HwraidCollectionStale ne le voie.
+        # Des échecs entre des succès remettent à zéro le délai « for » des
+        # autres alertes, qui peuvent alors ne jamais se déclencher, sans que
+        # HwraidCollectionStale ne le voie (un échec encadré compte deux
+        # passages). Deux fenêtres : au moins six passages en une heure
+        # (environ trois échecs), pour les délais courts ; au moins quatre en
+        # quatre heures (deux échecs), pour les délais jusqu'à 2 h
+        # (HwraidCacheProtectionNotReady, HwraidVolumeWriteCacheInactive),
+        # qu'un échec toutes les deux heures suffit à remettre à zéro.
         # La série doit exister à l'instant : un collecteur devenu non pris
         # en charge, ou un exporter arrêté, ne garde pas l'alerte sur ses
         # seuls échantillons passés.
         expr: |
-          changes(hwraid_collection_success[1h]) >= 6
+          (changes(hwraid_collection_success[1h]) >= 6 or changes(hwraid_collection_success[4h]) >= 4)
             and on (job, instance, controller, collector) hwraid_collection_success
         keep_firing_for: 10m
         labels:
           severity: warning
         annotations:
           summary: "Lecture {{ $labels.collector }} en échec intermittent ({{ $labels.controller }})"
-          description: "La lecture échoue régulièrement, entre des succès : les alertes d'état qui demandent plusieurs minutes de condition continue (for) peuvent ne jamais se déclencher. Vérifier l'état de la carte avec l'outil du constructeur et consulter le journal de l'exporter (délais dépassés, autre outil interrogeant la carte en même temps)."
+          description: "La lecture échoue régulièrement, entre des succès (trois fois en une heure, ou deux fois en quatre heures) : les alertes d'état qui demandent une condition continue (for), jusqu'à 2 h, peuvent ne jamais se déclencher. Vérifier l'état de la carte avec l'outil du constructeur et consulter le journal de l'exporter (délais dépassés, autre outil interrogeant la carte en même temps)."
 
       - alert: HwraidCollectionNeverSucceeded
         # Lecture en échec qui n'a jamais réussi depuis le démarrage (pas de

@@ -56,9 +56,9 @@ services:
       - "c *:* r"
     security_opt:
       - no-new-privileges:true
-    # The default listen address (127.0.0.1) is unreachable from outside the
-    # container: attach it to Prometheus' network, or publish the port behind
-    # a firewall.
+    # The image listens on all interfaces (the native binary defaults to
+    # 127.0.0.1): attach the container to Prometheus' network, or publish the
+    # port behind a firewall.
     command: ["serve", "-listen", "0.0.0.0:9799"]
     restart: unless-stopped
     # On SIGTERM the exporter waits, with no limit of its own, for a card

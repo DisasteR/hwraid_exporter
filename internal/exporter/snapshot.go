@@ -135,17 +135,30 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 			if lr, ok := results[addr]; ok && lr.LateErr != nil {
 				c.LateError = lr.LateErr.Error()
 			}
-			// Nœud en erreur : aucune lecture, mais les dates de dernier
+			// Nœud en erreur : aucune lecture n'a pu être tentée, la
+			// vérification du nœud étant leur prérequis. Chaque collecteur
+			// pris en charge est publié en échec, et les dates de dernier
 			// succès restent publiées (hors collecteurs connus comme non pris
 			// en charge). Sinon, une alternance de cycles en erreur de nœud
 			// et de cycles hors délai ferait disparaître une série sur deux,
-			// et aucune règle de perte de visibilité n'atteindrait son délai.
+			// avant comme après un premier succès, et aucune règle de perte
+			// de visibilité n'atteindrait son délai.
 			nodeErrLast := func() map[string]time.Time {
-				out := map[string]time.Time{}
+				// Collecteurs connus comme non pris en charge (même carte) :
+				// toujours publiés comme tels, pour que leur alerte ne perde
+				// pas sa série.
+				c.Unsupported = capHist.Unsupported(addr)
 				skip := map[string]bool{}
-				for _, col := range capHist.Unsupported(addr) {
+				for _, col := range c.Unsupported {
 					skip[col] = true
 				}
+				c.Collected = map[string]bool{}
+				for _, col := range pc.Module.Collectors() {
+					if !skip[col] {
+						c.Collected[col] = false
+					}
+				}
+				out := map[string]time.Time{}
 				for col, at := range hist.Last(addr) {
 					if !skip[col] {
 						out[col] = at
