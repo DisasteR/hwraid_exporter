@@ -127,28 +127,75 @@ groups:
           description: "Le module répond avec une combinaison d'état non qualifiée : sa protection n'est pas garantie. Vérifier avec l'outil du constructeur."
 
       # Cache d'écriture : volumes de premier niveau seulement (les volumes
-      # assemblés portent le même réglage).
+      # assemblés portent le même réglage). Pendant une lecture en échec
+      # (hwraid_collection_success à 0 ou absent), chaque série reprend sa
+      # dernière valeur connue sur 10 minutes ; une lecture réussie ne garde
+      # que les valeurs publiées.
       - alert: HwraidVolumeWriteCacheUnprotected
         expr: |
-          (hwraid_volume_write_cache_enabled == 1
-            and on (job, instance, controller, volume) hwraid_volume_info{parent=""})
-          and on (job, instance, controller) (
-            hwraid_cache_protection_state{state!="optimal"} == 1
-            or hwraid_cache_protection_present == 0
-            or (last_over_time(hwraid_cache_protection_state{state!="optimal"}[10m]) == 1
-                unless on (job, instance, controller) hwraid_cache_protection_state)
-          )
+          (hwraid_volume_write_cache_enabled
+              or (last_over_time(hwraid_volume_write_cache_enabled[10m])
+                  unless on (job, instance, controller) hwraid_collection_success{collector="volumes"} == 1)) == 1
+            and on (job, instance, controller, volume) (hwraid_volume_info{parent=""}
+              or (last_over_time(hwraid_volume_info{parent=""}[10m])
+                  unless on (job, instance, controller) hwraid_collection_success{collector="volumes"} == 1))
+            and on (job, instance, controller) (
+              (hwraid_cache_protection_state{state=~"failed|charging"}
+              or (last_over_time(hwraid_cache_protection_state{state=~"failed|charging"}[10m])
+                  unless on (job, instance, controller) hwraid_collection_success{collector="cache_protection"} == 1)) == 1
+              or (hwraid_cache_protection_present
+              or (last_over_time(hwraid_cache_protection_present[10m])
+                  unless on (job, instance, controller) hwraid_collection_success{collector="cache_protection"} == 1)) == 0
+            )
         for: 5m
         labels:
           severity: critical
         annotations:
           summary: "Cache d'écriture actif sans protection, volume {{ $labels.volume }} ({{ $labels.controller }})"
-          description: "Le cache d'écriture du volume est actif alors que son module de protection est absent ou n'est pas opérationnel : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver."
+          description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver."
+
+      - alert: HwraidVolumeWriteCacheProtectionUnknown
+        expr: |
+          (hwraid_volume_write_cache_enabled
+              or (last_over_time(hwraid_volume_write_cache_enabled[10m])
+                  unless on (job, instance, controller) hwraid_collection_success{collector="volumes"} == 1)) == 1
+            and on (job, instance, controller, volume) (hwraid_volume_info{parent=""}
+              or (last_over_time(hwraid_volume_info{parent=""}[10m])
+                  unless on (job, instance, controller) hwraid_collection_success{collector="volumes"} == 1))
+            and on (job, instance, controller)
+              (hwraid_cache_protection_state{state="unknown"}
+              or (last_over_time(hwraid_cache_protection_state{state="unknown"}[10m])
+                  unless on (job, instance, controller) hwraid_collection_success{collector="cache_protection"} == 1)) == 1
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cache d'écriture actif, protection d'état indéterminé, volume {{ $labels.volume }} ({{ $labels.controller }})"
+          description: "Le cache d'écriture du volume est actif et l'état du module de protection n'est pas qualifié : rien ne garantit que les écritures en attente survivent à une coupure. Vérifier le module avec l'outil du constructeur."
+
+      - alert: HwraidVolumeWriteCacheUnknown
+        # Lecture des volumes réussie, mais réglage ou état du cache non
+        # reconnu : les autres alertes de cache ne peuvent pas se déclencher.
+        expr: |
+          (hwraid_volume_write_cache_policy{policy="unknown"} == 1
+            or (hwraid_volume_write_cache_policy == 1
+                unless on (job, instance, controller, volume) hwraid_volume_write_cache_enabled))
+            and on (job, instance, controller, volume) hwraid_volume_info{parent=""}
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Réglage ou état du cache d'écriture non reconnu, volume {{ $labels.volume }} ({{ $labels.controller }})"
+          description: "La carte décrit le cache d'écriture du volume avec une valeur non qualifiée : les alertes de cache d'écriture ne couvrent plus ce volume. Vérifier le cache avec l'outil du constructeur."
 
       - alert: HwraidVolumeWriteCacheAlwaysOn
         expr: |
-          hwraid_volume_write_cache_policy{policy="write_back_always"} == 1
-            and on (job, instance, controller, volume) hwraid_volume_info{parent=""}
+          (hwraid_volume_write_cache_policy{policy="write_back_always"}
+              or (last_over_time(hwraid_volume_write_cache_policy{policy="write_back_always"}[10m])
+                  unless on (job, instance, controller) hwraid_collection_success{collector="volumes"} == 1)) == 1
+            and on (job, instance, controller, volume) (hwraid_volume_info{parent=""}
+              or (last_over_time(hwraid_volume_info{parent=""}[10m])
+                  unless on (job, instance, controller) hwraid_collection_success{collector="volumes"} == 1))
         for: 15m
         labels:
           severity: warning
@@ -158,10 +205,20 @@ groups:
 
       - alert: HwraidVolumeWriteCacheInactive
         expr: |
-          hwraid_volume_write_cache_enabled == 0
-            and on (job, instance, controller, volume) hwraid_volume_info{parent=""}
-            and on (job, instance, controller, volume) hwraid_volume_write_cache_policy{policy=~"write_back_always|write_back_when_protected"} == 1
-            and on (job, instance, controller) hwraid_cache_protection_state{state="optimal"} == 1
+          (hwraid_volume_write_cache_enabled
+              or (last_over_time(hwraid_volume_write_cache_enabled[10m])
+                  unless on (job, instance, controller) hwraid_collection_success{collector="volumes"} == 1)) == 0
+            and on (job, instance, controller, volume) (hwraid_volume_info{parent=""}
+              or (last_over_time(hwraid_volume_info{parent=""}[10m])
+                  unless on (job, instance, controller) hwraid_collection_success{collector="volumes"} == 1))
+            and on (job, instance, controller, volume)
+              (hwraid_volume_write_cache_policy{policy=~"write_back_always|write_back_when_protected"}
+              or (last_over_time(hwraid_volume_write_cache_policy{policy=~"write_back_always|write_back_when_protected"}[10m])
+                  unless on (job, instance, controller) hwraid_collection_success{collector="volumes"} == 1)) == 1
+            and on (job, instance, controller)
+              (hwraid_cache_protection_state{state="optimal"}
+              or (last_over_time(hwraid_cache_protection_state{state="optimal"}[10m])
+                  unless on (job, instance, controller) hwraid_collection_success{collector="cache_protection"} == 1)) == 1
         for: 2h
         labels:
           severity: info
@@ -182,7 +239,7 @@ groups:
           severity: warning
         annotations:
           summary: "Lecture {{ $labels.collector }} sans succès depuis plus de 3 cycles ({{ $labels.controller }})"
-          description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter ; « cannot allocate memory » signale la réserve de commandes du pilote aacraid épuisée : lancer sync avant tout redémarrage (docs/aacraid-defaut-pilote.md)."
+          description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter ; « cannot allocate memory » sur toutes les lectures signale probablement la réserve de commandes du pilote aacraid épuisée : le prochain redémarrage ne videra pas le cache de la carte, suivre docs/aacraid-defaut-pilote.md avant de redémarrer."
 
       - alert: HwraidCollectionNeverSucceeded
         # Lecture en échec qui n'a jamais réussi depuis le démarrage (pas de
@@ -195,7 +252,7 @@ groups:
           severity: warning
         annotations:
           summary: "Lecture {{ $labels.collector }} jamais réussie ({{ $labels.controller }})"
-          description: "Depuis son démarrage, l'exporter n'a jamais réussi cette lecture. Voir le journal de l'exporter ; « cannot allocate memory » signale la réserve de commandes du pilote aacraid épuisée : lancer sync avant tout redémarrage (docs/aacraid-defaut-pilote.md)."
+          description: "Depuis son démarrage, l'exporter n'a jamais réussi cette lecture. Voir le journal de l'exporter ; « cannot allocate memory » sur toutes les lectures signale probablement la réserve de commandes du pilote aacraid épuisée : le prochain redémarrage ne videra pas le cache de la carte, suivre docs/aacraid-defaut-pilote.md avant de redémarrer."
 
       - alert: HwraidCollectionIntervalTooLong
         # Les règles d'état retiennent la dernière valeur sur 10 min : elles

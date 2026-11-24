@@ -6,9 +6,11 @@ Cette page décrit le défaut, ses conséquences, ce que fait l'exporter pour ne
 
 ## Symptômes
 
-- L'exporter journalise `cannot allocate memory` avec `driver management command pool probably exhausted`, et `hwraid_collection_success` passe à 0.
+- L'exporter journalise `cannot allocate memory` sur toutes ses lectures, avec `management command pool is probably exhausted`, et `hwraid_collection_success` passe à 0.
 - ARCCONF ne trouve plus la carte ; maxView, qui passe par la même réserve, ne peut plus l'interroger non plus.
 - Les entrées-sorties disque continuent normalement : les volumes restent accessibles.
+
+Le pilote rend aussi `ENOMEM` quand il ne peut pas allouer le tampon d'une commande plus grande qu'un bloc (`ioctl_send_fib`, `commctrl.c`). Cet échec est passager et touche une seule lecture, par exemple la carte des connecteurs (2 048 octets). Un `ENOMEM` isolé, suivi de lectures réussies, n'est donc pas une réserve vide. Des `ENOMEM` sur toutes les lectures, et ARCCONF qui ne trouve plus la carte, le sont très probablement.
 
 Seul un redémarrage de la machine reconstitue la réserve. Lisez la section « Conséquence à l'arrêt » avant de redémarrer.
 
@@ -36,11 +38,15 @@ Tout signal reçu par un programme pendant qu'une de ses commandes de gestion at
 
 Avec le réglage par défaut du pilote (`cache=2`, `aachba.c`), Linux ne demande jamais non plus ce vidage. Le pilote annonce un volume sans cache d'écriture (WCE à 0) et ignore les demandes de vidage SCSI. Ni `fsync()` ni l'arrêt ne vident donc le cache de la carte.
 
-Si le cache d'écriture de la carte est actif sans protection (module ZMM ou batterie en panne, ou cache forcé en écriture différée), un redémarrage avec la réserve vide peut perdre les dernières écritures. C'est arrivé sur l'hôte de référence le 2026-11-23 : des fichiers écrits dans les secondes qui ont précédé le redémarrage ont été retrouvés corrompus. L'alerte `HwraidVolumeWriteCacheUnprotected` ([alerts.md](alerts.md)) signale un cache d'écriture actif sans protection opérationnelle. Avant de redémarrer une machine dont la réserve est vide :
+Si le cache d'écriture de la carte est actif sans protection (module ZMM ou batterie en panne, ou cache forcé en écriture différée), un redémarrage avec la réserve vide peut perdre les dernières écritures. C'est arrivé sur l'hôte de référence le 2026-11-23 : des fichiers écrits dans les secondes qui ont précédé le redémarrage ont été retrouvés corrompus. L'alerte `HwraidVolumeWriteCacheUnprotected` ([alerts.md](alerts.md)) signale un cache d'écriture actif sans protection opérationnelle.
+
+**Le seul moyen sûr est d'agir avant que la réserve soit vide** : dès qu'une protection tombe en panne, régler le cache d'écriture des volumes en mode « seulement si protégé » (`wbb`) ou le désactiver, tant qu'ARCCONF peut encore parler à la carte. La carte coupe alors le cache, et un redémarrage ne laisse rien en attente.
+
+Une fois la réserve vide, plus aucun outil ne peut changer ce réglage ni vérifier que le cache est vide. Les mesures suivantes **réduisent le risque sans l'éliminer** :
 
 1. arrêter les applications qui écrivent ;
-2. lancer `sync` ;
-3. attendre une minute, le temps que la carte vide son cache d'elle-même.
+2. lancer `sync`, pour que Linux remette à la carte tout ce qu'il garde en mémoire ;
+3. laisser du temps à la carte avant de redémarrer. Elle vide son cache d'elle-même au fil de l'eau, mais aucun délai n'est garanti et rien ne permet de constater la fin du vidage.
 
 ## Protections de l'exporter
 
@@ -49,9 +55,9 @@ Depuis la v0.1.2 :
 | Protection | Effet |
 |---|---|
 | Thread dédié aux commandes | Les commandes partent d'un thread système réservé qui bloque tous les signaux asynchrones. Le noyau livre à un autre thread les signaux adressés au processus (`SIGTERM`, `SIGINT`). Ceux qui visent ce thread (`SIGURG` du runtime Go) attendent la fin de la commande. Seuls les signaux de faute (`SIGSEGV`, `SIGBUS`, etc.) restent débloqués. Si le masquage échoue, aucune commande n'est envoyée. |
-| Arrêt temporisé | Sur `SIGTERM`, l'exporter ne lance plus de cycle et attend jusqu'à 20 s la fin des commandes en cours avant de sortir. L'unité systemd donne 30 s (`TimeoutStopSec`) ; avec Docker, réglez `stop_grace_period: 30s`. |
+| Arrêt sans interruption | Sur `SIGTERM`, l'exporter ne lance plus de cycle, et le cycle en cours n'envoie plus aucune nouvelle commande, y compris une relecture. Seule la commande déjà envoyée se termine (une lecture paginée ouverte est close), en général en quelques millisecondes. Si une commande ne répond pas en 20 s, l'exporter sort quand même, en le journalisant, plutôt que d'être tué par le superviseur. L'unité systemd donne 30 s (`TimeoutStopSec`) ; avec Docker, réglez `stop_grace_period: 30s`. |
 | Délai de cycle | Le délai d'un cycle n'interrompt jamais une commande en cours : il empêche seulement d'en lancer de nouvelles. |
-| Diagnostic | Un `ENOMEM` sur une commande de gestion est signalé comme une réserve probablement épuisée, réparable seulement par un redémarrage. |
+| Diagnostic | Un `ENOMEM` sur une commande de gestion est journalisé avec ses deux causes possibles : réserve probablement épuisée, ou tampon d'une grande commande non alloué. |
 
 **Ce que l'exporter ne protège pas :**
 - un `SIGKILL` (`docker kill`, `docker rm -f`, fin du délai de grâce) ;
@@ -65,10 +71,12 @@ Depuis la v0.1.2 :
 sudo tools/aacraid-fib-trace.sh            # Ctrl+C pour arrêter ; bilan par programme
 ```
 
+La trace va dans un répertoire privé créé sous `/var/tmp` (chemin affiché au démarrage, lisible par root seul). Un fichier donné en argument ne doit pas exister : le script refuse d'écraser un fichier. À l'arrêt, il retire la sonde, vérifie le retrait et le signale s'il a échoué.
+
 - `ret=0` : la commande s'est terminée normalement.
 - `ret=-512` : la commande a été interrompue, et un bloc est perdu. La ligne donne le nom et le PID du programme.
 
-La sonde coûte peu (un événement par commande de gestion) et peut tourner plusieurs jours. Elle disparaît au redémarrage.
+La sonde s'exécute à chaque retour de `aac_fib_send`, y compris pour chaque entrée-sortie disque. Le filtre n'écarte ces dernières qu'ensuite, et seules les commandes de gestion sont écrites. Son coût sous forte charge disque n'a pas été mesuré : sur une machine chargée, préférer des sessions courtes. Elle disparaît au redémarrage.
 
 ## Réglage `cache` du pilote
 
@@ -84,7 +92,10 @@ Avec `0` ou `7`, les programmes qui appellent souvent `fsync` (bases de données
 
 ## Validation
 
-- **Tests unitaires** (`internal/transport/aacio/thread_test.go`) : un appel système bloquant, émis depuis le thread dédié, n'est pas interrompu par `SIGURG`, `SIGTERM` ni `SIGUSR1`. Sans le masque, le même test échoue avec `EINTR`. L'arrêt attend la fin de la collecte en cours (`TestRunnerDrain`, `TestWaitIdle`).
+- **Tests unitaires** :
+  - `internal/transport/aacio/thread_test.go` : un appel système bloquant, émis depuis le thread dédié, n'est pas interrompu par `SIGURG`, `SIGTERM` ni `SIGUSR1`. Sans le masque, le même test échoue avec `EINTR`. Le thread système est détruit à la fermeture du nœud ;
+  - `internal/transport/aacio/device_test.go` : une fois l'arrêt demandé, aucune requête n'atteint le noyau, ni relecture après `0xc5`, ni seconde lecture du module de protection ;
+  - `internal/modules/aacmod/aacmod_test.go` et `cmd/hwraid-exporter/main_test.go` : un arrêt pendant une commande bloquée attend cette commande, n'en envoie aucune autre et ne lance plus de cycle ; l'attente des collectes en cours est bornée (`TestRunnerDrain`, `TestWaitIdle`).
 - **Hôte de référence**, Adaptec 6805, Linux 5.10, le 2026-11-24, avec la sonde active :
   - pendant 30 minutes d'exporter, 1 924 commandes, toutes rendues normalement, sans aucune perte, y compris pour ARCCONF et maxView ;
   - arrêt par `docker stop` en 0,6 s avec le code 0.

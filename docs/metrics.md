@@ -10,7 +10,7 @@ Les métriques sont **les mêmes quel que soit le pilote, le contrôleur ou le c
 - **Objets locaux.** `volume` et `disk` sont des identifiants propres à la carte, stables tant que la configuration ne change pas : UID du conteneur en hexadécimal pour `volume` (aacraid), `d<numéro>` pour `disk`. Ils n'ont de sens qu'avec `controller`.
 - **États.** Une série d'état vaut 1 et porte l'état observé dans le label `state`, pris dans un vocabulaire fermé (ci-dessous). Une seule série par objet à un instant donné.
 - **Absence.** Une valeur non observée n'est pas publiée : lecture en échec, état non établi ou fonction non prise en charge. L'absence d'une série ne signifie jamais « tout va bien » : elle se surveille avec `hwraid_collection_success` et `hwraid_collector_supported`.
-- **Identifiants matériels.** Les numéros de série et WWN sont publiés comme labels d'inventaire (`controller` pour la carte, `hwraid_disk_info` pour les disques, à venir) : ils permettent de corréler l'inventaire de la carte avec celui d'autres outils, par exemple smartctl_exporter. Ils n'apparaissent pas dans les journaux de l'exporter, et la documentation du dépôt n'utilise que des valeurs fictives.
+- **Identifiants matériels.** Les numéros de série et WWN sont publiés comme labels d'inventaire (`controller` pour la carte, `hwraid_disk_info` pour les disques) : ils permettent de corréler l'inventaire de la carte avec celui d'autres outils, par exemple smartctl_exporter. Ils n'apparaissent pas dans les journaux de l'exporter, et la documentation du dépôt n'utilise que des valeurs fictives.
 
 ## Vocabulaires normalisés
 
@@ -20,7 +20,7 @@ Les métriques sont **les mêmes quel que soit le pilote, le contrôleur ou le c
 | `hwraid_disk_state` / `state` | `online`, `rebuilding`, `failed` | toutes |
 | `hwraid_cache_protection_state` / `state` | `optimal`, `charging`, `failed`, `unknown` | toutes (`charging` et `optimal` non encore observés sur matériel ; `unknown` pour toute combinaison de bits non qualifiée, jamais publiée comme saine) |
 | `hwraid_volume_info` / `raid_level` | `raid0`, `raid1`, `raid1e`, `raid5`, `raid6`, `raid10`, `raid50`, `raid60`, `concat`, `unknown` | `raid1`, `concat`, `unknown` |
-| `hwraid_volume_write_cache_policy` / `policy` | `write_back_always` (cache actif même sans protection), `write_back_when_protected` (actif seulement si le module de protection est opérationnel), `write_through` (désactivé), `unknown` | toutes sauf `unknown` (les trois réglages observés sur matériel) |
+| `hwraid_volume_write_cache_policy` / `policy` | `write_back_always` (cache actif même sans protection), `write_back_when_protected` (actif seulement si le module de protection est opérationnel), `write_through` (désactivé), `unknown` | toutes (les trois réglages connus observés sur matériel ; `unknown`, avec la valeur brute dans `vendor_policy`, pour toute autre valeur) |
 | `hwraid_cache_protection_present` / `type` | `flash_supercap` (supercondensateur et mémoire flash : ZMM/AFM, CacheVault, FBWC), `battery` (BBU) | `flash_supercap` |
 
 `unknown` signifie que la carte a répondu, mais que l'exporter ne sait pas interpréter la réponse avec certitude (type de volume non qualifié, drapeau inconnu, propagation non établie). C'est un état à surveiller, pas une panne.
@@ -52,7 +52,7 @@ Valeurs réservées pour les modules à venir, non publiées aujourd'hui : `redu
 | `hwraid_collection_success` | `controller`, `collector` | 1 si la dernière lecture du collecteur a abouti, 0 sinon ; absente si elle n'a pas été tentée |
 | `hwraid_collector_supported` | `controller`, `collector` | 0 si la carte ne permet pas ce collecteur ; absente sinon |
 | `hwraid_collection_last_success_timestamp_seconds` | `controller`, `collector` | date Unix du dernier cycle où la lecture a abouti ; absente tant qu'elle n'a jamais abouti depuis le démarrage de l'exporter, et pour un collecteur servi par une réponse gardée en mémoire (`capabilities`) |
-| `hwraid_transfer_close_unconfirmed_total` | `controller` | compteur des lectures paginées rejetées parce que leur clôture a été confirmée par un statut non nominal (aacraid : `0xc5`, observé quand un autre outil, comme maxView, interroge la carte en même temps). Une lecture rejetée est refaite une fois dans le même cycle ; ses données ne sont jamais publiées |
+| `hwraid_transfer_close_unconfirmed_total` | `controller` | compteur des lectures paginées rejetées parce que leur clôture a été confirmée par un statut non nominal (aacraid : `0xc5`, observé quand un autre outil, comme maxView, interroge la carte en même temps). Une lecture rejetée est refaite une fois dans le même cycle ; ses données ne sont jamais publiées. Les rejets d'une collecte rendue après son délai sont comptés au cycle suivant |
 | `hwraid_collection_interval_seconds` | `controller` | intervalle de collecte effectif (option `-interval`), publié pour chaque carte prise en charge |
 
 **Collecte hors délai.** Les cartes sont collectées en parallèle ; une carte qui n'a pas répondu dans le délai (`-collect-timeout`, 30 s par défaut ou l'intervalle s'il est plus court) est publiée avec tous ses collecteurs à 0, sans série d'état, et ses dates de dernier succès sont conservées. Tant que la commande bloquée n'a pas rendu la main, aucune nouvelle commande n'est envoyée à cette carte.

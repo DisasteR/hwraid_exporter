@@ -4,9 +4,9 @@
 package module
 
 import (
+	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/DisasteR/hwraid_exporter/internal/nodes"
 	"github.com/DisasteR/hwraid_exporter/internal/sysfs"
@@ -20,12 +20,12 @@ type fake struct {
 	nodes  func(Card) ([]NodeRequest, error)
 }
 
-func (f fake) Name() string                              { return f.name }
-func (f fake) Match(c Card) bool                         { return c.PCI.Driver == f.driver }
-func (f fake) Capabilities() uint64                      { return f.caps }
-func (fake) Collectors() []string                        { return nil }
-func (f fake) Collect(Card, []NodeRef, time.Time) Result { return Result{NodeValid: true} }
-func (f fake) Nodes(c Card) ([]NodeRequest, error)       { return f.nodes(c) }
+func (f fake) Name() string                                    { return f.name }
+func (f fake) Match(c Card) bool                               { return c.PCI.Driver == f.driver }
+func (f fake) Capabilities() uint64                            { return f.caps }
+func (fake) Collectors() []string                              { return nil }
+func (f fake) Collect(context.Context, Card, []NodeRef) Result { return Result{NodeValid: true} }
+func (f fake) Nodes(c Card) ([]NodeRequest, error)             { return f.nodes(c) }
 
 func perCard(prefix, majorOf string) func(Card) ([]NodeRequest, error) {
 	return func(c Card) ([]NodeRequest, error) {

@@ -45,14 +45,16 @@ func asyncSignalMask() unix.Sigset_t {
 // système réservé dont les signaux asynchrones sont bloqués.
 type quietThread struct {
 	work chan func()
+	done chan struct{} // fermé quand la goroutine du thread se termine
 }
 
 // startQuietThread démarre le thread. Une erreur de masquage est rendue
 // telle quelle : aucune commande n'est alors émise (échec fermé).
 func startQuietThread() (*quietThread, error) {
-	q := &quietThread{work: make(chan func())}
+	q := &quietThread{work: make(chan func()), done: make(chan struct{})}
 	ready := make(chan error, 1)
 	go func() {
+		defer close(q.done)
 		// Jamais déverrouillé : à la sortie de la goroutine, le runtime
 		// détruit le thread au lieu de le rendre, masque compris, à
 		// d'autres goroutines.

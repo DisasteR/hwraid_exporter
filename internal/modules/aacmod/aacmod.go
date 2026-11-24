@@ -7,13 +7,13 @@
 package aacmod
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/DisasteR/hwraid_exporter/internal/aacraid"
 	"github.com/DisasteR/hwraid_exporter/internal/allowlist"
@@ -24,14 +24,26 @@ import (
 )
 
 // device est la partie du transport utilisée par le module (injectable).
+// Chaque commande firmware est soumise au contexte de la collecte : une fois
+// celui-ci terminé (échéance du cycle ou arrêt du service), le transport
+// n'en envoie plus de nouvelle (aacio.ErrStopped).
 type device interface {
+	HBAInfo() (aacraid.HBAInfo, error)
+	SupplementInfo(ctx context.Context) (aacraid.SupplementInfo, error)
+	CacheProtection(ctx context.Context) (bool, aacraid.ZMMStatus, error)
+	ReadPaged(ctx context.Context, r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error)
+	ConnectorMap(ctx context.Context) (aacraid.ConnectorMap, error)
+	CloseUnconfirmed() int
+	Close() error
+}
+
+// reader est le périphérique lié au contexte d'une collecte.
+type reader interface {
 	HBAInfo() (aacraid.HBAInfo, error)
 	SupplementInfo() (aacraid.SupplementInfo, error)
 	CacheProtection() (bool, aacraid.ZMMStatus, error)
 	ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error)
 	ConnectorMap() (aacraid.ConnectorMap, error)
-	CloseUnconfirmed() int
-	Close() error
 }
 
 // StateCollectors sont les collecteurs qui reposent sur les lectures de
@@ -57,7 +69,6 @@ const CacheProtectionCollector = "cache_protection"
 // Module implémente module.Module pour aacraid.
 type Module struct {
 	open func(path string, dev uint64) (device, error)
-	now  func() time.Time // horloge de l'échéance (nil : time.Now)
 
 	mu sync.Mutex
 	// supplement garde, par carte et par nœud, la réponse à
@@ -116,52 +127,32 @@ func (*Module) Nodes(c module.Card) ([]module.NodeRequest, error) {
 	return []module.NodeRequest{{Name: "aac" + strconv.FormatUint(uint64(uid), 10), MajorOf: "aac", Minor: uid}}, nil
 }
 
+// bound lie le périphérique au contexte de la collecte.
+type bound struct {
+	dev device
+	ctx context.Context
+}
+
+func (b bound) HBAInfo() (aacraid.HBAInfo, error) { return b.dev.HBAInfo() }
+func (b bound) SupplementInfo() (aacraid.SupplementInfo, error) {
+	return b.dev.SupplementInfo(b.ctx)
+}
+func (b bound) CacheProtection() (bool, aacraid.ZMMStatus, error) {
+	return b.dev.CacheProtection(b.ctx)
+}
+func (b bound) ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error) {
+	return b.dev.ReadPaged(b.ctx, r, param, size, need)
+}
+func (b bound) ConnectorMap() (aacraid.ConnectorMap, error) { return b.dev.ConnectorMap(b.ctx) }
+
 // Collect ouvre le nœud préparé, lit FSACTL_GET_HBA_INFO (réponse du pilote,
 // sans commande firmware) et vérifie qu'il désigne bien cette carte. Il lit
 // ensuite, une fois par carte, RequestSupplementAdapterInfo : si la carte
 // n'annonce pas l'interface des lectures d'état, les collecteurs d'état sont
-// déclarés non pris en charge et aucune autre lecture n'est tentée.
-// ErrDeadline : l'échéance du cycle est passée, aucune nouvelle commande
-// n'est envoyée à la carte.
-var ErrDeadline = errors.New("collection deadline exceeded")
-
-// bounded enveloppe le périphérique : chaque commande firmware est refusée
-// une fois l'échéance passée. Une lecture paginée déjà commencée n'est pas
-// concernée : ReadPaged la mène jusqu'à sa clôture.
-type bounded struct {
-	device
-	expired func() bool
-}
-
-func (b bounded) SupplementInfo() (aacraid.SupplementInfo, error) {
-	if b.expired() {
-		return aacraid.SupplementInfo{}, ErrDeadline
-	}
-	return b.device.SupplementInfo()
-}
-
-func (b bounded) CacheProtection() (bool, aacraid.ZMMStatus, error) {
-	if b.expired() {
-		return false, aacraid.ZMMStatus{}, ErrDeadline
-	}
-	return b.device.CacheProtection()
-}
-
-func (b bounded) ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error) {
-	if b.expired() {
-		return nil, ErrDeadline
-	}
-	return b.device.ReadPaged(r, param, size, need)
-}
-
-func (b bounded) ConnectorMap() (aacraid.ConnectorMap, error) {
-	if b.expired() {
-		return aacraid.ConnectorMap{}, ErrDeadline
-	}
-	return b.device.ConnectorMap()
-}
-
-func (m *Module) Collect(c module.Card, refs []module.NodeRef, deadline time.Time) (res module.Result) {
+// déclarés non pris en charge et aucune autre lecture n'est tentée. Une fois
+// ctx terminé, aucune nouvelle commande firmware n'est envoyée ; les
+// collecteurs non lus sont en échec (aacio.ErrStopped).
+func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeRef) (res module.Result) {
 	if len(refs) != 1 {
 		return module.Result{Err: fmt.Errorf("%d prepared node(s), 1 expected", len(refs))}
 	}
@@ -181,11 +172,7 @@ func (m *Module) Collect(c module.Card, refs []module.NodeRef, deadline time.Tim
 	// Clôtures confirmées autrement que par 0xc6 pendant ce cycle, quel que
 	// soit le chemin de retour.
 	defer func() { res.CloseUnconfirmed = raw.CloseUnconfirmed() }()
-	now := m.now
-	if now == nil {
-		now = time.Now
-	}
-	d := bounded{device: raw, expired: func() bool { return !deadline.IsZero() && now().After(deadline) }}
+	d := bound{dev: raw, ctx: ctx}
 	info, err := d.HBAInfo()
 	if err != nil {
 		return module.Result{Err: err}
@@ -268,7 +255,7 @@ func hostOf(c module.Card) (int, sysfs.SCSIHost, error) {
 // jamais de configuration ni d'inventaire partiels. L'inventaire réutilise
 // la liste des disques présents : il n'est pas lu si la configuration ne
 // l'a pas été.
-func (m *Module) collectVolumes(r *module.Result, d device, key string, h sysfs.SCSIHost) {
+func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.SCSIHost) {
 	vols, disks, present, err := readConfiguration(d)
 	for _, col := range StateCollectors {
 		r.Collected[col] = err == nil
@@ -337,7 +324,7 @@ func osDevices(h sysfs.SCSIHost, inv []aacraid.DiskInfo) []module.DiskOSDevice {
 // de l'information de disque lue pendant le cycle : sinon la carte a changé
 // ou une réponse est incohérente, et aucun emplacement n'est publié. Un
 // disque sans entrée (derrière un expandeur) n'a pas d'emplacement publié.
-func (m *Module) locations(key string, d device, inv []aacraid.DiskInfo) ([]module.DiskLocation, error) {
+func (m *Module) locations(key string, d reader, inv []aacraid.DiskInfo) ([]module.DiskLocation, error) {
 	cm, err := m.connectorMap(key, d, inv)
 	if err != nil {
 		return nil, err
@@ -378,7 +365,7 @@ func diskSet(inv []aacraid.DiskInfo) string {
 // connectorMap lit la carte des connecteurs une fois par carte et par nœud,
 // hors du verrou, et la relit quand l'ensemble des disques présents change
 // (disque ajouté ou retiré à chaud). Une lecture en échec n'est pas gardée.
-func (m *Module) connectorMap(key string, d device, inv []aacraid.DiskInfo) (aacraid.ConnectorMap, error) {
+func (m *Module) connectorMap(key string, d reader, inv []aacraid.DiskInfo) (aacraid.ConnectorMap, error) {
 	set := diskSet(inv)
 	m.mu.Lock()
 	k, ok := m.connectors[key]
@@ -409,7 +396,7 @@ func (m *Module) forgetConnectorMap(key string) {
 
 // readInventory lit l'information de chaque disque présent. Seul le début
 // de chaque réponse est lu (DiskInfoNeed), puis le transfert est clos.
-func readInventory(d device, nums []uint32) ([]aacraid.DiskInfo, error) {
+func readInventory(d reader, nums []uint32) ([]aacraid.DiskInfo, error) {
 	sorted := append([]uint32(nil), nums...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
 	out := make([]aacraid.DiskInfo, 0, len(sorted))
@@ -430,7 +417,7 @@ func readInventory(d device, nums []uint32) ([]aacraid.DiskInfo, error) {
 	return out, nil
 }
 
-func readConfiguration(d device) ([]module.Volume, []module.Disk, []uint32, error) {
+func readConfiguration(d reader) ([]module.Volume, []module.Disk, []uint32, error) {
 	raw, err := d.ReadPaged(aacraid.ReadContainerList, 0, 0, aacraid.ContainerListNeed)
 	if err != nil {
 		return nil, nil, nil, err
@@ -570,7 +557,7 @@ func disksOf(ev aacraid.Evaluation) []module.Disk {
 
 // collectCacheProtection lit l'état du module de protection du cache, à
 // chaque cycle : cet état change (charge, panne) sans redémarrage.
-func collectCacheProtection(r *module.Result, d device) {
+func collectCacheProtection(r *module.Result, d reader) {
 	described, st, err := d.CacheProtection()
 	switch {
 	case err != nil:
@@ -593,7 +580,7 @@ func collectCacheProtection(r *module.Result, d device) {
 // supplementInfo lit la réponse 706 une seule fois par carte et par nœud.
 // La lecture firmware se fait hors du verrou : une carte qui ne répond pas
 // ne doit pas bloquer la collecte des autres.
-func (m *Module) supplementInfo(key string, d device) (aacraid.SupplementInfo, error) {
+func (m *Module) supplementInfo(key string, d reader) (aacraid.SupplementInfo, error) {
 	m.mu.Lock()
 	s, ok := m.supplement[key]
 	m.mu.Unlock()

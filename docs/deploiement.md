@@ -31,7 +31,7 @@ Image : `ghcr.io/disaster/hwraid_exporter:<version>` (par exemple `v0.1.0`). Seu
 ```yaml
 services:
   hwraid-exporter:
-    image: ghcr.io/disaster/hwraid_exporter:v0.1.1
+    image: ghcr.io/disaster/hwraid_exporter:v0.1.2
     read_only: true
     cap_drop: [ALL]
     cap_add: [MKNOD, CHOWN, SETUID, SETGID, SETPCAP, SYS_RAWIO]
@@ -80,8 +80,10 @@ Puis installer le binaire téléchargé (`hwraid-exporter-<version>-linux-amd64`
 sudo install -m 0755 hwraid-exporter-<version>-linux-amd64 /usr/local/bin/hwraid-exporter
 ```
 
+L'unité systemd est jointe à chaque publication GitHub (`hwraid-exporter.service`, somme dans `SHA256SUMS`) ; elle est aussi dans les sources du tag (`deploy/systemd/`) :
+
 ```bash
-sudo install -m 0644 deploy/systemd/hwraid-exporter.service /etc/systemd/system/
+sudo install -m 0644 hwraid-exporter.service /etc/systemd/system/
 ```
 
 ```bash
@@ -104,7 +106,8 @@ Le pilote `aacraid` perd un bloc de commande de gestion, jusqu'au redémarrage d
 
 - arrêter le conteneur par `docker stop` ou `docker compose down`, jamais `docker rm -f` ni `docker kill` ; garder `stop_grace_period: 30s` (le délai par défaut de Docker est de 10 s) ;
 - ne pas tuer un autre outil de gestion pendant qu'il travaille : pas de `timeout` court ni de `SIGKILL` autour d'ARCCONF. Dans un conteneur qui lance ARCCONF, le processus principal doit, à réception de `SIGTERM`, attendre la fin de la commande en cours avant de sortir : quand il sort, le noyau tue tous les processus du conteneur, ARCCONF compris, quel que soit `stop_grace_period` (un init comme `--init` n'y change rien) ;
-- réserve épuisée (`cannot allocate memory` au journal) : seul un redémarrage la reconstitue. **Avant de redémarrer, arrêter les applications qui écrivent, lancer `sync` et attendre une minute** : réserve vide, le pilote ne peut pas demander à la carte de vider son cache à l'arrêt ([pourquoi](aacraid-defaut-pilote.md#conséquence-à-larrêt--cache-non-vidé)).
+- protection du cache en panne (`HwraidCacheProtectionFailed`) : régler aussitôt le cache d'écriture des volumes en mode « seulement si protégé » (`wbb`), tant qu'ARCCONF fonctionne. C'est la seule protection fiable contre une perte au redémarrage ;
+- réserve épuisée (`cannot allocate memory` sur toutes les lectures) : seul un redémarrage la reconstitue, et le pilote ne pourra pas demander à la carte de vider son cache à l'arrêt. Si le cache d'écriture est actif sans protection, aucun moyen ne permet de vérifier qu'il est vide : arrêter les applications qui écrivent, lancer `sync` et laisser du temps à la carte **réduit le risque sans l'éliminer** ([détails](aacraid-defaut-pilote.md#conséquence-à-larrêt--cache-non-vidé)).
 
 ## Prometheus
 
@@ -139,6 +142,6 @@ Attendu : `hwraid_snapshot_ready 1`, `hwraid_discovery_success 1`, `hwraid_manag
 | `collection_success 0` avec une erreur `EPERM` au journal | `userns-remap`, Docker rootless ou capacité `SYS_RAWIO` retirée |
 | `hwraid_collector_supported 0` sur une carte | modèle ou firmware non qualifié : carte inventoriée seulement |
 | `hwraid_discovery_success 0` | sysfs partiellement illisible : voir l'avertissement `unreadable SCSI hosts` au journal |
-| `collection_success 0` avec `cannot allocate memory` au journal | réserve de commandes de gestion du pilote épuisée : voir « Limite du pilote aacraid » avant de redémarrer |
+| `collection_success 0` avec `cannot allocate memory` au journal | sur toutes les lectures : réserve de commandes de gestion du pilote très probablement épuisée, voir « Limite du pilote aacraid » avant de redémarrer ; sur une seule lecture, suivie de succès : tampon d'une grande commande non alloué, passager |
 | `hwraid_transfer_close_unconfirmed_total` augmente souvent | un autre outil (maxView, ARCCONF) interroge probablement la carte en même temps : chaque lecture rejetée est refaite, sans conséquence tant que `collection_success` reste à 1 ; si des lectures échouent, réduire la fréquence de l'autre outil ou l'arrêter temporairement ([interface aacraid](aacraid-interface.md), section 4) |
 | le conteneur s'arrête avec le code 3 | nœuds attendus changés depuis le démarrage : `restart: unless-stopped` le relance |

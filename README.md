@@ -2,7 +2,7 @@
 
 Prometheus exporter for hardware RAID controllers. It talks directly to the Linux drivers and needs no vendor tool (ARCCONF, StorCLI, ssacli) at runtime.
 
-> **Status: v0.1.1.** First target: Adaptec 6805 (`aacraid` driver). Validated on real hardware: optimal volume and disk states, RAID levels, disk inventory, location and Linux device, failed cache protection (ZMM), volume write-cache policy (all three settings) and state (off). The degraded, rebuilding and failed volume states and the charging and optimal ZMM states are covered by tests on constructed data only, not yet observed on hardware. The write cache turning on again once the ZMM is optimal is not yet observed on hardware. Not yet available: task progress (rebuild), controller statistics.
+> **Status: v0.1.2.** First target: Adaptec 6805 (`aacraid` driver). Validated on real hardware: optimal volume and disk states, RAID levels, disk inventory, location and Linux device, failed cache protection (ZMM), volume write-cache policy (all three settings) and state (off). The degraded, rebuilding and failed volume states and the charging and optimal ZMM states are covered by tests on constructed data only, not yet observed on hardware. The write cache turning on again once the ZMM is optimal is not yet observed on hardware. Not yet available: task progress (rebuild), controller statistics.
 
 ## How it works
 
@@ -48,7 +48,7 @@ No component is needed on the host. Reference Compose profile, validated on the 
 ```yaml
 services:
   hwraid-exporter:
-    image: ghcr.io/disaster/hwraid_exporter:v0.1.1
+    image: ghcr.io/disaster/hwraid_exporter:v0.1.2
     read_only: true
     cap_drop: [ALL]
     cap_add: [MKNOD, CHOWN, SETUID, SETGID, SETPCAP, SYS_RAWIO]
@@ -61,7 +61,14 @@ services:
     # a firewall.
     command: ["serve", "-listen", "0.0.0.0:9799"]
     restart: unless-stopped
+    # On SIGTERM the exporter waits up to 20 s for a card command already
+    # sent: killing it during one makes the aacraid driver lose a command
+    # block until the next reboot (docs/aacraid-defaut-pilote.md). Docker's
+    # default is 10 s.
+    stop_grace_period: 30s
 ```
+
+Stop the container with `docker stop` or `docker compose down`, never `docker rm -f` or `docker kill`.
 
 The nodes are created in the container's own `/dev`, not on the host. Why each capability is needed: [CDC §6.5](cdc/cahier-des-charges-aacraid-exporter.md). Full deployment guide, including the systemd unit for native installs: [docs/deploiement.md](docs/deploiement.md).
 

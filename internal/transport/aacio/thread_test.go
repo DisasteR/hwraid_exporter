@@ -4,7 +4,9 @@
 package aacio
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/signal"
 	"strconv"
@@ -137,35 +139,49 @@ func TestDriverPoolExhausted(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	_, err = d.SupplementInfo()
-	if !errors.Is(err, ErrDriverPoolExhausted) || !errors.Is(err, unix.ENOMEM) {
-		t.Fatalf("SENDFIB : ErrDriverPoolExhausted et ENOMEM attendus, obtenu %v", err)
+	_, err = d.SupplementInfo(context.Background())
+	if !errors.Is(err, ErrDriverNoMemory) || !errors.Is(err, unix.ENOMEM) {
+		t.Fatalf("SENDFIB : ErrDriverNoMemory et ENOMEM attendus, obtenu %v", err)
 	}
-	if _, err = d.ConnectorMap(); !errors.Is(err, ErrDriverPoolExhausted) {
-		t.Fatalf("SEND_LARGE_FIB : ErrDriverPoolExhausted attendu, obtenu %v", err)
+	if _, err = d.ConnectorMap(context.Background()); !errors.Is(err, ErrDriverNoMemory) {
+		t.Fatalf("SEND_LARGE_FIB : ErrDriverNoMemory attendu, obtenu %v", err)
 	}
 	_, err = d.HBAInfo()
-	if !errors.Is(err, unix.ENOMEM) || errors.Is(err, ErrDriverPoolExhausted) {
+	if !errors.Is(err, unix.ENOMEM) || errors.Is(err, ErrDriverNoMemory) {
 		t.Fatalf("GET_HBA_INFO : ENOMEM seul attendu, obtenu %v", err)
 	}
 	fakeIoctl(t, func(uint32, []byte) error { return unix.EIO })
-	if _, err = d.SupplementInfo(); errors.Is(err, ErrDriverPoolExhausted) {
+	if _, err = d.SupplementInfo(context.Background()); errors.Is(err, ErrDriverNoMemory) {
 		t.Fatalf("EIO qualifié à tort : %v", err)
 	}
 }
 
-// Close termine le thread : pas de thread perdu à chaque cycle.
+// Close termine le thread : la goroutine sort et le thread système, jamais
+// rendu au runtime, est détruit. Pas de thread perdu à chaque cycle.
 func TestCloseStopsQuietThread(t *testing.T) {
 	d, err := Open("/dev/null", devNull, list(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	q := d.thread
+	var tid int
+	q.run(func() { tid = unix.Gettid() })
+	task := fmt.Sprintf("/proc/self/task/%d", tid)
+	if _, err := os.Stat(task); err != nil {
+		t.Fatalf("thread %d introuvable avant Close : %v", tid, err)
+	}
 	d.Close()
-	defer func() {
-		if recover() == nil {
-			t.Fatal("le thread accepte encore du travail après Close")
+	select {
+	case <-q.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("la goroutine du thread ne se termine pas")
+	}
+	for end := time.Now().Add(2 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if _, err := os.Stat(task); os.IsNotExist(err) {
+			return
 		}
-	}()
-	q.work <- func() {}
+		if time.Now().After(end) {
+			t.Fatalf("thread système %d toujours présent après Close", tid)
+		}
+	}
 }

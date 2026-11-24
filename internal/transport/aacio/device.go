@@ -7,6 +7,7 @@
 package aacio
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"runtime"
@@ -32,11 +33,27 @@ var ioctlFn = func(fd int, req uint32, buf []byte) error {
 	return nil
 }
 
-// ErrDriverPoolExhausted : le pilote a refusé une commande de gestion
-// faute de mémoire. Sous aacraid, c'est le signe que sa réserve de blocs de
-// commande de gestion est épuisée (voir thread.go) : seul un redémarrage de
-// la machine la reconstitue.
-var ErrDriverPoolExhausted = errors.New("driver management command pool probably exhausted (aacraid loses one per interrupted command); a reboot restores it, see docs/deploiement.md")
+// ErrDriverNoMemory : le pilote a refusé une commande de gestion faute de
+// mémoire. ioctl_send_fib (commctrl.c) rend ENOMEM dans deux cas : sa
+// réserve de blocs de commande de gestion est vide, ce qui ne se répare que
+// par un redémarrage (voir thread.go), ou, pour une commande plus grande que
+// le bloc, le tampon DMA n'a pas pu être alloué, ce qui est passager. Des
+// ENOMEM répétés sur toutes les lectures désignent la réserve vide.
+var ErrDriverNoMemory = errors.New("the driver refused a management command for lack of memory: its management command pool is probably exhausted (aacraid loses one block per interrupted command, only a reboot restores it), unless a large command could not get a DMA buffer; see docs/aacraid-defaut-pilote.md")
+
+// ErrStopped : la collecte est arrêtée (échéance du cycle ou arrêt du
+// service) ; aucune nouvelle commande n'est envoyée à la carte.
+var ErrStopped = errors.New("collection stopped: no new card command sent")
+
+// admit autorise une nouvelle commande firmware tant que ctx n'est pas
+// terminé. La clôture d'un transfert déjà ouvert ne passe pas par admit :
+// un transfert engagé est toujours clos.
+func admit(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%w (%w)", ErrStopped, err)
+	}
+	return nil
+}
 
 // ErrClosed : le nœud a déjà été refermé.
 var ErrClosed = errors.New("management node closed")
@@ -115,7 +132,7 @@ func (d *Device) Do(req allowlist.Request) error {
 	var err error
 	d.thread.run(func() { err = ioctlFn(d.fd, priv.Ioctl, priv.Buf) })
 	if errors.Is(err, unix.ENOMEM) && priv.Ioctl != aacraid.IoctlGetHBAInfo {
-		return fmt.Errorf("ioctl %#x on %s: %w: %w", req.Ioctl, d.path, err, ErrDriverPoolExhausted)
+		return fmt.Errorf("ioctl %#x on %s: %w: %w", req.Ioctl, d.path, err, ErrDriverNoMemory)
 	}
 	if err != nil {
 		return fmt.Errorf("ioctl %#x on %s: %w", req.Ioctl, d.path, err)
@@ -135,7 +152,10 @@ func (d *Device) HBAInfo() (aacraid.HBAInfo, error) {
 
 // SupplementInfo envoie RequestSupplementAdapterInfo (706) au firmware et
 // décode la réponse.
-func (d *Device) SupplementInfo() (aacraid.SupplementInfo, error) {
+func (d *Device) SupplementInfo(ctx context.Context) (aacraid.SupplementInfo, error) {
+	if err := admit(ctx); err != nil {
+		return aacraid.SupplementInfo{}, err
+	}
 	buf := aacraid.SupplementInfoRequest()
 	if err := d.Do(allowlist.Request{Ioctl: aacraid.IoctlSendFIB, Buf: buf}); err != nil {
 		return aacraid.SupplementInfo{}, err
@@ -145,7 +165,10 @@ func (d *Device) SupplementInfo() (aacraid.SupplementInfo, error) {
 
 // ConnectorMap envoie RequestConnectorMap (708) par FSACTL_SEND_LARGE_FIB,
 // comme l'outil de référence, et décode la réponse.
-func (d *Device) ConnectorMap() (aacraid.ConnectorMap, error) {
+func (d *Device) ConnectorMap(ctx context.Context) (aacraid.ConnectorMap, error) {
+	if err := admit(ctx); err != nil {
+		return aacraid.ConnectorMap{}, err
+	}
 	buf := aacraid.ConnectorMapRequest()
 	if err := d.Do(allowlist.Request{Ioctl: aacraid.IoctlSendLargeFIB, Buf: buf}); err != nil {
 		return aacraid.ConnectorMap{}, err
@@ -163,14 +186,21 @@ func (d *Device) fib(req []byte) ([]byte, error) {
 
 // CacheProtection lit l'état du module de protection du cache : lecture de
 // présence, puis lecture d'état si la carte y décrit son module. present
-// vaut false si la carte ne décrit pas de module dans ce format.
-func (d *Device) CacheProtection() (present bool, st aacraid.ZMMStatus, err error) {
+// vaut false si la carte ne décrit pas de module dans ce format. Chacune des
+// deux lectures est soumise à ctx.
+func (d *Device) CacheProtection(ctx context.Context) (present bool, st aacraid.ZMMStatus, err error) {
+	if err := admit(ctx); err != nil {
+		return false, st, err
+	}
 	rsp, err := d.fib(aacraid.CacheProtectionPresenceRequest())
 	if err != nil {
 		return false, st, err
 	}
 	if present, err = aacraid.DecodeCacheProtectionPresence(rsp); err != nil || !present {
 		return false, st, err
+	}
+	if err := admit(ctx); err != nil {
+		return true, st, err
 	}
 	if rsp, err = d.fib(aacraid.CacheProtectionStateRequest()); err != nil {
 		return true, st, err
@@ -210,10 +240,18 @@ const pagedAttempts = 2
 
 // ReadPaged effectue une lecture paginée qualifiée (readOnce). Une lecture
 // dont la clôture est confirmée par 0xc5 est rejetée, comme le fait l'outil
-// de référence, puis refaite une seule fois.
-func (d *Device) ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error) {
+// de référence, puis refaite une seule fois. ctx est vérifié avant chaque
+// ouverture de transfert, y compris celle de la seconde tentative, et avant
+// chaque morceau ; un transfert ouvert est toujours clos.
+func (d *Device) ReadPaged(ctx context.Context, r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error) {
 	for attempt := 1; ; attempt++ {
-		data, rejected, err := d.readOnce(r, param, size, need)
+		if err := admit(ctx); err != nil {
+			if attempt > 1 {
+				return nil, fmt.Errorf("read %d: data rejected (close status %#x), not read again: %w", r, aacraid.MarkClosedOther, err)
+			}
+			return nil, err
+		}
+		data, rejected, err := d.readOnce(ctx, r, param, size, need)
 		if err != nil || !rejected {
 			return data, err
 		}
@@ -230,8 +268,10 @@ const maxPagedTotal = 0x1004
 // ReadPaged effectue une lecture paginée qualifiée et renvoie au moins
 // need(données lues) octets, ou tout le transfert. Le transfert est clôturé
 // dès que les données suffisent, et dans tous les cas après son ouverture,
-// même en cas d'erreur : le firmware ne garde pas de transfert ouvert.
-func (d *Device) readOnce(r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, bool, error) {
+// même en cas d'erreur : le firmware ne garde pas de transfert ouvert. Si
+// ctx se termine pendant le transfert, aucun autre morceau n'est demandé :
+// le transfert est clos aussitôt et la lecture est en échec.
+func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, bool, error) {
 	open, err := aacraid.OpenRequest(r, param, size)
 	if err != nil {
 		return nil, false, err
@@ -256,6 +296,13 @@ func (d *Device) readOnce(r aacraid.PagedRead, param, size uint32, need func([]b
 	last := uint32(0)
 	readErr := func() error {
 		for n := uint32(0); n < (head.Total+aacraid.ChunkData-1)/aacraid.ChunkData; n++ {
+			// Le morceau 0 est toujours lu : la clôture n'a été observée,
+			// chez l'outil de référence, qu'après au moins un morceau.
+			if n > 0 {
+				if err := admit(ctx); err != nil {
+					return fmt.Errorf("read %d: %w", r, err)
+				}
+			}
 			req := aacraid.ChunkRequest(head.Total, head.Xfer, n)
 			rsp, err := d.fib(append([]byte(nil), req...))
 			if err != nil {

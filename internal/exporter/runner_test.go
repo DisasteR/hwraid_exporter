@@ -26,7 +26,7 @@ func TestRunnerDeadlineAndSingleFlight(t *testing.T) {
 			n := slowCalls.Add(1)
 			if n == 1 {
 				<-release // premier appel : bloqué jusqu'à libération
-				return module.Result{NodeValid: true, Collected: map[string]bool{"volumes": true}, Volumes: []module.Volume{{ID: "périmé"}}}
+				return module.Result{NodeValid: true, Collected: map[string]bool{"volumes": true}, Volumes: []module.Volume{{ID: "périmé"}}, CloseUnconfirmed: 2}
 			}
 			return module.Result{NodeValid: true, Collected: map[string]bool{"volumes": true}}
 		},
@@ -67,6 +67,13 @@ func TestRunnerDeadlineAndSingleFlight(t *testing.T) {
 	out = r.Run(jobs, cols, time.Second)
 	if s := out[slow]; s.TimedOut || len(s.Volumes) != 0 || slowCalls.Load() != 2 {
 		t.Fatalf("résultat tardif repris ou pas de relance (%d appels) : %+v", slowCalls.Load(), s)
+	}
+	// Seules ses lectures rejetées sont reportées, une seule fois.
+	if out[slow].CloseUnconfirmed != 2 {
+		t.Fatalf("rejets 0xc5 du résultat tardif perdus : %+v", out[slow])
+	}
+	if out = r.Run(jobs, cols, time.Second); out[slow].CloseUnconfirmed != 0 {
+		t.Fatalf("rejets tardifs comptés deux fois : %+v", out[slow])
 	}
 }
 

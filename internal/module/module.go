@@ -12,11 +12,11 @@
 package module
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
-	"time"
 
 	"github.com/DisasteR/hwraid_exporter/internal/nodes"
 	"github.com/DisasteR/hwraid_exporter/internal/sysfs"
@@ -157,10 +157,11 @@ type Module interface {
 	// Collect lit la carte au travers de ses nœuds préparés. Appelé après
 	// l'abandon des privilèges, éventuellement en parallèle pour des cartes
 	// différentes : l'état partagé du module doit être protégé, sans tenir
-	// de verrou pendant un appel au firmware. Passé deadline (zéro : aucune),
-	// le module n'envoie plus de nouvelle commande ; un transfert en cours
-	// est mené jusqu'à sa clôture.
-	Collect(c Card, refs []NodeRef, deadline time.Time) Result
+	// de verrou pendant un appel au firmware. Une fois ctx terminé (échéance
+	// du cycle ou arrêt du service), le module n'envoie plus de nouvelle
+	// commande ; une commande en cours n'est jamais interrompue et un
+	// transfert ouvert est clos.
+	Collect(ctx context.Context, c Card, refs []NodeRef) Result
 }
 
 // Planned associe une carte à son module.

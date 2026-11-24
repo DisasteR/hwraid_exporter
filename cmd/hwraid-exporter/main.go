@@ -201,7 +201,10 @@ func serve(args []string) int {
 	tracker := exporter.NewTracker()
 	runner := exporter.NewRunner()
 	lastHostErrs := ""
-	collect := func() {
+	// collect fait un cycle. stopping est terminé à l'arrêt du service :
+	// aucune nouvelle commande n'est alors envoyée à une carte, la commande
+	// en cours se termine, et le cycle interrompu n'est pas publié.
+	collect := func(stopping context.Context) {
 		hosts, herrs, err := sysfs.Discover(*root)
 		// Découverte réussie : sans erreur globale ni hôte illisible.
 		ok := err == nil && len(herrs) == 0
@@ -242,19 +245,24 @@ func serve(args []string) int {
 			}
 		}
 		jobs := map[string]func() module.Result{}
-		// Échéance commune du cycle, transmise aux modules : passé ce
-		// délai, plus aucune nouvelle commande n'est envoyée.
-		deadline := time.Now().Add(*timeout)
+		// Contexte commun du cycle, transmis aux modules : terminé à
+		// l'échéance du cycle ou à l'arrêt du service, après quoi plus
+		// aucune nouvelle commande n'est envoyée.
+		cycle, endCycle := context.WithTimeout(stopping, *timeout)
+		defer endCycle()
 		collectors := map[string][]string{}
 		for _, pc := range cur.Cards {
 			if !collectOK || pc.Module == nil || !module.Prepared(pc, majors, specs) {
 				continue
 			}
 			addr := pc.Card.PCI.Address
-			jobs[addr] = func() module.Result { return pc.Module.Collect(pc.Card, module.Refs(nodesDir, pc, specs), deadline) }
+			jobs[addr] = func() module.Result { return pc.Module.Collect(cycle, pc.Card, module.Refs(nodesDir, pc, specs)) }
 			collectors[addr] = pc.Module.Collectors()
 		}
 		results := runner.Run(jobs, collectors, *timeout)
+		if stopping.Err() != nil {
+			return // arrêt pendant le cycle : lectures incomplètes, non publiées
+		}
 		if err == nil {
 			present := map[string]bool{}
 			for _, pc := range cur.Cards {
@@ -311,20 +319,7 @@ func serve(args []string) int {
 	loopDone := make(chan struct{})
 	go func() {
 		defer close(loopDone)
-		collect()
-		t := time.NewTicker(*interval)
-		defer t.Stop()
-		for {
-			select {
-			case <-loopCtx.Done():
-				return
-			case <-t.C:
-				if loopCtx.Err() != nil {
-					return // arrêt demandé en même temps que le tic
-				}
-				collect()
-			}
-		}
+		runLoop(loopCtx, *interval, collect)
 	}()
 
 	code := 0
@@ -334,9 +329,13 @@ func serve(args []string) int {
 	}
 	// Sortir pendant une commande de gestion l'interromprait dans le pilote,
 	// qui perdrait un bloc de commande jusqu'au redémarrage de la machine.
-	// Aucun nouveau cycle ne démarre ; celui en cours et les collectes
-	// abandonnées à leur échéance ont shutdownWait pour finir. Les signaux
-	// suivants restent captés : seul SIGKILL abrège l'attente.
+	// Aucun nouveau cycle ne démarre et le cycle en cours n'envoie plus de
+	// nouvelle commande : seules les commandes déjà envoyées restent à
+	// attendre, y compris celles des collectes abandonnées à leur échéance.
+	// Une commande qui ne répond pas en shutdownWait est abandonnée : le
+	// processus sort, au risque de perdre ce bloc, plutôt que d'être tué par
+	// le superviseur. Les signaux suivants restent captés : seul SIGKILL
+	// abrège l'attente.
 	stopLoop()
 	log.Info("stopping: waiting for the collection in progress", "max", shutdownWait)
 	if !waitIdle(loopDone, runner.Drain, shutdownWait) {
@@ -346,6 +345,29 @@ func serve(args []string) int {
 	defer cancel()
 	_ = srv.Shutdown(shut)
 	return code
+}
+
+// runLoop lance un cycle de collecte tout de suite, puis à chaque interval,
+// jusqu'à la fin de ctx. Aucun cycle ne démarre une fois ctx terminé ;
+// collect reçoit ctx pour arrêter le cycle en cours.
+func runLoop(ctx context.Context, interval time.Duration, collect func(context.Context)) {
+	if ctx.Err() != nil {
+		return
+	}
+	collect(ctx)
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if ctx.Err() != nil {
+				return // arrêt demandé en même temps que le tic
+			}
+			collect(ctx)
+		}
+	}
 }
 
 // waitIdle attend, au plus wait en tout, la fin de la boucle de collecte

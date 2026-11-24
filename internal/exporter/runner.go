@@ -22,10 +22,16 @@ type Runner struct {
 	mu       sync.Mutex
 	inflight map[string]chan module.Result // adresse PCI → collecte en cours
 	running  sync.WaitGroup                // collectes non terminées
+	// late garde, par carte, les lectures rejetées (clôture 0xc5) portées
+	// par un résultat tardif écarté : elles ont bien eu lieu et sont
+	// reportées dans le résultat suivant de la carte.
+	late map[string]int
 }
 
 // NewRunner crée un ordonnanceur sans collecte en cours.
-func NewRunner() *Runner { return &Runner{inflight: map[string]chan module.Result{}} }
+func NewRunner() *Runner {
+	return &Runner{inflight: map[string]chan module.Result{}, late: map[string]int{}}
+}
 
 // Run collecte les cartes données (adresse PCI → fonction de collecte) et
 // renvoie un résultat pour chacune : celui de la collecte si elle a abouti
@@ -39,8 +45,10 @@ func (r *Runner) Run(jobs map[string]func() module.Result, collectors map[string
 	for addr, job := range jobs {
 		if ch, busy := r.inflight[addr]; busy {
 			select {
-			case <-ch:
-				// Résultat tardif d'un cycle passé : périmé, ignoré.
+			case res := <-ch:
+				// Résultat tardif d'un cycle passé : périmé, ignoré, sauf
+				// ses lectures rejetées.
+				r.late[addr] += res.CloseUnconfirmed
 			default:
 				continue // toujours bloquée : pas de nouvelle collecte
 			}
@@ -89,6 +97,15 @@ func (r *Runner) Run(jobs map[string]func() module.Result, collectors map[string
 			out[addr] = module.Result{TimedOut: true, Collected: failed}
 		}
 	}
+	r.mu.Lock()
+	for addr, n := range r.late {
+		if res, ok := out[addr]; ok {
+			res.CloseUnconfirmed += n
+			out[addr] = res
+			delete(r.late, addr)
+		}
+	}
+	r.mu.Unlock()
 	return out
 }
 

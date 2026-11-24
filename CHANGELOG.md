@@ -1,14 +1,15 @@
 # Changelog
 
-## v0.1.2 — 2026-11-23
+## v0.1.2 — 2026-11-24
 
-- aacraid: a paged read whose close is acknowledged with status `0xc5` is now rejected, as the vendor tool does (it only accepts `CT_OK`), and retried once in the same cycle; a second rejection is an error. v0.1.1 published the data of such a read. `hwraid_transfer_close_unconfirmed_total` counts rejected reads.
+- aacraid: a paged read whose close is acknowledged with status `0xc5` is now rejected, as the vendor tool does (it only accepts `CT_OK`), and retried once in the same cycle; a second rejection is an error. v0.1.1 published the data of such a read. `hwraid_transfer_close_unconfirmed_total` counts rejected reads, including those of a collection returned after its timeout (counted in the next cycle). Once the cycle times out or the exporter stops, the read is not retried.
 - aacraid: controller commands are sent from a dedicated thread that blocks asynchronous signals. The `aacraid` driver loses one management command block, until the next reboot, each time a signal interrupts a command waiting for the card; the Go runtime's own preemption signal (`SIGURG`) could do so. Once the driver's pool is empty, every management tool fails with `ENOMEM`.
-- On `SIGTERM`, the exporter starts no new cycle and waits up to 20 s for the commands in progress before exiting. The systemd unit sets `TimeoutStopSec=30s`.
-- `ENOMEM` on a controller command is reported as a probably exhausted driver pool, which only a reboot restores.
+- On `SIGTERM`, the exporter starts no new cycle and the cycle in progress sends no further controller command: an open paged transfer is closed at once, and only the command already sent is awaited, up to 20 s, before exiting. A cycle interrupted by the stop is not published. The systemd unit sets `TimeoutStopSec=30s`; the Compose examples set `stop_grace_period: 30s`.
+- `ENOMEM` on a controller command is reported with its two possible causes: an exhausted driver pool, which only a reboot restores, or a DMA buffer the driver could not allocate for a large command, which is transient.
 - aacraid: volume write cache published: `hwraid_volume_write_cache_policy` (configured setting: `write_back_always`, `write_back_when_protected`, `write_through`) and `hwraid_volume_write_cache_enabled` (current state), read from the volume information already collected, with no extra controller command.
-- Alert rules: `HwraidVolumeWriteCacheUnprotected` (critical: write cache active while cache protection is missing or not optimal), `HwraidVolumeWriteCacheAlwaysOn`, `HwraidVolumeWriteCacheInactive`; `HwraidCacheProtectionFailed`, `HwraidCollectionStale` and `HwraidCollectionNeverSucceeded` now say what to do.
-- Documentation of the `aacraid` driver defect (`docs/aacraid-defaut-pilote.md`) and `tools/aacraid-fib-trace.sh`, a kernel probe that names the programs losing command blocks.
+- Alert rules: `HwraidVolumeWriteCacheUnprotected` (critical: write cache active while cache protection is missing, failed or charging), `HwraidVolumeWriteCacheProtectionUnknown`, `HwraidVolumeWriteCacheUnknown` (write cache setting or state not recognised), `HwraidVolumeWriteCacheAlwaysOn`, `HwraidVolumeWriteCacheInactive`; during a failed read they keep the last known value for 10 minutes; `HwraidCacheProtectionFailed`, `HwraidCollectionStale` and `HwraidCollectionNeverSucceeded` now say what to do.
+- Documentation of the `aacraid` driver defect (`docs/aacraid-defaut-pilote.md`) and `tools/aacraid-fib-trace.sh`, a kernel probe that names the programs losing command blocks; it writes to a new private file and checks that the probe is removed.
+- The systemd unit is attached to each GitHub release and listed in `SHA256SUMS`.
 
 ## v0.1.1 — 2026-11-23
 

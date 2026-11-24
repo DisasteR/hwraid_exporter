@@ -24,10 +24,12 @@ Ces règles sont un point de départ : seuils, durées et gravités sont à adap
 | `HwraidCacheProtectionFailed` | protection du cache `failed` | 5 min | warning | remplacer le module ; en attendant, régler le cache d'écriture en mode « seulement si protégé » (Adaptec : `SETCACHE … wbb`) |
 | `HwraidCacheProtectionStateUnknown` | protection du cache `unknown` (combinaison d'état non qualifiée) | 30 min | warning | vérifier avec l'outil du constructeur ; sa protection n'est pas garantie |
 | `HwraidCacheProtectionNotReady` | protection du cache `charging` | 2 h | warning | une charge normale dure quelques minutes |
-| `HwraidVolumeWriteCacheUnprotected` | cache d'écriture actif (`hwraid_volume_write_cache_enabled` 1) alors que la protection est absente ou n'est pas `optimal` | 5 min | critical | une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente : régler le cache en mode « seulement si protégé » ou le désactiver |
+| `HwraidVolumeWriteCacheUnprotected` | cache d'écriture actif (`hwraid_volume_write_cache_enabled` 1) alors que la protection est absente, `failed` ou `charging` | 5 min | critical | une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente : régler le cache en mode « seulement si protégé » (`wbb`) ou le désactiver |
+| `HwraidVolumeWriteCacheProtectionUnknown` | cache d'écriture actif alors que la protection est `unknown` | 30 min | warning | protection non garantie : vérifier le module avec l'outil du constructeur |
 | `HwraidVolumeWriteCacheAlwaysOn` | réglage `write_back_always` | 15 min | warning | risque latent : une panne du module laisserait le cache actif ; préférer `write_back_when_protected` |
 | `HwraidVolumeWriteCacheInactive` | cache d'écriture inactif alors que le réglage le demande et que la protection est `optimal` | 2 h | info | écritures ralenties : la carte n'a pas réactivé le cache, vérifier avec l'outil du constructeur |
-| `HwraidCollectionStale` | aucun succès depuis plus de 3 intervalles de collecte (lecture en échec ou hors délai) | 1 min | warning | consulter le journal de l'exporter ; `cannot allocate memory` : réserve du pilote épuisée, `sync` avant tout redémarrage ([aacraid-defaut-pilote.md](aacraid-defaut-pilote.md)) |
+| `HwraidVolumeWriteCacheUnknown` | lecture des volumes réussie, mais réglage `unknown` ou état du cache non publié | 30 min | warning | les autres alertes de cache ne couvrent plus ce volume : vérifier avec l'outil du constructeur |
+| `HwraidCollectionStale` | aucun succès depuis plus de 3 intervalles de collecte (lecture en échec ou hors délai) | 1 min | warning | consulter le journal de l'exporter ; `cannot allocate memory` sur toutes les lectures : réserve du pilote très probablement épuisée, le prochain redémarrage ne videra pas le cache de la carte ([aacraid-defaut-pilote.md](aacraid-defaut-pilote.md)) |
 | `HwraidCollectionNeverSucceeded` | lecture en échec, jamais réussie depuis le démarrage | 15 min | warning | consulter le journal de l'exporter ; même cas de `cannot allocate memory` |
 | `HwraidCollectionIntervalTooLong` | intervalle de collecte supérieur à 5 min | immédiat | info | allonger les fenêtres des règles d'état |
 | `HwraidManagementNodeInvalid` | nœud de gestion non préparé, non vérifié ou désignant une autre carte | 5 min | warning | erreur de déploiement, carte changée |
@@ -51,9 +53,11 @@ Sur une grappe à plusieurs niveaux (par exemple quatre miroirs assemblés), le 
 
 ## Cache d'écriture
 
-Les trois règles du cache d'écriture ne portent que sur les volumes de premier niveau (`parent` vide) : les volumes assemblés portent le même réglage, et une même cause donnerait sinon une alerte par volume.
+Les règles du cache d'écriture ne portent que sur les volumes de premier niveau (`parent` vide) : les volumes assemblés portent le même réglage, et une même cause donnerait sinon une alerte par volume.
 
-- `HwraidVolumeWriteCacheUnprotected` est l'alerte de risque immédiat. Elle s'appuie sur l'état effectif du cache, pas sur le réglage : en mode « seulement si protégé », une carte dont le module tombe en panne coupe d'elle-même le cache, et l'alerte ne se déclenche pas. Pendant une lecture en échec de la protection, la dernière panne connue (10 minutes) la maintient.
+- `HwraidVolumeWriteCacheUnprotected` est l'alerte de risque immédiat. Elle s'appuie sur l'état effectif du cache, pas sur le réglage : en mode « seulement si protégé », une carte dont le module tombe en panne coupe d'elle-même le cache, et l'alerte ne se déclenche pas. Elle ne retient que les protections dont le défaut est établi (absente, `failed`, `charging`) ; une protection `unknown` donne `HwraidVolumeWriteCacheProtectionUnknown`, de gravité moindre.
+- **Trous de lecture.** Pendant une lecture en échec (`hwraid_collection_success` à 0 ou absent pour `volumes` ou `cache_protection`), chaque série reprend sa dernière valeur connue sur 10 minutes : un échec passager ne remet pas à zéro le délai d'une alerte. Une lecture réussie ne garde que les valeurs publiées : un volume supprimé ou un état changé éteint l'alerte aussitôt.
+- `HwraidVolumeWriteCacheUnknown` signale la perte de visibilité : la lecture réussit, mais le réglage ou l'état du cache n'est pas reconnu, et les autres alertes ne peuvent plus se déclencher pour ce volume.
 - `HwraidVolumeWriteCacheAlwaysOn` signale le réglage qui transforme une panne du module en risque de perte.
 - `HwraidVolumeWriteCacheInactive` sert notamment après le remplacement d'un module : la protection redevient `optimal`, et le cache doit se réactiver.
 

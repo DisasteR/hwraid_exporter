@@ -94,7 +94,9 @@ jobs:
           test -f dist/licenses/hwraid_exporter/LICENSE && test -f dist/licenses/go/LICENSE
           tar -C dist -czf "dist/hwraid-exporter-$TAG-licenses.tar.gz" licenses
           test "$(dist/hwraid-exporter-$TAG-linux-amd64 version)" = "$TAG"
-          (cd dist && sha256sum hwraid-exporter-*-linux-amd64 hwraid-exporter-*-licenses.tar.gz > SHA256SUMS && cat SHA256SUMS)
+          # Unité systemd du tag, pour une installation sans les sources.
+          cp deploy/systemd/hwraid-exporter.service dist/hwraid-exporter.service
+          (cd dist && sha256sum hwraid-exporter-*-linux-amd64 hwraid-exporter-*-licenses.tar.gz hwraid-exporter.service > SHA256SUMS && cat SHA256SUMS)
 
       - name: Publication de l'image
         if: steps.registry.outputs.mode == 'new'
@@ -106,4 +108,4 @@ jobs:
           awk -v t="## $TAG " 'index($0, t) == 1 {f = 1; next} /^## / {f = 0} f' CHANGELOG.md > notes.md
           printf '\nImage : `%s`\n' "$digest" >> notes.md
           gh release create "$TAG" --verify-tag --title "$TAG" --notes-file notes.md \
-            "dist/hwraid-exporter-$TAG-linux-amd64" "dist/hwraid-exporter-$TAG-licenses.tar.gz" dist/SHA256SUMS
+            "dist/hwraid-exporter-$TAG-linux-amd64" "dist/hwraid-exporter-$TAG-licenses.tar.gz" dist/hwraid-exporter.service dist/SHA256SUMS
