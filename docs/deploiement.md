@@ -140,4 +140,5 @@ Attendu : `hwraid_snapshot_ready 1`, `hwraid_discovery_success 1`, `hwraid_manag
 | `hwraid_collector_supported 0` sur une carte | modèle ou firmware non qualifié : carte inventoriée seulement |
 | `hwraid_discovery_success 0` | sysfs partiellement illisible : voir l'avertissement `unreadable SCSI hosts` au journal |
 | `collection_success 0` avec `cannot allocate memory` au journal | réserve de commandes de gestion du pilote épuisée : voir « Limite du pilote aacraid » avant de redémarrer |
+| `hwraid_transfer_close_unconfirmed_total` augmente souvent | un autre outil (maxView, ARCCONF) interroge probablement la carte en même temps : chaque lecture rejetée est refaite, sans conséquence tant que `collection_success` reste à 1 ; si des lectures échouent, réduire la fréquence de l'autre outil ou l'arrêter temporairement ([interface aacraid](aacraid-interface.md), section 4) |
 | le conteneur s'arrête avec le code 3 | nœuds attendus changés depuis le démarrage : `restart: unless-stopped` le relance |
