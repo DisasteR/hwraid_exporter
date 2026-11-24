@@ -476,12 +476,13 @@ func TestCollectVolumesReference(t *testing.T) {
 
 // Cache d'écriture : chaque réglage observé avec l'outil de référence
 // (wb, wbb, wt), une valeur non observée publiée unknown ; état effectif
-// publié seulement pour 0 ou 1.
+// publié seulement pour 0 ou 1. Les deux champs sont des mots de 4 octets :
+// un mot dont seul l'octet bas est reconnu (0x00000101) reste inconnu.
 func TestCollectWriteCache(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
 	c := card("0000:01:00.0", "0")
 	for _, tc := range []struct {
-		policy, enabled         byte
+		policy, enabled         uint32
 		wantPolicy, wantVendor  string
 		wantEnabled, publishSet bool
 	}{
@@ -490,11 +491,13 @@ func TestCollectWriteCache(t *testing.T) {
 		{1, 1, "write_back_when_protected", "On when protected by battery/ZMM", true, true},
 		{0, 0, "write_through", "Disabled", false, true},
 		{3, 2, "unknown", "value 3", false, false},
+		{0x101, 0x101, "unknown", "value 257", false, false},
 	} {
 		d := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}, sup: arcIo, paged: func(rd aacraid.PagedRead, p, size uint32) ([]byte, error) {
 			b, err := referencePaged(rd, p, size)
 			if err == nil && rd == aacraid.ReadContainerInfo && p == 0 {
-				b[148], b[156] = tc.policy, tc.enabled
+				binary.LittleEndian.PutUint32(b[148:], tc.policy)
+				binary.LittleEndian.PutUint32(b[156:], tc.enabled)
 			}
 			return b, err
 		}}

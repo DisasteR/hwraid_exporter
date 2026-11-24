@@ -6,9 +6,15 @@
 # au lieu de publier une valeur non observée. Une alerte déjà déclenchée
 # reste active 10 minutes après la disparition de sa condition
 # (keep_firing_for) : elle ne s'éteint pas sur un échec passager, et aucune
-# valeur périmée ne peut en déclencher une nouvelle. Le délai « for » d'une
-# alerte pas encore déclenchée repart, lui, de zéro. Une lecture qui échoue
-# durablement est signalée par HwraidCollectionStale.
+# valeur non observée ne peut en déclencher une nouvelle. Le délai « for »
+# d'une alerte pas encore déclenchée repart, lui, de zéro. Une lecture qui
+# échoue durablement est signalée par HwraidCollectionStale.
+# Limite : si la boucle de collecte se fige, l'exporter ressert sa dernière
+# vue jusqu'à trois intervalles plus le délai de collecte ; une seule
+# observation, bien réelle, peut alors remplir le « for » d'une alerte
+# d'état (à partir d'un intervalle d'environ 2 min pour un « for » de 5 min).
+# La boucle figée est signalée par HwraidCollectionStale, puis par
+# hwraid_snapshot_ready 0.
 #
 # Toutes les jointures portent job et instance : deux hôtes peuvent publier
 # le même identifiant de contrôleur (pci:0000:01:00.0).

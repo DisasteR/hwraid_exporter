@@ -22,7 +22,7 @@ La configuration se fait uniquement par la ligne de commande ; il n'y a ni fichi
 | `-uid`, `-gid` | `65534` | identité après l'abandon des privilèges ; root refusé |
 | `-sysfs` | `/sys` | racine de sysfs (tests) |
 
-**Choisir l'intervalle.** Une minute convient : un cycle sur la carte de référence (5 volumes, 8 disques) envoie 62 commandes de lecture, les capacités et la carte des connecteurs n'étant lues qu'au démarrage. Un intervalle plus long réduit d'autant la sollicitation de la carte, au prix d'une détection plus tardive. L'intervalle est publié (`hwraid_collection_interval_seconds`) et les règles d'alerte s'y adaptent ; au-delà de 5 minutes, les fenêtres des règles d'état sont à allonger ([alerts.md](alerts.md)). Un intervalle plus court n'apporte rien : Prometheus lit le dernier instantané, une lecture de `/metrics` n'envoie aucune commande.
+**Choisir l'intervalle.** Une minute convient : un cycle ordinaire sur la carte de référence (5 volumes, 8 disques) envoie 62 commandes de lecture, les capacités et la carte des connecteurs étant gardées en mémoire. Elles sont relues au démarrage, quand la carte ou son firmware change, quand un champ de son identité est illisible (à chaque cycle), et, pour la carte des connecteurs, quand les disques présents changent. Un intervalle plus long réduit d'autant la sollicitation de la carte, au prix d'une détection plus tardive. L'intervalle est publié (`hwraid_collection_interval_seconds`) et les règles d'alerte s'y adaptent ; au-delà de 5 minutes, les fenêtres des règles d'état sont à allonger ([alerts.md](alerts.md)). Un intervalle plus court n'apporte rien : Prometheus lit le dernier instantané, une lecture de `/metrics` n'envoie aucune commande.
 
 ## Docker
 
@@ -98,7 +98,7 @@ sudo install -m 0644 hwraid-exporter.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now hwraid-exporter
 ```
 
-Pour une mise à jour, `enable --now` ne relance pas un service déjà actif : après avoir remplacé le binaire et l'unité, redémarrer le service (arrêt propre, qui attend la commande en cours), puis vérifier la version servie :
+Pour une mise à jour, `enable --now` ne relance pas un service déjà actif : après avoir remplacé le binaire et l'unité, redémarrer le service (depuis la v0.1.2, arrêt propre qui attend la commande en cours ; depuis la v0.1.1, voir « Mise à jour depuis la v0.1.1 » : c'est l'ancien processus qui s'arrête, sans cette attente), puis vérifier la version servie :
 
 ```bash
 sudo systemctl daemon-reload && sudo systemctl restart hwraid-exporter

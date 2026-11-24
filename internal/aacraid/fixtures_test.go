@@ -12,7 +12,10 @@ import (
 // Les données de référence sont pseudonymisées (UID de conteneurs, numéros
 // de série, WWN, adresse SAS) : ce test vérifie qu'elles restent cohérentes
 // entre elles, comme le sont les réponses d'une même carte. Il échoue si une
-// valeur fictive n'a pas été reportée partout.
+// valeur fictive n'a pas été reportée partout. Contrôle de cohérence
+// seulement : il ne prouve pas l'anonymisation (des valeurs réelles
+// reportées partout le passeraient) ; cette preuve est la comparaison avec
+// la liste privée des valeurs réelles (scripts/check-public.sh).
 func TestReferenceFixturesConsistent(t *testing.T) {
 	le := binary.LittleEndian
 	nums, err := DecodeContainerList(fixture(t, "229-0"))
