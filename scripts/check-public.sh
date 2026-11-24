@@ -21,6 +21,15 @@ if git ls-files -z -- . ':!scripts/check-public.sh' | xargs -0 grep -nIE "$patte
     echo "symbole interne d'ARCCONF présent dans le dépôt" >&2
     fail=1
 fi
+# Adresses e-mail : aucune dans le dépôt (détail personnel). Seuls les liens
+# lore.kernel.org sont admis : l'identifiant d'un message de liste de
+# diffusion contient l'adresse de son auteur, déjà publique.
+email='[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}'
+if git ls-files -z -- . ':!scripts/check-public.sh' | xargs -0 grep -nIoE "[^ <>(]*$email" |
+    grep -vE "https://lore\.kernel\.org/[a-z0-9-]+/[^ ]*$email" >&2; then
+    echo "adresse e-mail présente dans le dépôt" >&2
+    fail=1
+fi
 # Valeurs réelles (numéros de série, WWN, adresses, UID) : liste locale,
 # jamais publiée. Les fichiers .hex sont décodés avant la recherche, et les
 # formes textuelles cherchées sans tenir compte de la casse. En CI, la liste

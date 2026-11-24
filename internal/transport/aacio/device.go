@@ -122,7 +122,14 @@ func (d *Device) Close() error {
 // La vérification et l'appel portent sur une copie privée du tampon : un
 // appelant ne peut pas modifier la requête entre la vérification de la
 // liste blanche et l'appel système. La réponse est recopiée ensuite.
-func (d *Device) Do(req allowlist.Request) error {
+func (d *Device) Do(req allowlist.Request) error { return d.do(nil, req) }
+
+// do émet req comme Do. Si ctx n'est pas nil, l'admission (admit) a lieu
+// sur le thread dédié, juste avant l'appel système : c'est le point
+// d'engagement de la commande. Une commande refusée là n'atteint jamais le
+// noyau. ctx nil : commande déjà engagée (premier morceau et clôture d'un
+// transfert ouvert) ou servie par le pilote seul (GET_HBA_INFO).
+func (d *Device) do(ctx context.Context, req allowlist.Request) error {
 	if d.fd < 0 {
 		return ErrClosed
 	}
@@ -130,8 +137,18 @@ func (d *Device) Do(req allowlist.Request) error {
 	if _, err := d.list.Check(priv); err != nil {
 		return err
 	}
-	var err error
-	d.thread.run(func() { err = ioctlFn(d.fd, priv.Ioctl, priv.Buf) })
+	var err, refused error
+	d.thread.run(func() {
+		if ctx != nil {
+			if refused = admit(ctx); refused != nil {
+				return
+			}
+		}
+		err = ioctlFn(d.fd, priv.Ioctl, priv.Buf)
+	})
+	if refused != nil {
+		return refused
+	}
 	if errors.Is(err, unix.ENOMEM) && priv.Ioctl != aacraid.IoctlGetHBAInfo {
 		return fmt.Errorf("ioctl %#x on %s: %w: %w", req.Ioctl, d.path, err, ErrDriverNoMemory)
 	}
@@ -158,7 +175,7 @@ func (d *Device) SupplementInfo(ctx context.Context) (aacraid.SupplementInfo, er
 		return aacraid.SupplementInfo{}, err
 	}
 	buf := aacraid.SupplementInfoRequest()
-	if err := d.Do(allowlist.Request{Ioctl: aacraid.IoctlSendFIB, Buf: buf}); err != nil {
+	if err := d.do(ctx, allowlist.Request{Ioctl: aacraid.IoctlSendFIB, Buf: buf}); err != nil {
 		return aacraid.SupplementInfo{}, err
 	}
 	return aacraid.DecodeSupplementInfo(buf)
@@ -171,15 +188,16 @@ func (d *Device) ConnectorMap(ctx context.Context) (aacraid.ConnectorMap, error)
 		return aacraid.ConnectorMap{}, err
 	}
 	buf := aacraid.ConnectorMapRequest()
-	if err := d.Do(allowlist.Request{Ioctl: aacraid.IoctlSendLargeFIB, Buf: buf}); err != nil {
+	if err := d.do(ctx, allowlist.Request{Ioctl: aacraid.IoctlSendLargeFIB, Buf: buf}); err != nil {
 		return aacraid.ConnectorMap{}, err
 	}
 	return aacraid.DecodeConnectorMap(buf)
 }
 
 // fib envoie une requête FIB qualifiée et renvoie la réponse.
-func (d *Device) fib(req []byte) ([]byte, error) {
-	if err := d.Do(allowlist.Request{Ioctl: aacraid.IoctlSendFIB, Buf: req}); err != nil {
+// ctx est transmis à do (nil : commande déjà engagée).
+func (d *Device) fib(ctx context.Context, req []byte) ([]byte, error) {
+	if err := d.do(ctx, allowlist.Request{Ioctl: aacraid.IoctlSendFIB, Buf: req}); err != nil {
 		return nil, err
 	}
 	return req, nil
@@ -193,7 +211,7 @@ func (d *Device) CacheProtection(ctx context.Context) (present bool, st aacraid.
 	if err := admit(ctx); err != nil {
 		return false, st, err
 	}
-	rsp, err := d.fib(aacraid.CacheProtectionPresenceRequest())
+	rsp, err := d.fib(ctx, aacraid.CacheProtectionPresenceRequest())
 	if err != nil {
 		return false, st, err
 	}
@@ -203,7 +221,7 @@ func (d *Device) CacheProtection(ctx context.Context) (present bool, st aacraid.
 	if err := admit(ctx); err != nil {
 		return true, st, err
 	}
-	if rsp, err = d.fib(aacraid.CacheProtectionStateRequest()); err != nil {
+	if rsp, err = d.fib(ctx, aacraid.CacheProtectionStateRequest()); err != nil {
 		return true, st, err
 	}
 	st, err = aacraid.DecodeCacheProtectionState(rsp)
@@ -217,7 +235,7 @@ func (d *Device) CacheProtection(ctx context.Context) (present bool, st aacraid.
 // rejected le signale. Toute autre réponse est une erreur.
 func (d *Device) stop(r aacraid.PagedRead, head aacraid.PagedResponse, n uint32) (rejected bool, err error) {
 	req := aacraid.StopRequest(head.Total, head.Xfer, n)
-	rsp, err := d.fib(append([]byte(nil), req...))
+	rsp, err := d.fib(nil, append([]byte(nil), req...)) // clôture : toujours envoyée
 	if err != nil {
 		return false, fmt.Errorf("read %d: stop: %w", r, err)
 	}
@@ -278,7 +296,7 @@ func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size 
 	if err != nil {
 		return nil, false, err
 	}
-	rsp, err := d.fib(append([]byte(nil), open...))
+	rsp, err := d.fib(ctx, append([]byte(nil), open...))
 	if err != nil {
 		return nil, false, err
 	}
@@ -306,7 +324,13 @@ func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size 
 				}
 			}
 			req := aacraid.ChunkRequest(head.Total, head.Xfer, n)
-			rsp, err := d.fib(append([]byte(nil), req...))
+			// Morceau 0 : toujours envoyé une fois le transfert ouvert ;
+			// les suivants sont soumis à ctx.
+			var engaged context.Context
+			if n > 0 {
+				engaged = ctx
+			}
+			rsp, err := d.fib(engaged, append([]byte(nil), req...))
 			if err != nil {
 				return err
 			}

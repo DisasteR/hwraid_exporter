@@ -66,9 +66,10 @@ groups:
       - alert: HwraidVolumeDisappeared
         # Volume vu dans les dernières 24 h, absent alors que la lecture des
         # volumes réussit. L'alerte dure 24 h : la mettre en silence après
-        # une suppression volontaire.
+        # une suppression volontaire. Une seule alerte par volume, même s'il a
+        # changé de nom ou de niveau RAID dans la journée.
         expr: |
-          (last_over_time(hwraid_volume_info[1d])
+          (max by (job, instance, controller, volume) (last_over_time(hwraid_volume_info[1d]))
               unless on (job, instance, controller, volume) hwraid_volume_info)
           and on (job, instance, controller) hwraid_collection_success{collector="volumes"} == 1
         labels:
@@ -132,6 +133,7 @@ groups:
             and on (job, instance, controller) (
               hwraid_cache_protection_state{state="unknown"} == 1
               or hwraid_collector_supported{collector="cache_protection"} == 0
+              or hwraid_collection_success{collector="cache_protection"} == 0
             )
         for: 30m
         keep_firing_for: 10m
@@ -243,9 +245,10 @@ groups:
       - alert: HwraidControllerDisappeared
         # Contrôleur vu dans les dernières 24 h, absent alors que la
         # découverte réussit. Un changement d'identité (numéro de série
-        # devenu illisible au démarrage) le déclenche aussi.
+        # devenu illisible au démarrage) le déclenche aussi. Une seule alerte
+        # par contrôleur, même après une mise à jour du firmware.
         expr: |
-          (last_over_time(hwraid_controller_info[1d])
+          (max by (job, instance, controller) (last_over_time(hwraid_controller_info[1d]))
               unless on (job, instance, controller) hwraid_controller_info)
           and on (job, instance) hwraid_discovery_success == 1
         labels:

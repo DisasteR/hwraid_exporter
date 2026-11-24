@@ -72,7 +72,7 @@ Collecteurs du module aacraid : `capabilities` (capacités de la carte), `volume
 | `hwraid_volume_write_cache_policy` | `controller`, `volume`, `policy`, `vendor_policy` | 1 ; réglage configuré du cache d'écriture, normalisé dans `policy` et dans les termes de l'outil du constructeur dans `vendor_policy` |
 | `hwraid_volume_write_cache_enabled` | `controller`, `volume` | 1 si le cache d'écriture est actif à cet instant (écriture différée), 0 sinon ; absente si la carte rend une valeur non qualifiée |
 
-Le réglage et l'état du cache d'écriture viennent de la même lecture que le reste du volume : aucune commande de plus. Le réglage dit ce que l'administrateur a demandé ; l'état dit ce que la carte fait, par exemple un cache coupé parce que le module de protection est en panne. Les volumes assemblés portent le même réglage que le volume de premier niveau. Le cache de lecture n'est pas publié.
+Le réglage et l'état du cache d'écriture viennent de la même lecture que le reste du volume : aucune commande de plus. Le réglage dit ce que l'administrateur a demandé ; l'état dit ce que la carte fait, par exemple un cache coupé parce que le module de protection est en panne. Chaque volume, membres d'un assemblage compris, est lu et publié séparément ; sur l'hôte de référence, les volumes membres ont toujours eu le même réglage et le même état que leur volume de premier niveau, sans que rien ne le garantisse. Le cache de lecture n'est pas publié.
 
 Une grappe à plusieurs niveaux (par exemple quatre miroirs assemblés) publie un volume par niveau. L'état d'un volume de premier niveau vaut `unknown` quand l'un de ses volumes membres n'est pas optimal et que la propagation n'est pas établie pour ce type : la perte de redondance reste visible sur le volume membre.
 

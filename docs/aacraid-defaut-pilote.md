@@ -37,7 +37,7 @@ Tout signal reçu par un programme pendant qu'une de ses commandes de gestion at
 
 - **Origine.** En 2009, le commit `cacb6dc3d7fe` (« [SCSI] aacraid: fix File System going into read-only mode ») a introduit l'abandon `done = 2` et libérait le bloc dans `aac_intr_normal`. En 2016, le commit `6bf3b630d0a7` (« aacraid: SCSI blk tag support », Linux 4.6) a retiré ces libérations lors du passage des entrées-sorties aux étiquettes du bloc layer ; le cas d'un bloc de gestion abandonné a été perdu au passage. Depuis ce commit, la liste libre ne contient plus que les 8 blocs de gestion. Tous les noyaux à partir de 4.6 sont touchés.
 - **Pilote du constructeur.** Le pilote hors arbre de Microchip 1.2.1-60001 (2021) libère le bloc au même endroit. Sa fonction `aac_fib_free` ne remet dans la liste libre que les blocs de gestion. [Certain : lu ; non testé sur une carte]
-- **État amont.** Au 2026-11-24, aucun correctif n'existe dans le noyau 7.4-rc4 ni dans la file SCSI de 7.5, et aucun signalement de ce défaut n'a été trouvé sur linux-scsi ni sur bugzilla.kernel.org.
+- **État amont.** Au 2026-11-24, aucun correctif n'existait dans le noyau 7.4-rc4 ni dans la file SCSI de 7.5, et aucun signalement de ce défaut n'avait été trouvé sur linux-scsi ni sur bugzilla.kernel.org. Un correctif a été proposé le même jour sur linux-scsi, en RFC (compilé, pas encore testé sur une carte) : « [PATCH RFC] scsi: aacraid: free aborted management FIBs on late completion », <https://lore.kernel.org/all/20261124110444.3485-1-benj.saiz@gmail.com/>. Les réponses et les versions suivantes apparaissent dans ce fil.
 - **Reproduction**, sur l'hôte de référence (Adaptec 6805, Linux 5.10), le 2026-11-24. Des sondes du noyau étaient posées sur `aac_fib_send`, `aac_fib_complete` et `aac_fib_free`, puis ARCCONF a été tué pendant une commande :
   - avant : 1 000 commandes de gestion, toutes sur le même bloc ;
   - ARCCONF reçoit `-512` sur ce bloc ;
@@ -58,7 +58,7 @@ Linux dispose de deux chemins pour demander à la carte de vider son cache d'éc
 Ce que l'on sait, et ce que l'on ne sait pas :
 
 - **Avec le réglage par défaut du pilote (`cache=2`) et la réserve vide, aucun des deux chemins ne demande de vidage à l'arrêt.** Le volume annonce n'avoir aucun cache d'écriture (WCE à 0) et le pilote ignore les demandes de vidage SCSI. Le réglage effectif se lit dans `/sys/module/aacraid/parameters/cache`.
-- **Avec un autre réglage, le vidage SCSI est demandé, sans garantie.** Avec `cache=7`, le pilote répond « fait » sans rien envoyer à la carte s'il croit le cache protégé. Avec `cache=0`, la commande part, mais peut échouer. `/sys/block/sdX/device/scsi_disk/*/cache_type` dit ce que le volume annonce à Linux, pas ce que la carte a fait.
+- **Avec un autre réglage, le vidage SCSI est demandé, sans garantie.** Avec `cache=7`, le pilote répond « fait » sans rien envoyer à la carte s'il croit le cache protégé, et peut de même neutraliser les écritures forcées sur disque (FUA). Avec `cache=0`, la commande part, mais peut échouer. Le statut que Linux reçoit est celui que la carte déclare, pas une preuve que les données sont sur les disques. `/sys/block/sdX/device/scsi_disk/*/cache_type` dit ce que le volume annonce à Linux, pas ce que la carte a fait.
 - **Aucun vidage ne se constate depuis Linux.** Ni le pilote ni la carte n'indiquent que le cache est vide.
 
 Si le cache d'écriture de la carte est actif sans protection (module ZMM ou batterie en panne, ou cache forcé en écriture différée), un redémarrage avec la réserve vide peut perdre les dernières écritures. C'est arrivé sur l'hôte de référence le 2026-11-23 (`cache=2`) : des fichiers écrits dans les secondes qui ont précédé le redémarrage ont été retrouvés corrompus. L'alerte `HwraidVolumeWriteCacheUnprotected` ([alerts.md](alerts.md)) signale un cache d'écriture actif sans protection opérationnelle.
@@ -80,7 +80,7 @@ Depuis la v0.1.2 :
 | Protection | Effet |
 |---|---|
 | Thread dédié aux commandes | Les commandes partent d'un thread système réservé qui bloque tous les signaux asynchrones. Le noyau livre à un autre thread les signaux adressés au processus (`SIGTERM`, `SIGINT`). Ceux qui visent ce thread (`SIGURG` du runtime Go) attendent la fin de la commande. Seuls les signaux de faute (`SIGSEGV`, `SIGBUS`, etc.) restent débloqués. Si le masquage échoue, aucune commande n'est envoyée. |
-| Arrêt sans interruption | Sur `SIGTERM`, l'exporter ne lance plus de cycle, et le cycle en cours n'envoie plus aucune nouvelle commande, y compris une relecture. Seule la commande déjà envoyée se termine ; une lecture paginée ouverte va au bout de sa séquence la plus courte (premier morceau, puis clôture) et n'est pas publiée. En général, l'arrêt prend moins d'une seconde (0,48 s mesurée sur l'hôte de référence). L'exporter attend sans limite propre, en le journalisant toutes les 10 s : seul le délai du superviseur (`TimeoutStopSec` de l'unité systemd, `stop_grace_period: 30s` avec Docker) l'abrège. |
+| Arrêt sans interruption | Sur `SIGTERM`, l'exporter ne lance plus de cycle, et le cycle en cours n'envoie plus aucune nouvelle commande, y compris une relecture. L'arrêt est vérifié sur le thread dédié, juste avant chaque appel système : une commande refusée n'atteint jamais le noyau. Seule la commande déjà envoyée se termine ; une lecture paginée ouverte va au bout de sa séquence la plus courte (premier morceau, puis clôture) et n'est pas publiée. En général, l'arrêt prend moins d'une seconde (0,48 s mesurée sur l'hôte de référence). L'exporter attend sans limite propre, en le journalisant toutes les 10 s : seul le délai du superviseur (`TimeoutStopSec` de l'unité systemd, `stop_grace_period: 30s` avec Docker) l'abrège. Dès le début de l'arrêt, quelle qu'en soit la cause (signal ou changement de nœuds), `/metrics` ne sert plus de valeurs matérielles (`hwraid_snapshot_ready 0`) : une attente longue ne fait pas passer un état ancien pour un état courant. |
 | Délai de cycle | Le délai d'un cycle n'interrompt jamais une commande en cours : il empêche seulement d'en lancer de nouvelles. |
 | Diagnostic | Un `ENOMEM` sur une commande de gestion est journalisé avec ses deux causes possibles : réserve probablement épuisée, ou tampon d'une grande commande non alloué. |
 
@@ -90,10 +90,7 @@ Depuis la v0.1.2 :
 
 **Décision : le délai d'arrêt du superviseur reste borné (30 s dans les profils livrés).** Une commande qui ne rend jamais la main serait tuée à 30 s, et son bloc perdu. Un arrêt sans limite (`TimeoutStopSec=infinity`) l'éviterait, mais une carte figée bloquerait alors `systemctl stop` et le redémarrage de toute la machine. Perdre un bloc est préféré à une machine qui ne redémarre plus. Allonger ce délai reste possible, pour qui accepte ce risque.
 
-**Limites connues :**
-- si l'exporter doit sortir avec le code 3 (nœuds changés) pendant qu'une autre carte a une commande bloquée, il attend la fin de cette commande et sert entre-temps le dernier instantané, sans le signaler ;
-- la vérification de l'arrêt précède le passage de la commande au thread dédié : une commande vérifiée juste avant l'arrêt part quand même, et va au bout sans être interrompue ;
-- le test de bout en bout de l'arrêt assemble la boucle, l'ordonnanceur, le module et le transport comme `serve`, mais ne lance pas `serve` lui-même ; l'arrêt de `serve` a été vérifié sur l'hôte de référence.
+**Limite connue :** le test de bout en bout de l'arrêt assemble la boucle, l'ordonnanceur, le module et le transport comme `serve`, mais ne lance pas `serve` lui-même ; l'arrêt de `serve` a été vérifié sur l'hôte de référence.
 
 ## Détecter une fuite et son auteur
 
@@ -103,10 +100,10 @@ Depuis la v0.1.2 :
 sudo tools/aacraid-fib-trace.sh            # Ctrl+C pour arrêter ; bilan par programme
 ```
 
-La trace va dans un répertoire neuf et privé créé sous `/var/tmp` (chemin affiché au démarrage, lisible par root seul) ; le script ne prend aucun argument, et la capture s'arrête à 100 Mio (`AACFIB_MAX_MB`). La sonde porte un nom propre à l'exécution. À l'arrêt, le script coupe la sonde, vide le tampon dans la trace, retire la sonde et vérifie le retrait (un état illisible compte comme un échec). Il affiche les retours que la sonde n'a pas saisis et les événements perdus par le tampon : une trace sans `ret=-512` ne prouve l'absence de perte que si le bilan dit « trace complète ».
+La trace va dans un répertoire neuf et privé créé sous `/var/tmp` (chemin affiché au démarrage, lisible par root seul) ; le script ne prend aucun argument, et la capture s'arrête à 100 Mio (`AACFIB_MAX_MB`), limite que le noyau impose au lecteur (`ulimit -f`). La sonde porte un nom propre à l'exécution. À l'arrêt, le script coupe la sonde, vide le tampon dans la trace, retire la sonde et vérifie le retrait (un état illisible compte comme un échec). Il affiche les retours que la sonde n'a pas saisis et les événements perdus par le tampon : une trace sans `ret=-512` ne prouve l'absence de perte que si le bilan dit « trace complète ».
 
 - `ret=0` : la commande s'est terminée normalement.
-- `ret=-512` : la commande a été interrompue, et un bloc est perdu. La ligne donne le nom et le PID du programme.
+- `ret=-512` : la commande a été interrompue. Sur les cartes dont les réponses passent par `aac_intr_normal` (série 6, interface `src.c`, noyau 4.6 et plus), un bloc est perdu ; sur l'ancien chemin `aac_response_normal`, le bloc est rendu à l'arrivée de la réponse. La ligne donne le nom et le PID du programme.
 
 La sonde s'exécute à chaque retour de `aac_fib_send`, y compris pour chaque entrée-sortie disque. Le filtre n'écarte ces dernières qu'ensuite, et seules les commandes de gestion sont écrites. Son coût sous forte charge disque n'a pas été mesuré : sur une machine chargée, préférer des sessions courtes. Elle disparaît au redémarrage.
 

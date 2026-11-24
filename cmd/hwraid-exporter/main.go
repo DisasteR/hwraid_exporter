@@ -20,7 +20,6 @@ import (
 	"os/signal"
 	"runtime/debug"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/DisasteR/hwraid_exporter/internal/aacraid"
@@ -183,9 +182,7 @@ func serve(args []string) int {
 	log.Info("privileges dropped", "uid", *uid, "gid", *gid, "capabilities", fmt.Sprintf("%#x", keep))
 
 	// --- Collecte et service ---------------------------------------------
-	var snap atomic.Pointer[string]
-	initial := exporter.Render(exporter.Snapshot{})
-	snap.Store(&initial)
+	pub := exporter.NewPublisher(exporter.Render(exporter.Snapshot{}))
 
 	ctx, stop := signal.NotifyContext(context.Background(), lifecycle.TerminationSignals()...)
 	defer stop()
@@ -297,13 +294,13 @@ func serve(args []string) int {
 			}
 		}
 		out := exporter.Render(s)
-		snap.Store(&out)
+		pub.Publish(out)
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-		_, _ = w.Write([]byte(*snap.Load()))
+		_, _ = w.Write([]byte(pub.Load()))
 	})
 	srv := &http.Server{Addr: *listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
@@ -338,6 +335,11 @@ func serve(args []string) int {
 	// (stop_grace_period, TimeoutStopSec) l'abrège, par SIGKILL. Les signaux
 	// suivants restent captés.
 	stopLoop()
+	// Plus aucune valeur matérielle n'est servie pendant l'attente : la vue
+	// n'est plus mise à jour, et une attente longue (commande bloquée,
+	// sortie sur changement de nœuds) ne doit pas faire passer un état
+	// ancien pour un état courant.
+	pub.Stop(exporter.Render(exporter.Snapshot{}))
 	log.Info("stopping: waiting for the card commands in progress")
 	lifecycle.WaitIdle(loopDone, runner.Drain, shutdownWarnEvery, func(waited time.Duration) {
 		log.Warn("stopping: a card command has not returned yet; killing the process now would make the aacraid driver lose a management command until the next reboot", "waited", waited.Round(time.Second))

@@ -107,7 +107,12 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 			case r.TimedOut:
 				// Nœud non observé : management_node_valid n'est pas publié.
 				c.NodeChecked, c.TimedOut = false, true
-				c.Collected = r.Collected
+				// Les collecteurs servis par une réponse gardée en mémoire
+				// (capabilities) restent valides : pas d'échec publié pour eux.
+				c.Collected = map[string]bool{}
+				for col, ok := range r.Collected {
+					c.Collected[col] = ok || tracker.Held(addr)[col]
+				}
 				c.LastSuccess = tracker.Last(addr)
 				c.CollectError = "collection timed out"
 			case r.Err != nil:

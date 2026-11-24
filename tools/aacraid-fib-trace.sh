@@ -36,7 +36,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 MAX_MB=${AACFIB_MAX_MB:-100}
 case $MAX_MB in
-'' | *[!0-9]* | ???????*)
+'' | 0* | *[!0-9]* | ???????*)
 	echo "AACFIB_MAX_MB doit être un entier de 1 à 100000" >&2
 	exit 2
 	;;
@@ -122,7 +122,8 @@ cleanup() {
 	if [ -e "$I/events/aacfib/$EV/enable" ]; then
 		echo 0 > "$I/events/aacfib/$EV/enable" || failed=1
 	fi
-	# 2. Le lecteur vide le tampon (au plus 10 s), puis il est arrêté.
+	# 2. Le lecteur vide le tampon (au plus 10 s), écrit ce qu'il a lu
+	#    (cat écrit chaque lecture aussitôt), puis il est arrêté.
 	if [ -n "$READER" ]; then
 		i=0
 		while [ "$i" -lt 10 ] && kill -0 "$READER" 2>/dev/null; do
@@ -131,6 +132,7 @@ cleanup() {
 			sleep 1
 			i=$((i + 1))
 		done
+		sleep 1
 		kill "$READER" 2>/dev/null || true
 		wait "$READER" 2>/dev/null || true
 	fi
@@ -185,8 +187,9 @@ cleanup() {
 	return "$failed"
 }
 
-# Code de sortie : celui de l'erreur qui a arrêté le script, ou 1 si le
-# retrait de la sonde a échoué.
+# Code de sortie : 0 après Ctrl+C, SIGTERM ou la limite de taille ; celui de
+# l'erreur qui a arrêté le script (1 si le lecteur a échoué) ; 1 si le retrait
+# de la sonde a échoué.
 on_exit() {
 	rc=$?
 	cleanup || rc=1
@@ -202,21 +205,27 @@ mkdir "$I"
 echo 'ret != -115' > "$I/events/aacfib/$EV/filter"
 echo 1 > "$I/events/aacfib/$EV/enable"
 echo "sonde active, écriture dans $OUT (Ctrl+C pour arrêter, limite $MAX_MB Mio)"
-# Lecteur : écrit chaque événement aussitôt et s'arrête (code 3) avant de
-# dépasser la limite ; une erreur d'écriture l'arrête aussi.
-awk -v max="$MAX" '{
-	n += length($0) + 1
-	if (n > max) exit 3
-	print
-	if (fflush() != 0) exit 4
-}' "$I/trace_pipe" >&3 &
+# Lecteur : cat écrit chaque lecture aussitôt, sans tampon de lignes. La
+# limite est imposée par le noyau (taille de fichier, en blocs de
+# 512 octets) : au-delà, cat reçoit SIGXFSZ (statut 153). Une erreur
+# d'écriture l'arrête avec un autre statut.
+(
+	# Pas de fichier core sur SIGXFSZ (option hors POSIX, gérée par dash).
+	# shellcheck disable=SC3045
+	ulimit -c 0 2>/dev/null || true
+	ulimit -f "$((MAX / 512))"
+	exec cat "$I/trace_pipe"
+) >&3 &
 READER=$!
 # Le shell attend dans wait, qu'un signal interrompt aussitôt.
 rc=0
 wait "$READER" || rc=$?
 READER=
-if [ "$rc" -eq 3 ]; then
+if [ "$rc" -eq 153 ]; then
 	LIMIT=1
 else
+	# Le lecteur s'est arrêté de lui-même (erreur d'écriture, tampon fermé) :
+	# capture en échec, code de sortie 1 après le nettoyage.
 	READER_FAILED=1
+	exit 1
 fi

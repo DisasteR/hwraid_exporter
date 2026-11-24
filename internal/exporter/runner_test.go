@@ -87,8 +87,9 @@ func TestTimedOutRender(t *testing.T) {
 	p := plan(aacHost("host0", addr, "S1"))
 	tr := NewTracker()
 	t0 := time.Unix(1_000_000, 0)
-	tr.Update(map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"volumes": true}}}, []string{addr}, t0)
-	res := map[string]module.Result{addr: {TimedOut: true, Collected: map[string]bool{"volumes": false}}}
+	tr.Update(map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"volumes": true, "capabilities": true},
+		Cached: []string{"capabilities"}}}, []string{addr}, t0)
+	res := map[string]module.Result{addr: {TimedOut: true, Collected: map[string]bool{"volumes": false, "capabilities": false}}}
 	tr.Update(res, []string{addr}, t0.Add(time.Minute))
 	s := Build(p, true, res, tr, time.Minute)
 	if !s.Controllers[0].TimedOut {
@@ -98,6 +99,8 @@ func TestTimedOutRender(t *testing.T) {
 	for _, want := range []string{
 		`hwraid_collection_success{controller="serial:S1",collector="volumes"} 0`,
 		`hwraid_collection_last_success_timestamp_seconds{controller="serial:S1",collector="volumes"} 1000000`,
+		// Réponse 706 gardée en mémoire : toujours valide pendant le blocage.
+		`hwraid_collection_success{controller="serial:S1",collector="capabilities"} 1`,
 	} {
 		if !strings.Contains(out, want+"\n") {
 			t.Fatalf("ligne absente : %s\n%s", want, out)
@@ -280,5 +283,21 @@ func TestRunnerDrainLeavesNothing(t *testing.T) {
 	close(release)
 	if !r.Drain(2 * time.Second) {
 		t.Fatal("Drain échoue après la fin de la collecte")
+	}
+}
+
+// Une réponse gardée en mémoire dont la dernière lecture a échoué n'est pas
+// publiée comme réussie pendant un dépassement de délai.
+func TestTimedOutHeldOnlyIfLastSucceeded(t *testing.T) {
+	const addr = "0000:01:00.0"
+	p := plan(aacHost("host0", addr, "S1"))
+	tr := NewTracker()
+	t0 := time.Unix(1_000_000, 0)
+	tr.Update(map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"capabilities": true}, Cached: []string{"capabilities"}}}, []string{addr}, t0)
+	tr.Update(map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"capabilities": false}, Cached: []string{"capabilities"}}}, []string{addr}, t0.Add(time.Minute))
+	res := map[string]module.Result{addr: {TimedOut: true, Collected: map[string]bool{"capabilities": false}}}
+	out := Render(Build(p, true, res, tr, time.Minute))
+	if want := `hwraid_collection_success{controller="serial:S1",collector="capabilities"} 0`; !strings.Contains(out, want+"\n") {
+		t.Fatalf("ligne absente : %s\n%s", want, out)
 	}
 }

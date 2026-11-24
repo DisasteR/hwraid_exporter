@@ -98,11 +98,14 @@ tests:
               summary: "Lecture cache_protection jamais réussie (serial:B)"
               description: "Depuis son démarrage, l'exporter n'a jamais réussi cette lecture. Voir le journal de l'exporter ; « cannot allocate memory » sur toutes les lectures signale probablement la réserve de commandes du pilote aacraid épuisée : avec le réglage par défaut du pilote, un redémarrage ne videra alors pas le cache de la carte ; lire docs/aacraid-defaut-pilote.md avant de redémarrer."
 
-  # Volume disparu alors que la lecture réussit.
+  # Volume renommé (x puis y) puis disparu alors que la lecture réussit :
+  # une seule alerte pour le volume.
   - interval: 1m
     input_series:
       - series: 'hwraid_volume_info{controller="serial:A",volume="b3",name="x",raid_level="raid1",vendor_level="1",parent=""}'
-        values: '1x5 _x30'
+        values: '1x5 stale _x29'
+      - series: 'hwraid_volume_info{controller="serial:A",volume="b3",name="y",raid_level="raid1",vendor_level="1",parent=""}'
+        values: '_x6 1x4 _x25'
       - series: 'hwraid_collection_success{controller="serial:A",collector="volumes"}'
         values: '1x35'
     alert_rule_test:
@@ -113,7 +116,7 @@ tests:
       - eval_time: 34m
         alertname: HwraidVolumeDisappeared
         exp_alerts:
-          - exp_labels: {severity: warning, controller: "serial:A", volume: b3, name: x, raid_level: raid1, vendor_level: "1"}
+          - exp_labels: {severity: warning, controller: "serial:A", volume: b3}
             exp_annotations:
               summary: "Volume b3 disparu (serial:A)"
               description: "Le volume a été vu dans les dernières 24 heures et n'apparaît plus alors que la lecture des volumes réussit : suppression ou perte du volume."
@@ -278,7 +281,7 @@ tests:
       - eval_time: 25m
         alertname: HwraidControllerDisappeared
         exp_alerts:
-          - exp_labels: {severity: warning, job: hwraid, instance: "a:9799", controller: "serial:A", identity_source: serial, pci_address: "0000:01:00.0", driver: aacraid, backend: aacraid, model: "6805", firmware: x}
+          - exp_labels: {severity: warning, job: hwraid, instance: "a:9799", controller: "serial:A"}
             exp_annotations:
               summary: "Contrôleur serial:A disparu"
               description: "La carte a été vue dans les dernières 24 heures et n'est plus découverte : carte retirée, pilote déchargé ou identité changée."
@@ -878,3 +881,32 @@ tests:
             exp_annotations:
               summary: "Réglage ou état du cache d'écriture non reconnu, volume v0 (serial:B)"
               description: "La carte décrit le réglage ou l'état du cache d'écriture du volume avec une valeur non qualifiée. État inconnu : HwraidVolumeWriteCacheUnprotected, HwraidVolumeWriteCacheProtectionUnknown et HwraidVolumeWriteCacheInactive ne peuvent plus se déclencher pour ce volume ; réglage inconnu : HwraidVolumeWriteCacheAlwaysOn et HwraidVolumeWriteCacheInactive. Vérifier le cache avec l'outil du constructeur."
+
+  # Cache actif, lecture de la protection en échec durable :
+  # avertissement de protection inconnue, pas d'alerte critique.
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_volume_info{controller="serial:A",volume="v0",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""}'
+        values: '1x40'
+      - series: 'hwraid_volume_write_cache_enabled{controller="serial:A",volume="v0"}'
+        values: '1x40'
+      - series: 'hwraid_volume_write_cache_policy{controller="serial:A",volume="v0",policy="write_back_when_protected",vendor_policy="On when protected by battery/ZMM"}'
+        values: '1x40'
+      - series: 'hwraid_collection_success{controller="serial:A",collector="volumes"}'
+        values: '1x40'
+      - series: 'hwraid_collection_success{controller="serial:A",collector="cache_protection"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 29m
+        alertname: HwraidVolumeWriteCacheProtectionUnknown
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: HwraidVolumeWriteCacheProtectionUnknown
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: "serial:A", volume: v0}
+            exp_annotations:
+              summary: "Cache d'écriture actif, protection d'état inconnu, volume v0 (serial:A)"
+              description: "Le cache d'écriture du volume est actif et l'état du module de protection n'est pas qualifié ou ne peut pas être lu sur cette carte : rien ne garantit que les écritures en attente survivent à une coupure. Vérifier le module avec l'outil du constructeur."
+      - eval_time: 31m
+        alertname: HwraidVolumeWriteCacheUnprotected
+        exp_alerts: []

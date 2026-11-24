@@ -20,11 +20,16 @@ type Tracker struct {
 	last   map[string]map[string]time.Time // adresse PCI → collecteur → date
 	serial map[string]string               // adresse PCI → label serial:… établi
 	closes map[string]uint64               // adresse PCI → clôtures non nominales cumulées
+	// held : collecteurs servis par une réponse gardée en mémoire par le
+	// module (Cached) et réussis lors de leur dernière collecte. Une carte
+	// hors délai les sert toujours : ils ne sont pas publiés en échec.
+	held map[string]map[string]bool
 }
 
 // NewTracker crée un suivi vide.
 func NewTracker() *Tracker {
-	return &Tracker{last: map[string]map[string]time.Time{}, serial: map[string]string{}, closes: map[string]uint64{}}
+	return &Tracker{last: map[string]map[string]time.Time{}, serial: map[string]string{}, closes: map[string]uint64{},
+		held: map[string]map[string]bool{}}
 }
 
 // Update enregistre les succès du cycle terminé à now. Une carte n'est
@@ -50,6 +55,11 @@ func (t *Tracker) Update(results map[string]module.Result, present []string, now
 			delete(t.closes, addr)
 		}
 	}
+	for addr := range t.held {
+		if !keep[addr] {
+			delete(t.held, addr)
+		}
+	}
 	for addr, r := range results {
 		if r.CloseUnconfirmed > 0 {
 			t.closes[addr] += uint64(r.CloseUnconfirmed)
@@ -60,6 +70,14 @@ func (t *Tracker) Update(results map[string]module.Result, present []string, now
 		for _, c := range r.Cached {
 			cached[c] = true
 			delete(t.last[addr], c)
+			if r.Collected[c] {
+				if t.held[addr] == nil {
+					t.held[addr] = map[string]bool{}
+				}
+				t.held[addr][c] = true
+			} else {
+				delete(t.held[addr], c)
+			}
 		}
 		for col, ok := range r.Collected {
 			if !ok || cached[col] {
@@ -71,6 +89,15 @@ func (t *Tracker) Update(results map[string]module.Result, present []string, now
 			t.last[addr][col] = now
 		}
 	}
+}
+
+// Held rend les collecteurs de la carte servis par une réponse gardée en
+// mémoire et réussis lors de leur dernière collecte.
+func (t *Tracker) Held(addr string) map[string]bool {
+	if t == nil {
+		return nil
+	}
+	return t.held[addr]
 }
 
 // Remember enregistre les identités serial: établies dans un instantané.

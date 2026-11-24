@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -729,5 +730,35 @@ func TestReadPagedStopDuringOpen(t *testing.T) {
 	}
 	if got := f.subs(); len(got) != 3 || got[1] != 83 || got[2] != 84 {
 		t.Fatalf("requêtes : %v (ouverture, morceau 0, clôture attendus)", got)
+	}
+}
+
+// Arrêt demandé alors que la commande attend son tour sur le thread dédié
+// (après le contrôle fait par l'appelant) : le contrôle fait sur le thread,
+// juste avant l'appel système, la refuse ; rien n'atteint le noyau.
+func TestStopCheckedOnIoctlThread(t *testing.T) {
+	calls := fakeIoctl(t, func(uint32, []byte) error { return nil })
+	d, err := Open("/dev/null", devNull, list(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	busy, release := make(chan struct{}), make(chan struct{})
+	go d.thread.run(func() { close(busy); <-release }) // commande précédente en cours
+	<-busy
+	ctx, cancel := context.WithCancel(context.Background())
+	errc := make(chan error, 1)
+	go func() {
+		_, err := d.SupplementInfo(ctx) // contrôle de l'appelant passé, en file
+		errc <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	close(release)
+	if err := <-errc; !errors.Is(err, ErrStopped) {
+		t.Fatalf("ErrStopped attendu, obtenu %v", err)
+	}
+	if *calls != 0 {
+		t.Fatalf("%d appel(s) système après l'arrêt", *calls)
 	}
 }
