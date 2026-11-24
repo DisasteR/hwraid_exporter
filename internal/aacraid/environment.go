@@ -63,10 +63,11 @@ func DecodeAdapterInfo(b []byte) (AdapterInfo, error) {
 }
 
 // La requête AdapterEnvironmentInfo de l'outil de référence porte, en plus
-// de HostOwned, le bit 0x100000 de XferState (FastResponseCapable dans le
-// pilote Linux), absent de ses requêtes 703 et 706 ; son unique mot de
-// données vaut 1. Les deux sont repris tels quels : la requête est
-// identique à la capture (docs/aacraid-interface.md, section 8).
+// de HostOwned, le bit 0x100000 de XferState (ApiFib, Linux aacraid.h),
+// comme ses lectures de la protection du cache et contrairement à ses
+// requêtes 703 et 706 ; son unique mot de données vaut 1. Les deux sont
+// repris tels quels : la requête est identique à la capture
+// (docs/aacraid-interface.md, section 8).
 const (
 	envXferState = 0x100001
 	envSelector  = 1

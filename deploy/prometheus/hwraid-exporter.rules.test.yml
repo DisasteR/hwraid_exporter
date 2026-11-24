@@ -491,6 +491,17 @@ tests:
         values: '50x40'
       - series: 'hwraid_controller_temperature_celsius{controller="serial:C"}'
         values: '54x40'
+      # Même label controller sur deux hôtes (instance) : chaque mesure est
+      # comparée au seuil de son propre hôte. Sur h2, 52 °C sous un seuil
+      # haut de 100 : rien, bien que h1 annonce un seuil de 50.
+      - series: 'hwraid_controller_temperature_celsius{instance="h1",controller="serial:D"}'
+        values: '52x40'
+      - series: 'hwraid_controller_temperature_threshold_celsius{instance="h1",controller="serial:D",level="high"}'
+        values: '100x40'
+      - series: 'hwraid_controller_temperature_celsius{instance="h2",controller="serial:D"}'
+        values: '52x40'
+      - series: 'hwraid_controller_temperature_threshold_celsius{instance="h2",controller="serial:D",level="high"}'
+        values: '50x40'
       - series: 'hwraid_controller_temperature_threshold_celsius{controller="serial:C",level="high"}'
         values: '100x40'
     alert_rule_test:
@@ -503,13 +514,17 @@ tests:
           - exp_labels: {severity: warning, controller: "serial:A"}
             exp_annotations:
               summary: "Contrôleur à 56 °C (serial:A)"
-              description: "La température du contrôleur dépasse 55 °C depuis 10 minutes. Vérifier la ventilation du boîtier et l'encrassement du dissipateur de la carte."
+              description: "La température du contrôleur atteint au moins 55 °C depuis 10 minutes. Vérifier la ventilation du boîtier et l'encrassement du dissipateur de la carte."
       - eval_time: 16m
         alertname: HwraidControllerTemperatureCritical
         exp_alerts:
           - exp_labels: {severity: critical, controller: "serial:B"}
             exp_annotations:
               summary: "Contrôleur à 50 °C (serial:B)"
+              description: "La température du contrôleur atteint 60 °C, ou le seuil haut annoncé par la carte (état anormal pour l'outil du constructeur). Une surchauffe peut provoquer des erreurs ou l'arrêt de la carte : rétablir la ventilation sans attendre."
+          - exp_labels: {severity: critical, instance: h2, controller: "serial:D"}
+            exp_annotations:
+              summary: "Contrôleur à 52 °C (serial:D)"
               description: "La température du contrôleur atteint 60 °C, ou le seuil haut annoncé par la carte (état anormal pour l'outil du constructeur). Une surchauffe peut provoquer des erreurs ou l'arrêt de la carte : rétablir la ventilation sans attendre."
       - eval_time: 28m
         alertname: HwraidControllerTemperatureCritical
@@ -521,6 +536,10 @@ tests:
           - exp_labels: {severity: critical, controller: "serial:B"}
             exp_annotations:
               summary: "Contrôleur à 50 °C (serial:B)"
+              description: "La température du contrôleur atteint 60 °C, ou le seuil haut annoncé par la carte (état anormal pour l'outil du constructeur). Une surchauffe peut provoquer des erreurs ou l'arrêt de la carte : rétablir la ventilation sans attendre."
+          - exp_labels: {severity: critical, instance: h2, controller: "serial:D"}
+            exp_annotations:
+              summary: "Contrôleur à 52 °C (serial:D)"
               description: "La température du contrôleur atteint 60 °C, ou le seuil haut annoncé par la carte (état anormal pour l'outil du constructeur). Une surchauffe peut provoquer des erreurs ou l'arrêt de la carte : rétablir la ventilation sans attendre."
       - eval_time: 38m
         alertname: HwraidControllerTemperatureHigh

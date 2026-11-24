@@ -233,7 +233,7 @@ func TestTemperatureRender(t *testing.T) {
 	}
 	for name, r := range map[string]module.Result{
 		"lecture absente": {NodeValid: true},
-		"hors délai":      {TimedOut: true, Collected: map[string]bool{"temperature": false}},
+		"hors délai":      {TimedOut: true, Collected: map[string]bool{"temperature": false}, Temperature: &module.Temperature{Celsius: 49, ThresholdLo: 95, ThresholdHi: 100}},
 	} {
 		res["0000:01:00.0"] = r
 		if out := Render(Build(p, true, res, nil, 0)); strings.Contains(out, "hwraid_controller_temperature_celsius{") ||

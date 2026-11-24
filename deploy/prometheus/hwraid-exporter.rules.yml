@@ -207,7 +207,7 @@ groups:
           severity: warning
         annotations:
           summary: "Contrôleur à {{ $value }} °C ({{ $labels.controller }})"
-          description: "La température du contrôleur dépasse 55 °C depuis 10 minutes. Vérifier la ventilation du boîtier et l'encrassement du dissipateur de la carte."
+          description: "La température du contrôleur atteint au moins 55 °C depuis 10 minutes. Vérifier la ventilation du boîtier et l'encrassement du dissipateur de la carte."
 
       - alert: HwraidControllerTemperatureCritical
         expr: |

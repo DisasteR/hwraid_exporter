@@ -49,14 +49,19 @@ sys.exit(bad)
     fail=1
 fi
 # Valeurs réelles (numéros de série, WWN, adresses, UID) : liste locale,
-# jamais publiée. Les fichiers .hex sont décodés avant la recherche, et les
-# formes textuelles cherchées sans tenir compte de la casse. En CI, la liste
+# jamais publiée. Les fichiers .hex sont décodés avant la recherche, comme
+# les chaînes hexadécimales des fichiers texte (réponses enregistrées dans
+# les tests Go, morceaux concaténés par + recollés), et les formes
+# textuelles cherchées sans tenir compte de la casse. En CI, la liste
 # est absente : le contrôle n'a lieu qu'au poste qui détient les captures.
 deny=preuves-internes/denylist.txt
 if [ -f "$deny" ]; then
     git ls-files -z | python3 -I -c '
-import sys
+import re, sys
 deny = [l.strip() for l in open(sys.argv[1]) if l.strip() and not l.startswith("#")]
+# Chaîne hexadécimale entre guillemets, éventuellement suivie de morceaux
+# concaténés par +.
+hexlit = re.compile(rb"\"[0-9A-Fa-f]{8,}\"(?:\s*\+\s*\"[0-9A-Fa-f]{2,}\")*")
 bad = 0
 for f in sys.stdin.buffer.read().split(b"\0"):
     if not f:
@@ -71,6 +76,12 @@ for f in sys.stdin.buffer.read().split(b"\0"):
             bad = 1
             continue
         hays += [dec, dec.lower()]
+    elif b"\0" not in raw:
+        for m in hexlit.finditer(raw):
+            h = re.sub(rb"[^0-9A-Fa-f]", b"", m.group())
+            if len(h) % 2 == 0:
+                dec = bytes.fromhex(h.decode())
+                hays += [dec, dec.lower()]
     for d in deny:
         kind, v = d.split(":", 1)
         needles = [v.lower().encode()] if kind == "text" else [bytes.fromhex(v), v.lower().encode()]

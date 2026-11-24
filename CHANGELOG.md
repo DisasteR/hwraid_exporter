@@ -2,8 +2,9 @@
 
 ## v0.1.3 — à venir
 
-- aacraid: controller temperature published (`temperature` collector): `hwraid_controller_temperature_celsius` and the thresholds announced by the card, `hwraid_controller_temperature_threshold_celsius{level="low"|"high"}`. As the vendor tool does, `AdapterEnvironmentInfo` (803) is sent only if `RequestAdapterInfo` (703) announces a heat sensor (`AAC_SUPPORTED_HEAT_SENSOR`); otherwise the collector is unsupported. The 703 answer is kept in memory like the 706 one; one more command per cycle.
-- Alert rules `HwraidControllerTemperatureHigh` (warning, ≥ 55 °C for 10 min) and `HwraidControllerTemperatureCritical` (critical, ≥ 60 °C or at the card's high threshold, the vendor tool's abnormal state, for 5 min).
+- aacraid: controller temperature published (`temperature` collector, qualified model and firmware only): `hwraid_controller_temperature_celsius` and the thresholds announced by the card, `hwraid_controller_temperature_threshold_celsius{level="low"|"high"}`. As the vendor tool does, `AdapterEnvironmentInfo` (803) is sent only if `RequestAdapterInfo` (703) announces a heat sensor (`AAC_SUPPORTED_HEAT_SENSOR`): a 703 answer without it makes the collector unsupported, a failed 703 a failed read, retried next cycle. The 703 answer is kept in memory like the 706 one (read every cycle while the card identity is incomplete); in steady state, one more command per cycle.
+- Alert rules `HwraidControllerTemperatureHigh` (warning, 55 °C ≤ temperature < 60 °C for 10 min) and `HwraidControllerTemperatureCritical` (critical, ≥ 60 °C or at the card's high threshold, the vendor tool's abnormal state, for 5 min).
+- `scripts/check-public.sh` also decodes hexadecimal strings of text files (responses recorded in Go tests, concatenated pieces joined) before looking for real values.
 
 ## v0.1.2 — 2026-11-24
 

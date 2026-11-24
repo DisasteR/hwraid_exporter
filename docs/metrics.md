@@ -117,7 +117,7 @@ Prévues au cahier des charges, pas encore publiées :
 | Métrique | Dépend de |
 |---|---|
 | `hwraid_task_progress_ratio` (reconstruction, vérification…) | décodage de la réponse aux requêtes de tâches (à capturer pendant une reconstruction) |
-| `hwraid_controller_state`, `hwraid_controller_temperature_celsius` | lecture d'état et des capteurs de la carte |
+| `hwraid_controller_state` | lecture d'état de la carte |
 | Emplacement des disques derrière un expandeur ou un fond de panier (boîtier, emplacement) | matériel correspondant et capture de l'outil témoin |
 
 ## Exemple
