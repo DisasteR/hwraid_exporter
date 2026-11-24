@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
-	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -747,12 +746,15 @@ func TestStopCheckedOnIoctlThread(t *testing.T) {
 	go d.thread.run(func() { close(busy); <-release }) // commande précédente en cours
 	<-busy
 	ctx, cancel := context.WithCancel(context.Background())
+	inQueue := make(chan struct{})
+	queued = func() { close(inQueue) }
+	defer func() { queued = nil }()
 	errc := make(chan error, 1)
 	go func() {
 		_, err := d.SupplementInfo(ctx) // contrôle de l'appelant passé, en file
 		errc <- err
 	}()
-	time.Sleep(50 * time.Millisecond)
+	<-inQueue // le premier contrôle est franchi : seule la vérification sur le thread reste
 	cancel()
 	close(release)
 	if err := <-errc; !errors.Is(err, ErrStopped) {

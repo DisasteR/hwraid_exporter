@@ -137,6 +137,13 @@ type ZMMStatus struct {
 	State CacheProtectionState
 }
 
+// InstallKnown indique si le mot d'état établit la présence du module : bit
+// d'installation positionné, ou mot sans aucun bit d'état (module absent).
+func (s ZMMStatus) InstallKnown() bool {
+	low := s.Word &^ stateTypeMask
+	return low == 0 || low&stateInstall != 0
+}
+
 // DecodeCacheProtectionState décode la lecture d'état. Un bloc marqué non
 // valide est une erreur : l'état n'est pas observé.
 func DecodeCacheProtectionState(b []byte) (ZMMStatus, error) {

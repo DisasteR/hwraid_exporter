@@ -182,7 +182,11 @@ func serve(args []string) int {
 	log.Info("privileges dropped", "uid", *uid, "gid", *gid, "capabilities", fmt.Sprintf("%#x", keep))
 
 	// --- Collecte et service ---------------------------------------------
-	pub := exporter.NewPublisher(exporter.Render(exporter.Snapshot{}))
+	// Vue sans valeur matérielle : avant la première collecte, à l'arrêt, et
+	// si la boucle de collecte ne publie plus depuis trois intervalles et un
+	// délai de cycle.
+	empty := exporter.Render(exporter.Snapshot{})
+	pub := exporter.NewPublisher(empty, empty, 3**interval+*timeout)
 
 	ctx, stop := signal.NotifyContext(context.Background(), lifecycle.TerminationSignals()...)
 	defer stop()
@@ -339,11 +343,14 @@ func serve(args []string) int {
 	// n'est plus mise à jour, et une attente longue (commande bloquée,
 	// sortie sur changement de nœuds) ne doit pas faire passer un état
 	// ancien pour un état courant.
-	pub.Stop(exporter.Render(exporter.Snapshot{}))
+	pub.Stop()
 	log.Info("stopping: waiting for the card commands in progress")
 	lifecycle.WaitIdle(loopDone, runner.Drain, shutdownWarnEvery, func(waited time.Duration) {
 		log.Warn("stopping: a card command has not returned yet; killing the process now would make the aacraid driver lose a management command until the next reboot", "waited", waited.Round(time.Second))
 	})
+	for addr, err := range runner.LateErrors() {
+		log.Warn("a collection finished during the stop, not published", "pci", addr, "err", err)
+	}
 	shut, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shut)

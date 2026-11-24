@@ -339,6 +339,8 @@ func TestCollectCacheProtection(t *testing.T) {
 	}{
 		{"optimal", cpAnswer{described: true, st: aacraid.ZMMStatus{State: aacraid.CacheProtectionOptimal}}, &module.CacheProtection{Present: true, Type: "flash_supercap", Vendor: "zmm", State: "optimal"}, ptr(true), false},
 		{"non installé", cpAnswer{described: true, st: aacraid.ZMMStatus{State: aacraid.CacheProtectionNotInstalled}}, &module.CacheProtection{Type: "flash_supercap", Vendor: "zmm"}, ptr(true), false},
+		{"état inconnu, installé", cpAnswer{described: true, st: aacraid.ZMMStatus{Word: 0x40000019, State: aacraid.CacheProtectionUnknown}}, &module.CacheProtection{Present: true, Type: "flash_supercap", Vendor: "zmm", State: "unknown"}, ptr(true), false},
+		{"état inconnu, présence non établie", cpAnswer{described: true, st: aacraid.ZMMStatus{Word: 0x40000008, State: aacraid.CacheProtectionUnknown}}, &module.CacheProtection{PresenceUnknown: true, Type: "flash_supercap", Vendor: "zmm", State: "unknown"}, ptr(true), false},
 		{"non décrit", cpAnswer{described: false}, nil, nil, true},
 		{"autre type", cpAnswer{described: true, st: aacraid.ZMMStatus{State: aacraid.CacheProtectionOtherType}}, nil, nil, true},
 		{"échec", cpAnswer{err: errors.New("EIO")}, nil, ptr(false), false},

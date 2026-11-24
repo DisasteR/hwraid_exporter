@@ -24,12 +24,15 @@ type Tracker struct {
 	// module (Cached) et réussis lors de leur dernière collecte. Une carte
 	// hors délai les sert toujours : ils ne sont pas publiés en échec.
 	held map[string]map[string]bool
+	// heldLabel : identité (label controller) de la carte observée par la
+	// dernière collecte non hors délai ; held ne vaut que pour elle.
+	heldLabel map[string]string
 }
 
 // NewTracker crée un suivi vide.
 func NewTracker() *Tracker {
 	return &Tracker{last: map[string]map[string]time.Time{}, serial: map[string]string{}, closes: map[string]uint64{},
-		held: map[string]map[string]bool{}}
+		held: map[string]map[string]bool{}, heldLabel: map[string]string{}}
 }
 
 // Update enregistre les succès du cycle terminé à now. Une carte n'est
@@ -58,6 +61,7 @@ func (t *Tracker) Update(results map[string]module.Result, present []string, now
 	for addr := range t.held {
 		if !keep[addr] {
 			delete(t.held, addr)
+			delete(t.heldLabel, addr)
 		}
 	}
 	for addr, r := range results {
@@ -92,9 +96,11 @@ func (t *Tracker) Update(results map[string]module.Result, present []string, now
 }
 
 // Held rend les collecteurs de la carte servis par une réponse gardée en
-// mémoire et réussis lors de leur dernière collecte.
-func (t *Tracker) Held(addr string) map[string]bool {
-	if t == nil {
+// mémoire et réussis lors de leur dernière collecte, si la carte porte
+// toujours l'identité label observée alors ; rien sinon (carte changée à la
+// même adresse).
+func (t *Tracker) Held(addr, label string) map[string]bool {
+	if t == nil || t.heldLabel[addr] != label {
 		return nil
 	}
 	return t.held[addr]
@@ -106,6 +112,9 @@ func (t *Tracker) Remember(s Snapshot) {
 		return
 	}
 	for _, c := range s.Controllers {
+		if !c.TimedOut {
+			t.heldLabel[c.PCIAddress] = c.Label
+		}
 		if c.IdentitySource != "serial" {
 			continue
 		}

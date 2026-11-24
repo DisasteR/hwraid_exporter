@@ -42,6 +42,10 @@ var ioctlFn = func(fd int, req uint32, buf []byte) error {
 // ENOMEM répétés sur toutes les lectures désignent la réserve vide.
 var ErrDriverNoMemory = errors.New("the driver refused a management command for lack of memory; two possible causes: its management command pool is exhausted (aacraid loses one block per interrupted command, only a reboot restores it), or a large command could not get a DMA buffer (depends on free kernel memory, does not consume the pool); the same error on every read points to the first, see docs/aacraid-defaut-pilote.md")
 
+// queued, si non nil, est appelé juste avant qu'une commande soit confiée au
+// thread dédié ; réservé aux tests (synchronisation).
+var queued func()
+
 // ErrStopped : la collecte est arrêtée (échéance du cycle ou arrêt du
 // service) ; aucune nouvelle commande n'est envoyée à la carte.
 var ErrStopped = errors.New("collection stopped: no new card command sent")
@@ -138,6 +142,9 @@ func (d *Device) do(ctx context.Context, req allowlist.Request) error {
 		return err
 	}
 	var err, refused error
+	if queued != nil {
+		queued()
+	}
 	d.thread.run(func() {
 		if ctx != nil {
 			if refused = admit(ctx); refused != nil {

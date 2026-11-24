@@ -9,16 +9,21 @@
 #
 #   ret=0     commande rendue normalement
 #   ret=-512  commande interrompue par un signal (-ERESTARTSYS) : un bloc perdu
+#             sur les cartes dont les réponses passent par aac_intr_normal
+#             (série 6, noyau 4.6 et plus ; docs/aacraid-defaut-pilote.md)
 #
 # La sonde s'exécute à chaque retour de aac_fib_send, entrées-sorties disque
 # comprises ; le filtre écarte ensuite celles-ci (-115, -EINPROGRESS).
-# Arrêt par Ctrl+C ou SIGTERM : la sonde est coupée, le tampon vidé dans la
+# Arrêt par Ctrl+C, SIGTERM ou SIGHUP (fin de la session) : la sonde est coupée, le tampon vidé dans la
 # sortie, la sonde retirée et le retrait vérifié. Le bilan ne dit « trace
 # complète » que si rien n'a été perdu en route : aucun retour manqué par la
 # sonde, aucun événement perdu ni restant dans le tampon, compteurs de
 # toutes les CPU lus, autant de lignes écrites que d'événements lus, lecteur
 # sans erreur et limite de taille non atteinte. Un redémarrage retire aussi
-# la sonde.
+# la sonde. Si le script a disparu sans nettoyer (SIGKILL), retirer à la main
+# l'instance et la sonde dont le nom contient son PID :
+#   rmdir /sys/kernel/tracing/instances/aacfib_<pid>_<suffixe>
+#   echo '-:aacfib/ret_<pid>_<suffixe>' >> /sys/kernel/tracing/kprobe_events
 #
 # Usage : sudo tools/aacraid-fib-trace.sh
 #   La trace va dans un répertoire privé créé par mktemp sous /var/tmp, dont
@@ -116,7 +121,7 @@ READER=
 READER_FAILED=0
 LIMIT=0
 cleanup() {
-	trap - EXIT INT TERM
+	trap - EXIT HUP INT TERM
 	failed=0
 	# 1. Plus aucun nouvel événement.
 	if [ -e "$I/events/aacfib/$EV/enable" ]; then
@@ -196,7 +201,7 @@ on_exit() {
 	exit "$rc"
 }
 trap on_exit EXIT
-trap 'exit 0' INT TERM
+trap 'exit 0' HUP INT TERM
 
 exec 3>"$OUT"
 # $retval est lu par le noyau, pas par le shell.
@@ -221,7 +226,11 @@ READER=$!
 rc=0
 wait "$READER" || rc=$?
 READER=
-if [ "$rc" -eq 153 ]; then
+# Limite atteinte : SIGXFSZ (153), ou, si ce signal était ignoré au
+# lancement, échec d'écriture une fois la taille maximale atteinte. La
+# dernière ligne peut alors être tronquée ; le bilan déclare la trace
+# incomplète.
+if [ "$rc" -eq 153 ] || [ "$(wc -c < "$OUT")" -ge "$MAX" ]; then
 	LIMIT=1
 else
 	# Le lecteur s'est arrêté de lui-même (erreur d'écriture, tampon fermé) :

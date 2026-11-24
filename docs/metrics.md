@@ -34,7 +34,7 @@ Valeurs réservées pour les modules à venir, non publiées aujourd'hui : `redu
 | Métrique | Labels | Valeur |
 |---|---|---|
 | `hwraid_exporter_build_info` | `version`, `revision`, `goversion` | 1 ; version de l'exporter (tag de la publication, sinon déduite du dépôt), commit source et version de Go |
-| `hwraid_snapshot_ready` | — | 0 avant la première découverte publiée, puis 1 |
+| `hwraid_snapshot_ready` | — | 1 quand `/metrics` sert la dernière collecte ; 0, sans aucune valeur matérielle, avant la première collecte publiée, pendant l'arrêt de l'exporter, et quand la boucle de collecte n'a rien publié depuis plus de trois intervalles et un délai de cycle (vue périmée) |
 | `hwraid_discovery_success` | — | 1 si la dernière découverte des cartes dans sysfs a abouti pour tous les hôtes SCSI ; 0 si sysfs ou au moins un hôte est illisible (une carte peut alors manquer à l'inventaire). Un hôte SCSI sans aucun ancêtre PCI (iSCSI, VMBus, hôte virtuel) est hors périmètre : ignoré, il ne met pas la découverte en échec |
 
 ### Contrôleur
@@ -55,7 +55,7 @@ Valeurs réservées pour les modules à venir, non publiées aujourd'hui : `redu
 | `hwraid_transfer_close_unconfirmed_total` | `controller` | compteur des lectures paginées rejetées parce que leur clôture a été confirmée par un statut non nominal (aacraid : `0xc5`, observé quand un autre outil, comme maxView, interroge la carte en même temps). Une lecture rejetée est refaite une fois dans le même cycle ; ses données ne sont jamais publiées. Une seconde tentative n'a lieu que si la première lecture n'a pas eu d'autre erreur et que le cycle n'est ni échu ni arrêté. Les rejets d'une collecte rendue après son délai sont comptés quand la même adresse PCI est de nouveau collectée ; si la carte a disparu, ils ne sont jamais comptés |
 | `hwraid_collection_interval_seconds` | `controller` | intervalle de collecte effectif (option `-interval`), publié pour chaque carte prise en charge |
 
-**Collecte hors délai.** Les cartes sont collectées en parallèle ; une carte qui n'a pas répondu dans le délai (`-collect-timeout`, 30 s par défaut ou l'intervalle s'il est plus court) est publiée avec tous ses collecteurs à 0, sans série d'état, et ses dates de dernier succès sont conservées. Tant que la commande bloquée n'a pas rendu la main, aucune nouvelle commande n'est envoyée à cette carte.
+**Collecte hors délai.** Les cartes sont collectées en parallèle ; une carte qui n'a pas répondu dans le délai (`-collect-timeout`, 30 s par défaut ou l'intervalle s'il est plus court) est publiée avec ses collecteurs à 0, sans série d'état, et ses dates de dernier succès sont conservées. Exception : un collecteur servi par une réponse gardée en mémoire (`capabilities`) reste à 1 si sa dernière lecture a réussi sur la même carte. Tant que la commande bloquée n'a pas rendu la main, aucune nouvelle commande n'est envoyée à cette carte.
 
 L'intervalle permet d'écrire des règles qui s'adaptent au réglage, par exemple « aucun succès depuis plus de trois cycles » : `time() - hwraid_collection_last_success_timestamp_seconds > on (job, instance, controller) group_left 3 * hwraid_collection_interval_seconds`. Joindre toujours aussi sur `job` et `instance` : deux hôtes peuvent publier le même identifiant `pci:`.
 

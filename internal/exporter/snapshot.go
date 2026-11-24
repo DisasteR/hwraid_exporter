@@ -111,7 +111,7 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 				// (capabilities) restent valides : pas d'échec publié pour eux.
 				c.Collected = map[string]bool{}
 				for col, ok := range r.Collected {
-					c.Collected[col] = ok || tracker.Held(addr)[col]
+					c.Collected[col] = ok || tracker.Held(addr, c.Label)[col]
 				}
 				c.LastSuccess = tracker.Last(addr)
 				c.CollectError = "collection timed out"
@@ -270,13 +270,13 @@ func Render(s Snapshot) string {
 	}
 	gauge("hwraid_cache_protection_present", "1 if a cache protection module is installed.")
 	for _, c := range s.Controllers {
-		if cp := c.CacheProtection; cp != nil {
+		if cp := c.CacheProtection; cp != nil && !cp.PresenceUnknown {
 			fmt.Fprintf(&b, "hwraid_cache_protection_present{%s} %d\n", labels("controller", c.Label, "type", cp.Type, "vendor_type", cp.Vendor), b2i(cp.Present))
 		}
 	}
 	gauge("hwraid_cache_protection_state", "Cache protection module state, value 1.")
 	for _, c := range s.Controllers {
-		if cp := c.CacheProtection; cp != nil && cp.Present {
+		if cp := c.CacheProtection; cp != nil && (cp.Present || cp.PresenceUnknown) {
 			fmt.Fprintf(&b, "hwraid_cache_protection_state{%s} 1\n", labels("controller", c.Label, "state", cp.State))
 		}
 	}

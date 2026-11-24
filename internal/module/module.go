@@ -143,7 +143,11 @@ type CacheProtection struct {
 	Present bool   // module installé
 	Type    string // type normalisé : flash_supercap, battery
 	Vendor  string // nom constructeur du module : « zmm »
-	State   string // état normalisé, vide si Present est faux
+	State   string // état normalisé, vide si Present est faux et la présence établie
+	// PresenceUnknown : la carte décrit un module sans que sa présence soit
+	// établie (état non qualifié) ; la présence n'est pas publiée, l'état
+	// (unknown) l'est.
+	PresenceUnknown bool
 }
 
 // Module est le contrat d'un module de pilote.

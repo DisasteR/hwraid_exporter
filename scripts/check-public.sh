@@ -21,12 +21,30 @@ if git ls-files -z -- . ':!scripts/check-public.sh' | xargs -0 grep -nIE "$patte
     echo "symbole interne d'ARCCONF présent dans le dépôt" >&2
     fail=1
 fi
-# Adresses e-mail : aucune dans le dépôt (détail personnel). Seuls les liens
-# lore.kernel.org sont admis : l'identifiant d'un message de liste de
-# diffusion contient l'adresse de son auteur, déjà publique.
-email='[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}'
-if git ls-files -z -- . ':!scripts/check-public.sh' | xargs -0 grep -nIoE "[^ <>(]*$email" |
-    grep -vE "https://lore\.kernel\.org/[a-z0-9-]+/[^ ]*$email" >&2; then
+# Adresses e-mail : aucune dans le dépôt (détail personnel). Seule exception :
+# une adresse qui fait partie de l'identifiant de message d'un lien
+# https://lore.kernel.org/<liste>/<identifiant>/ (adresse de l'auteur d'un
+# message de liste de diffusion, déjà publique). Chaque adresse est
+# contrôlée séparément.
+if ! git ls-files -z -- . ':!scripts/check-public.sh' | python3 -I -c '
+import re, sys
+email = re.compile(rb"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
+lore = re.compile(rb"https://lore\.kernel\.org/[a-z0-9-]+/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+/")
+bad = 0
+for f in sys.stdin.buffer.read().split(b"\0"):
+    if not f:
+        continue
+    data = open(f, "rb").read()
+    if b"\0" in data:
+        continue  # fichier binaire
+    allowed = [m.span() for m in lore.finditer(data)]
+    for m in email.finditer(data):
+        if not any(a <= m.start() and m.end() <= b for a, b in allowed):
+            line = data.count(b"\n", 0, m.start()) + 1
+            print("%s:%d: %s" % (f.decode(), line, m.group().decode()), file=sys.stderr)
+            bad = 1
+sys.exit(bad)
+'; then
     echo "adresse e-mail présente dans le dépôt" >&2
     fail=1
 fi

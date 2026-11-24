@@ -195,6 +195,12 @@ func TestCacheProtectionRender(t *testing.T) {
 	if out := Render(Build(p, true, res, nil, 0)); strings.Contains(out, "hwraid_cache_protection_present{") {
 		t.Fatalf("présence publiée sans lecture :\n%s", out)
 	}
+	// Présence non établie : état unknown publié, présence omise.
+	res["0000:01:00.0"] = module.Result{NodeValid: true, CacheProtection: &module.CacheProtection{PresenceUnknown: true, Type: "flash_supercap", Vendor: "zmm", State: "unknown"}}
+	out = Render(Build(p, true, res, nil, 0))
+	if strings.Contains(out, "hwraid_cache_protection_present{") || !strings.Contains(out, `hwraid_cache_protection_state{controller="serial:S1",state="unknown"} 1`+"\n") {
+		t.Fatalf("présence non établie :\n%s", out)
+	}
 }
 
 func TestVolumeRender(t *testing.T) {

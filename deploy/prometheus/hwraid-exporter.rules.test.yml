@@ -297,8 +297,8 @@ tests:
         exp_alerts:
           - exp_labels: {severity: warning, job: hwraid, instance: "b:9799"}
             exp_annotations:
-              summary: "Aucune collecte publiée (b:9799)"
-              description: "L'exporter répond mais n'a encore publié aucun résultat de collecte. Voir le journal de l'exporter."
+              summary: "Aucune collecte servie (b:9799)"
+              description: "L'exporter répond mais ne sert aucun résultat de collecte : pas encore de collecte publiée, arrêt en cours (attente d'une commande de la carte), ou boucle de collecte qui ne publie plus. Voir le journal de l'exporter."
       - eval_time: 20m
         alertname: HwraidExporterDown
         exp_alerts:
@@ -437,6 +437,45 @@ tests:
       - eval_time: 141m
         alertname: HwraidCacheProtectionNotReady
         exp_alerts: []
+
+  # Lecture en échec un cycle sur quatre pendant 40 min : alerte
+  # d'échec intermittent ; un seul échec dans l'heure : rien.
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_collection_success{controller="serial:A",collector="volumes"}'
+        values: '1 1 1 0 1 1 1 0 1 1 1 0 1 1 1 0 1 1 1 0 1 1 1 0 1 1 1 0 1 1 1 0 1 1 1 0 1 1 1 0'
+      - series: 'hwraid_collection_success{controller="serial:B",collector="volumes"}'
+        values: '1x20 0 1x19'
+    alert_rule_test:
+      - eval_time: 39m
+        alertname: HwraidCollectionIntermittent
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: "serial:A", collector: volumes}
+            exp_annotations:
+              summary: "Lecture volumes en échec intermittent (serial:A)"
+              description: "La lecture échoue régulièrement, entre des succès : les alertes d'état qui demandent plusieurs minutes de condition continue (for) peuvent ne jamais se déclencher. Vérifier l'état de la carte avec l'outil du constructeur et consulter le journal de l'exporter (délais dépassés, autre outil interrogeant la carte en même temps)."
+
+  # Contrôleur mis à jour (firmware x puis y) puis retiré alors que la
+  # découverte réussit : une seule alerte.
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_controller_info{job="hwraid",instance="g:9799",controller="serial:G",identity_source="serial",pci_address="0000:07:00.0",driver="aacraid",backend="aacraid",model="6805",firmware="x"}'
+        values: '1x5 stale _x20'
+      - series: 'hwraid_controller_info{job="hwraid",instance="g:9799",controller="serial:G",identity_source="serial",pci_address="0000:07:00.0",driver="aacraid",backend="aacraid",model="6805",firmware="y"}'
+        values: '_x6 1x4 stale _x15'
+      - series: 'hwraid_discovery_success{job="hwraid",instance="g:9799"}'
+        values: '1x26'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: HwraidControllerDisappeared
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: HwraidControllerDisappeared
+        exp_alerts:
+          - exp_labels: {severity: warning, job: hwraid, instance: "g:9799", controller: "serial:G"}
+            exp_annotations:
+              summary: "Contrôleur serial:G disparu"
+              description: "La carte a été vue dans les dernières 24 heures et n'est plus découverte : carte retirée, pilote déchargé ou identité changée."
 
   # Cache d'écriture actif avec une protection en panne : alerte critique
   # sur chaque volume, membre compris ; le cache coupé à 21 min, l'alerte

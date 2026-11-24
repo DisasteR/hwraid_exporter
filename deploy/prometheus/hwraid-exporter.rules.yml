@@ -200,6 +200,19 @@ groups:
           summary: "Lecture {{ $labels.collector }} sans succès depuis plus de 3 cycles ({{ $labels.controller }})"
           description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter ; « cannot allocate memory » sur toutes les lectures signale probablement la réserve de commandes du pilote aacraid épuisée : avec le réglage par défaut du pilote, un redémarrage ne videra alors pas le cache de la carte ; lire docs/aacraid-defaut-pilote.md avant de redémarrer."
 
+      - alert: HwraidCollectionIntermittent
+        # Au moins trois échecs de lecture en une heure, entrecoupés de
+        # succès (chaque échec compte deux changements). Ces trous remettent
+        # à zéro le délai « for » des autres alertes, qui peuvent alors ne
+        # jamais se déclencher, sans que HwraidCollectionStale ne le voie.
+        expr: changes(hwraid_collection_success[1h]) >= 6
+        keep_firing_for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Lecture {{ $labels.collector }} en échec intermittent ({{ $labels.controller }})"
+          description: "La lecture échoue régulièrement, entre des succès : les alertes d'état qui demandent plusieurs minutes de condition continue (for) peuvent ne jamais se déclencher. Vérifier l'état de la carte avec l'outil du constructeur et consulter le journal de l'exporter (délais dépassés, autre outil interrogeant la carte en même temps)."
+
       - alert: HwraidCollectionNeverSucceeded
         # Lecture en échec qui n'a jamais réussi depuis le démarrage (pas de
         # date de dernier succès).
@@ -272,8 +285,8 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Aucune collecte publiée ({{ $labels.instance }})"
-          description: "L'exporter répond mais n'a encore publié aucun résultat de collecte. Voir le journal de l'exporter."
+          summary: "Aucune collecte servie ({{ $labels.instance }})"
+          description: "L'exporter répond mais ne sert aucun résultat de collecte : pas encore de collecte publiée, arrêt en cours (attente d'une commande de la carte), ou boucle de collecte qui ne publie plus. Voir le journal de l'exporter."
 
       - alert: HwraidExporterDown
         # Instance qui a publié des métriques hwraid dans les dernières 24 h

@@ -157,6 +157,19 @@ func finishedInTime(at, dl time.Time, canceled bool) bool {
 	return dl.IsZero() || !at.After(dl)
 }
 
+// LateErrors récolte les collectes terminées après leur échéance et rend,
+// par adresse PCI, les erreurs qu'elles portent et qu'aucun cycle n'a encore
+// rendues. Appelé à l'arrêt, après Drain, pour qu'aucune erreur de clôture
+// ne disparaisse du journal.
+func (r *Runner) LateErrors() map[string]error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.harvest()
+	out := r.lateErr
+	r.lateErr = map[string]error{}
+	return out
+}
+
 // finished retire une collecte terminée et réveille Drain s'il n'en reste
 // aucune.
 func (r *Runner) finished() {

@@ -90,6 +90,8 @@ func TestTimedOutRender(t *testing.T) {
 	tr.Update(map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"volumes": true, "capabilities": true},
 		Cached: []string{"capabilities"}}}, []string{addr}, t0)
 	res := map[string]module.Result{addr: {TimedOut: true, Collected: map[string]bool{"volumes": false, "capabilities": false}}}
+	tr.Remember(Build(p, true, map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"volumes": true, "capabilities": true},
+		Cached: []string{"capabilities"}}}, tr, time.Minute))
 	tr.Update(res, []string{addr}, t0.Add(time.Minute))
 	s := Build(p, true, res, tr, time.Minute)
 	if !s.Controllers[0].TimedOut {
@@ -293,11 +295,63 @@ func TestTimedOutHeldOnlyIfLastSucceeded(t *testing.T) {
 	p := plan(aacHost("host0", addr, "S1"))
 	tr := NewTracker()
 	t0 := time.Unix(1_000_000, 0)
-	tr.Update(map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"capabilities": true}, Cached: []string{"capabilities"}}}, []string{addr}, t0)
-	tr.Update(map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"capabilities": false}, Cached: []string{"capabilities"}}}, []string{addr}, t0.Add(time.Minute))
+	good := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"capabilities": true}, Cached: []string{"capabilities"}}}
+	tr.Update(good, []string{addr}, t0)
+	tr.Remember(Build(p, true, good, tr, time.Minute))
+	bad := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"capabilities": false}, Cached: []string{"capabilities"}}}
+	tr.Update(bad, []string{addr}, t0.Add(time.Minute))
+	tr.Remember(Build(p, true, bad, tr, time.Minute))
 	res := map[string]module.Result{addr: {TimedOut: true, Collected: map[string]bool{"capabilities": false}}}
 	out := Render(Build(p, true, res, tr, time.Minute))
 	if want := `hwraid_collection_success{controller="serial:S1",collector="capabilities"} 0`; !strings.Contains(out, want+"\n") {
 		t.Fatalf("ligne absente : %s\n%s", want, out)
+	}
+}
+
+// Une autre carte à la même adresse PCI (nouveau numéro de série) n'hérite
+// pas du succès gardé en mémoire de la précédente.
+func TestTimedOutHeldNotInheritedByNewCard(t *testing.T) {
+	const addr = "0000:01:00.0"
+	tr := NewTracker()
+	t0 := time.Unix(1_000_000, 0)
+	ok := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"capabilities": true}, Cached: []string{"capabilities"}}}
+	tr.Update(ok, []string{addr}, t0)
+	tr.Remember(Build(plan(aacHost("host0", addr, "S1")), true, ok, tr, time.Minute))
+	res := map[string]module.Result{addr: {TimedOut: true, Collected: map[string]bool{"capabilities": false}}}
+	tr.Update(res, []string{addr}, t0.Add(time.Minute))
+	out := Render(Build(plan(aacHost("host0", addr, "S2")), true, res, tr, time.Minute))
+	if want := `hwraid_collection_success{controller="serial:S2",collector="capabilities"} 0`; !strings.Contains(out, want+"\n") {
+		t.Fatalf("ligne absente : %s\n%s", want, out)
+	}
+}
+
+// À l'arrêt, une collecte qui finit pendant l'attente rend ses erreurs
+// (par exemple une clôture en échec) : elles ne disparaissent pas du journal.
+func TestRunnerLateErrorsAtStop(t *testing.T) {
+	const a = "0000:01:00.0"
+	release := make(chan struct{})
+	closeErr := errors.New("read 234: stop: EIO")
+	r := NewRunner()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.Run(ctx, map[string]func() module.Result{a: func() module.Result {
+			<-release
+			return module.Result{CollectErr: closeErr}
+		}}, nil)
+	}()
+	time.Sleep(10 * time.Millisecond)
+	cancel() // arrêt : Run rend la main sans attendre la collecte
+	<-done
+	close(release)
+	if !r.Drain(2 * time.Second) {
+		t.Fatal("collecte non terminée")
+	}
+	if errs := r.LateErrors(); !errors.Is(errs[a], closeErr) {
+		t.Fatalf("erreur de fin de collecte perdue : %v", errs)
+	}
+	if errs := r.LateErrors(); len(errs) != 0 {
+		t.Fatalf("erreurs rendues deux fois : %v", errs)
 	}
 }

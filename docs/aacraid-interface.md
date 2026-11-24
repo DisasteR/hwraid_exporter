@@ -243,8 +243,10 @@ Règle appliquée à R, dans cet ordre :
 | Condition | État |
 |---|---|
 | `R & 0xF0000000` différent de `0x40000000` | autre type de module : non décodé |
-| bit `0x1` absent | module non installé |
+| aucun bit d'état (`R & 0x0FFFFFFF` nul) | module non installé |
+| bit `0x1` absent, d'autres bits présents | indéterminé (`unknown`) ; la présence du module n'est pas publiée |
 | bit `0x8` absent | **en panne** (même si le bit `0x4` est présent) |
+| un bit autre que `0x1`, `0x4` et `0x8` présent | indéterminé (`unknown`) |
 | bit `0x4` présent | en charge |
 | sinon | optimal |
 
