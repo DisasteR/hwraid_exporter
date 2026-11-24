@@ -31,7 +31,7 @@ Image : `ghcr.io/disaster/hwraid_exporter:<version>` (par exemple `v0.1.0`). Seu
 ```yaml
 services:
   hwraid-exporter:
-    image: ghcr.io/disaster/hwraid_exporter:v0.1.2
+    image: ghcr.io/disaster/hwraid_exporter:v0.1.3
     read_only: true
     cap_drop: [ALL]
     cap_add: [MKNOD, CHOWN, SETUID, SETGID, SETPCAP, SYS_RAWIO]
@@ -62,10 +62,10 @@ L'image est publique : aucune authentification n'est nécessaire pour la téléc
 
 ## Installation native (systemd)
 
-Chaque publication GitHub fournit le binaire statique (`hwraid-exporter-<version>-linux-amd64`, mêmes octets que dans l'image), les licences (`hwraid-exporter-<version>-licenses.tar.gz`), l'unité systemd (`hwraid-exporter.service`) et `SHA256SUMS`, qui couvre ces trois fichiers. Avant l'installation, vérifier le binaire de la version choisie et l'unité. La commande compare les noms entiers littéralement (tout ce qui suit la somme et les deux espaces), exige exactement une entrée pour chacun des deux, puis vérifie leurs deux sommes ; elle échoue au premier écart (remplacer `v0.1.2` par la version installée) :
+Chaque publication GitHub fournit le binaire statique (`hwraid-exporter-<version>-linux-amd64`, mêmes octets que dans l'image), les licences (`hwraid-exporter-<version>-licenses.tar.gz`), l'unité systemd (`hwraid-exporter.service`) et `SHA256SUMS`, qui couvre ces trois fichiers. Avant l'installation, vérifier le binaire de la version choisie et l'unité. La commande compare les noms entiers littéralement (tout ce qui suit la somme et les deux espaces), exige exactement une entrée pour chacun des deux, puis vérifie leurs deux sommes ; elle échoue au premier écart (remplacer `v0.1.3` par la version installée) :
 
 ```bash
-V=v0.1.2; awk -v a="hwraid-exporter-$V-linux-amd64" -v b=hwraid-exporter.service '{n = substr($0, 67)} length($1) == 64 && substr($0, 65, 2) == "  " && n == a {na++; print} length($1) == 64 && substr($0, 65, 2) == "  " && n == b {nb++; print} END {if (na != 1 || nb != 1) {print "entrée absente ou en double dans SHA256SUMS" > "/dev/stderr"; exit 1}}' SHA256SUMS > SHA256SUMS.install && sha256sum -c --strict SHA256SUMS.install
+V=v0.1.3; awk -v a="hwraid-exporter-$V-linux-amd64" -v b=hwraid-exporter.service '{n = substr($0, 67)} length($1) == 64 && substr($0, 65, 2) == "  " && n == a {na++; print} length($1) == 64 && substr($0, 65, 2) == "  " && n == b {nb++; print} END {if (na != 1 || nb != 1) {print "entrée absente ou en double dans SHA256SUMS" > "/dev/stderr"; exit 1}}' SHA256SUMS > SHA256SUMS.install && sha256sum -c --strict SHA256SUMS.install
 ```
 
 N'installer que si cette commande réussit.
