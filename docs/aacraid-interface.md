@@ -174,6 +174,24 @@ L'outil témoin affiche la position telle quelle (« Connector n, Device m ») p
 
 Vérifié sur les huit disques de l'hôte de référence contre l'outil témoin (« Reported Location » et « Attached PHY Identifier »), et sur le câblage réel le 2026-11-23 : avec des câbles éclatés mini-SAS vers 4 SATA, la position m correspond à la fiche P(m+1). Lecture par l'exporter validée le 2026-11-23 sur l'hôte de référence (huit emplacements identiques à l'outil témoin).
 
+### Informations de la carte (commande 703, `RequestAdapterInfo`) [public]
+
+Requête de la même forme que la 706 : `XferState` = HostOwned (1), `Size` = 4, un mot de données nul, `SenderSize` = 512. Réponse : `struct aac_adapter_info` (FreeBSD `aacraid_reg.h`), `Size` = 120 (88 octets de données) sur l'hôte de référence. L'exporter ne lit que `SupportedOptions` (octets 80-83 des données), dont le bit `AAC_SUPPORTED_HEAT_SENSOR` (`0x80000`) annonce un capteur de température ; valeur sur l'hôte de référence : `0x141f1d7c`, bit positionné. La réponse porte aussi le numéro de série de la carte (octets 68-75) : l'exporter ne le lit pas. Lue une fois par carte et gardée en mémoire, sous la même clé que la 706.
+
+### Température de la carte (commande 803, `AdapterEnvironmentInfo`) [interopérabilité]
+
+L'outil de référence (versions 2.05 et 3.07) n'envoie cette commande que si `AAC_SUPPORTED_HEAT_SENSOR` est annoncé par la 703 ; l'exporter fait de même, et publie sinon le collecteur `temperature` comme non pris en charge. Requête : `XferState` = `0x100001` (HostOwned et le bit `0x100000`, présent dans la requête de l'outil de référence pour cette seule commande, et repris tel quel), `Size` = 4, mot de données 0 = 1, reste nul, `SenderSize` = 512. Réponse, champs de 16 bits lus par l'outil de référence et nommés d'après sa sortie JSON :
+
+| Octets (données) | Champ | Hôte de référence |
+|---|---|---|
+| 0-3 | statut (0 : succès) | 0 |
+| 4-… | nom du capteur (texte) | « Analog Device ADM1032 » |
+| 36-37 | température en °C (`heatSensorTemperature`) | 45 à 51 |
+| 40-41 | seuil bas (`heatSensorThresholdLo`) ; l'outil de référence ne l'utilise pas pour l'état affiché | 95 |
+| 42-43 | seuil haut (`heatSensorThresholdHi`) : l'outil de référence affiche un état anormal quand la température l'atteint | 100 |
+
+Les données suivantes ne sont pas interprétées. Concordance avec l'affichage de l'outil de référence dans les mêmes captures : 49 et 48 °C. Lue à chaque cycle.
+
 ### Statistiques du contrôleur (sous-commande 244, paramètre : 0) [observé]
 
 Transfert paginé (section 4) de 2 788 octets sur l'hôte de référence, quand la collecte des statistiques est activée sur la carte. Compteurs cumulés depuis la dernière remise à zéro, entiers de 8 octets. Positions dans les données reconstituées au pas de 432 octets ; celles du troisième morceau ont été corrigées le 2026-11-23 (relevé initial au pas de 448, décalé de 32 octets). Le relevé des valeurs contre l'outil témoin reste à refaire avant toute publication de ces compteurs :

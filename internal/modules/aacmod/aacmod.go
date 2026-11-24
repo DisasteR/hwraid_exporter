@@ -30,6 +30,8 @@ import (
 type device interface {
 	HBAInfo(ctx context.Context) (aacraid.HBAInfo, error)
 	SupplementInfo(ctx context.Context) (aacraid.SupplementInfo, error)
+	AdapterInfo(ctx context.Context) (aacraid.AdapterInfo, error)
+	Environment(ctx context.Context) (aacraid.Environment, error)
 	CacheProtection(ctx context.Context) (bool, aacraid.ZMMStatus, error)
 	ReadPaged(ctx context.Context, r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error)
 	ConnectorMap(ctx context.Context) (aacraid.ConnectorMap, error)
@@ -41,6 +43,8 @@ type device interface {
 type reader interface {
 	HBAInfo() (aacraid.HBAInfo, error)
 	SupplementInfo() (aacraid.SupplementInfo, error)
+	AdapterInfo() (aacraid.AdapterInfo, error)
+	Environment() (aacraid.Environment, error)
 	CacheProtection() (bool, aacraid.ZMMStatus, error)
 	ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error)
 	ConnectorMap() (aacraid.ConnectorMap, error)
@@ -66,6 +70,10 @@ const CapabilitiesCollector = "capabilities"
 // protection du cache (ZMM).
 const CacheProtectionCollector = "cache_protection"
 
+// TemperatureCollector est le collecteur du capteur de température de la
+// carte (AdapterEnvironmentInfo, si RequestAdapterInfo l'annonce).
+const TemperatureCollector = "temperature"
+
 // Module implémente module.Module pour aacraid.
 type Module struct {
 	open func(path string, dev uint64) (device, error)
@@ -76,6 +84,8 @@ type Module struct {
 	// de la carte, qui change aussi le nœud. Une lecture en échec n'est pas
 	// gardée et sera retentée au cycle suivant.
 	supplement map[string]aacraid.SupplementInfo
+	// adapterInfo garde de même la réponse à RequestAdapterInfo (703).
+	adapterInfo map[string]aacraid.AdapterInfo
 	// connectors garde de même la carte des connecteurs (708), fixe tant que
 	// la carte n'est pas réinitialisée.
 	connectors map[string]keptMap
@@ -101,7 +111,7 @@ func (*Module) Match(c module.Card) bool { return c.PCI.Driver == "aacraid" }
 
 // Collectors liste tous les collecteurs du module.
 func (*Module) Collectors() []string {
-	return append([]string{CapabilitiesCollector, CacheProtectionCollector, DiskInventoryCollector, DiskLocationCollector}, StateCollectors...)
+	return append([]string{CapabilitiesCollector, CacheProtectionCollector, TemperatureCollector, DiskInventoryCollector, DiskLocationCollector}, StateCollectors...)
 }
 
 // Capabilities : CAP_SYS_RAWIO, exigée par le pilote à chaque ioctl.
@@ -142,6 +152,8 @@ func (b bound) HBAInfo() (aacraid.HBAInfo, error) { return b.dev.HBAInfo(b.ctx) 
 func (b bound) SupplementInfo() (aacraid.SupplementInfo, error) {
 	return b.dev.SupplementInfo(b.ctx)
 }
+func (b bound) AdapterInfo() (aacraid.AdapterInfo, error) { return b.dev.AdapterInfo(b.ctx) }
+func (b bound) Environment() (aacraid.Environment, error) { return b.dev.Environment(b.ctx) }
 func (b bound) CacheProtection() (bool, aacraid.ZMMStatus, error) {
 	return b.dev.CacheProtection(b.ctx)
 }
@@ -211,7 +223,7 @@ func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeR
 	// firmware qualifié (exigence S4) ; toute autre carte est publiée avec
 	// ces collecteurs non pris en charge. Ce classement ne dépend que de
 	// sysfs : il est publié même si la 706 échoue.
-	after := append(append([]string(nil), StateCollectors...), DiskInventoryCollector, DiskLocationCollector, CacheProtectionCollector)
+	after := append(append([]string(nil), StateCollectors...), DiskInventoryCollector, DiskLocationCollector, CacheProtectionCollector, TemperatureCollector)
 	if !Qualified(c) {
 		r.Unsupported = after
 	}
@@ -233,6 +245,7 @@ func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeR
 		r.Unsupported = append(append([]string(nil), StateCollectors...), DiskInventoryCollector, DiskLocationCollector)
 	}
 	collectCacheProtection(&r, d)
+	m.collectTemperature(&r, d, key)
 	if sup.ArcIoReads() {
 		_, h, _ := hostOf(c)
 		m.collectVolumes(&r, d, key, h)
@@ -602,6 +615,52 @@ func collectCacheProtection(r *module.Result, d reader) {
 	}
 }
 
+// collectTemperature lit le capteur de température, comme l'outil de
+// référence, seulement si la carte l'annonce (AAC_SUPPORTED_HEAT_SENSOR de
+// RequestAdapterInfo) ; sinon le collecteur n'est pas pris en charge.
+func (m *Module) collectTemperature(r *module.Result, d reader, key string) {
+	info, err := m.adapterInfoFor(key, d)
+	if err != nil {
+		r.Collected[TemperatureCollector] = false
+		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("temperature: RequestAdapterInfo: %w", err))
+		return
+	}
+	if !info.HeatSensor() {
+		r.Unsupported = append(r.Unsupported, TemperatureCollector)
+		return
+	}
+	env, err := d.Environment()
+	r.Collected[TemperatureCollector] = err == nil
+	if err != nil {
+		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("temperature: %w", err))
+		return
+	}
+	r.Temperature = &module.Temperature{Celsius: float64(env.TemperatureCelsius),
+		ThresholdLo: float64(env.ThresholdLoCelsius), ThresholdHi: float64(env.ThresholdHiCelsius)}
+}
+
+// adapterInfoFor lit la réponse 703 une seule fois par carte et par nœud,
+// sous la même clé que la 706 (rien n'est gardé sous une clé vide).
+func (m *Module) adapterInfoFor(key string, d reader) (aacraid.AdapterInfo, error) {
+	m.mu.Lock()
+	a, ok := m.adapterInfo[key]
+	m.mu.Unlock()
+	if ok {
+		return a, nil
+	}
+	a, err := d.AdapterInfo()
+	if err != nil || key == "" {
+		return a, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.adapterInfo == nil {
+		m.adapterInfo = map[string]aacraid.AdapterInfo{}
+	}
+	m.adapterInfo[key] = a
+	return a, nil
+}
+
 // supplementInfo lit la réponse 706 une seule fois par carte et par nœud.
 // forgetOtherKeys oublie les réponses gardées pour addr sous une autre clé
 // que key (identité de la carte changée depuis la dernière collecte, ou
@@ -614,6 +673,7 @@ func (m *Module) forgetOtherKeys(addr, key string) {
 	}
 	if old, ok := m.keyOf[addr]; ok && old != key {
 		delete(m.supplement, old)
+		delete(m.adapterInfo, old)
 		delete(m.connectors, old)
 	}
 	m.keyOf[addr] = key

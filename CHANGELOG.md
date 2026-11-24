@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.3 — à venir
+
+- aacraid: controller temperature published (`temperature` collector): `hwraid_controller_temperature_celsius` and the thresholds announced by the card, `hwraid_controller_temperature_threshold_celsius{level="low"|"high"}`. As the vendor tool does, `AdapterEnvironmentInfo` (803) is sent only if `RequestAdapterInfo` (703) announces a heat sensor (`AAC_SUPPORTED_HEAT_SENSOR`); otherwise the collector is unsupported. The 703 answer is kept in memory like the 706 one; one more command per cycle.
+- Alert rules `HwraidControllerTemperatureHigh` (warning, ≥ 55 °C for 10 min) and `HwraidControllerTemperatureCritical` (critical, ≥ 60 °C or at the card's high threshold, the vendor tool's abnormal state, for 5 min).
+
 ## v0.1.2 — 2026-11-24
 
 Changes since v0.1.1. The `aacraid` driver loses one management command block, until the next reboot, each time a signal ends the wait of a program for the card before its answer arrives (`-ERESTARTSYS`; cards answered through `aac_intr_normal`, series 6 included, kernel 4.6 and later); once its pool of 8 is empty, no management tool can reach the card and the shutdown cache flush command cannot be sent. Most of this release protects against it: see `docs/aacraid-defaut-pilote.md`.

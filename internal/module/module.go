@@ -86,6 +86,9 @@ type Result struct {
 	// CacheProtection est l'état du module de protection du cache lu
 	// pendant le cycle ; nil si la lecture n'a pas abouti ou n'a pas eu lieu.
 	CacheProtection *CacheProtection
+	// Temperature : capteur de température de la carte, nil s'il n'a pas
+	// été lu.
+	Temperature *Temperature
 	// Volumes et Disks : configuration lue pendant le cycle ; publiés
 	// seulement si la lecture complète a abouti.
 	Volumes []Volume
@@ -183,6 +186,15 @@ type CacheProtection struct {
 	// établie (état non qualifié) ; la présence n'est pas publiée, l'état
 	// (unknown) l'est.
 	PresenceUnknown bool
+}
+
+// Temperature est la lecture du capteur de température d'une carte, avec
+// les seuils qu'elle annonce (aacraid : bas et haut, l'outil de référence
+// déclarant un état anormal à partir du seuil haut).
+type Temperature struct {
+	Celsius     float64
+	ThresholdLo float64
+	ThresholdHi float64
 }
 
 // Module est le contrat d'un module de pilote.

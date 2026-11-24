@@ -21,7 +21,7 @@ var Entries = []allowlist.Entry{
 		Ioctl:   IoctlSendFIB,
 		Size:    FIBSize,
 		Payload: CheckFIBRequest,
-		Proof:   "RequestSupplementAdapterInfo (706) et lectures VM_Ioctl de présence et d'état de la protection du cache : partie significative identique aux captures de l'outil de référence (docs/aacraid-interface.md, sections 6 et 8)",
+		Proof:   "RequestSupplementAdapterInfo (706), RequestAdapterInfo (703), AdapterEnvironmentInfo (803) et lectures VM_Ioctl de présence et d'état de la protection du cache : partie significative identique aux captures de l'outil de référence (docs/aacraid-interface.md, sections 6 et 8)",
 	},
 	{
 		Name:    "FSACTL_SEND_LARGE_FIB",

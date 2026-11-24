@@ -199,6 +199,32 @@ func (d *Device) SupplementInfo(ctx context.Context) (aacraid.SupplementInfo, er
 	return aacraid.DecodeSupplementInfo(buf)
 }
 
+// AdapterInfo lit RequestAdapterInfo (703), dont SupportedOptions annonce le
+// capteur de température. Soumise à ctx.
+func (d *Device) AdapterInfo(ctx context.Context) (aacraid.AdapterInfo, error) {
+	if err := admit(ctx); err != nil {
+		return aacraid.AdapterInfo{}, err
+	}
+	buf := aacraid.AdapterInfoRequest()
+	if err := d.do(ctx, allowlist.Request{Ioctl: aacraid.IoctlSendFIB, Buf: buf}); err != nil {
+		return aacraid.AdapterInfo{}, err
+	}
+	return aacraid.DecodeAdapterInfo(buf)
+}
+
+// Environment lit AdapterEnvironmentInfo (803) : température de la carte et
+// seuils annoncés. Soumise à ctx.
+func (d *Device) Environment(ctx context.Context) (aacraid.Environment, error) {
+	if err := admit(ctx); err != nil {
+		return aacraid.Environment{}, err
+	}
+	buf := aacraid.EnvironmentRequest()
+	if err := d.do(ctx, allowlist.Request{Ioctl: aacraid.IoctlSendFIB, Buf: buf}); err != nil {
+		return aacraid.Environment{}, err
+	}
+	return aacraid.DecodeEnvironment(buf)
+}
+
 // ConnectorMap envoie RequestConnectorMap (708) par FSACTL_SEND_LARGE_FIB,
 // comme l'outil de référence, et décode la réponse.
 func (d *Device) ConnectorMap(ctx context.Context) (aacraid.ConnectorMap, error) {

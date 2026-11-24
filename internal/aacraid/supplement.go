@@ -70,6 +70,8 @@ func SupplementInfoRequest() []byte {
 func qualifiedRequests() [][]byte {
 	return [][]byte{
 		SupplementInfoRequest(),
+		AdapterInfoRequest(),
+		EnvironmentRequest(),
 		CacheProtectionPresenceRequest(),
 		CacheProtectionStateRequest(),
 	}

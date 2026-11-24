@@ -193,6 +193,36 @@ groups:
           summary: "Cache d'écriture inactif malgré une protection opérationnelle, volume {{ $labels.volume }} ({{ $labels.controller }})"
           description: "Le réglage demande un cache d'écriture et le module de protection est opérationnel, mais la carte n'a pas réactivé le cache : écritures plus lentes. Vérifier l'état du cache avec l'outil du constructeur."
 
+  - name: hwraid-temperature
+    rules:
+      # Seuils d'exploitation (55 et 60 °C) : à adapter à la ventilation du
+      # boîtier. Le seuil haut annoncé par la carte (100 °C sur la 6805) est
+      # une limite matérielle : l'outil du constructeur déclare l'état
+      # anormal à partir de ce seuil, d'où l'alerte critique.
+      - alert: HwraidControllerTemperatureHigh
+        expr: hwraid_controller_temperature_celsius >= 55 < 60
+        for: 10m
+        keep_firing_for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Contrôleur à {{ $value }} °C ({{ $labels.controller }})"
+          description: "La température du contrôleur dépasse 55 °C depuis 10 minutes. Vérifier la ventilation du boîtier et l'encrassement du dissipateur de la carte."
+
+      - alert: HwraidControllerTemperatureCritical
+        expr: |
+          hwraid_controller_temperature_celsius >= 60
+            or
+          hwraid_controller_temperature_celsius
+            >= on (job, instance, controller) hwraid_controller_temperature_threshold_celsius{level="high"}
+        for: 5m
+        keep_firing_for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Contrôleur à {{ $value }} °C ({{ $labels.controller }})"
+          description: "La température du contrôleur atteint 60 °C, ou le seuil haut annoncé par la carte (état anormal pour l'outil du constructeur). Une surchauffe peut provoquer des erreurs ou l'arrêt de la carte : rétablir la ventilation sans attendre."
+
   - name: hwraid-visibilite
     rules:
       - alert: HwraidCollectionStale

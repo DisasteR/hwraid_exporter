@@ -215,6 +215,34 @@ func TestCacheProtectionRender(t *testing.T) {
 	}
 }
 
+// Température : valeur et seuils publiés seulement si la lecture a abouti
+// dans le cycle ; jamais sur un cycle hors délai (valeur non observée).
+func TestTemperatureRender(t *testing.T) {
+	p := plan(aacHost("host0", "0000:01:00.0", "S1"))
+	res := map[string]module.Result{"0000:01:00.0": {NodeValid: true,
+		Temperature: &module.Temperature{Celsius: 49, ThresholdLo: 95, ThresholdHi: 100}}}
+	out := Render(Build(p, true, res, nil, 0))
+	for _, line := range []string{
+		`hwraid_controller_temperature_celsius{controller="serial:S1"} 49`,
+		`hwraid_controller_temperature_threshold_celsius{controller="serial:S1",level="low"} 95`,
+		`hwraid_controller_temperature_threshold_celsius{controller="serial:S1",level="high"} 100`,
+	} {
+		if !strings.Contains(out, line+"\n") {
+			t.Fatalf("ligne absente : %s\n%s", line, out)
+		}
+	}
+	for name, r := range map[string]module.Result{
+		"lecture absente": {NodeValid: true},
+		"hors délai":      {TimedOut: true, Collected: map[string]bool{"temperature": false}},
+	} {
+		res["0000:01:00.0"] = r
+		if out := Render(Build(p, true, res, nil, 0)); strings.Contains(out, "hwraid_controller_temperature_celsius{") ||
+			strings.Contains(out, "hwraid_controller_temperature_threshold_celsius{") {
+			t.Fatalf("%s : température publiée sans lecture :\n%s", name, out)
+		}
+	}
+}
+
 func TestVolumeRender(t *testing.T) {
 	off := false
 	p := plan(aacHost("host0", "0000:01:00.0", "S1"))

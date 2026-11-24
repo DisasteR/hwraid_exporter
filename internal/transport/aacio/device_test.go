@@ -236,6 +236,60 @@ func TestSupplementInfoRoundTrip(t *testing.T) {
 	}
 }
 
+// Les requêtes 703 et 803 partent par FSACTL_SENDFIB, telles que
+// construites, et leurs réponses sont décodées ; une réponse non remplie
+// (Size de la requête) est refusée.
+func TestAdapterInfoAndEnvironmentRoundTrip(t *testing.T) {
+	answer := true
+	calls := fakeIoctl(t, func(req uint32, buf []byte) error {
+		if req != aacraid.IoctlSendFIB {
+			t.Fatalf("ioctl inattendu %#x", req)
+		}
+		le := binary.LittleEndian
+		switch {
+		case bytes.Equal(buf, aacraid.AdapterInfoRequest()):
+			if answer {
+				le.PutUint16(buf[8:], 120)
+				le.PutUint32(buf[aacraid.FIBHeaderSize+80:], aacraid.SupportedHeatSensor)
+			}
+		case bytes.Equal(buf, aacraid.EnvironmentRequest()):
+			if answer {
+				le.PutUint16(buf[8:], aacraid.FIBSize)
+				le.PutUint32(buf[aacraid.FIBHeaderSize:], 0)
+				le.PutUint16(buf[aacraid.FIBHeaderSize+36:], 49)
+				le.PutUint16(buf[aacraid.FIBHeaderSize+40:], 95)
+				le.PutUint16(buf[aacraid.FIBHeaderSize+42:], 100)
+			}
+		default:
+			t.Fatal("requête transmise différente des requêtes qualifiées")
+		}
+		return nil
+	})
+	d, err := Open("/dev/null", devNull, list(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	a, err := d.AdapterInfo(context.Background())
+	if err != nil || !a.HeatSensor() {
+		t.Fatalf("703 : %+v, %v", a, err)
+	}
+	e, err := d.Environment(context.Background())
+	if err != nil || e != (aacraid.Environment{TemperatureCelsius: 49, ThresholdLoCelsius: 95, ThresholdHiCelsius: 100}) {
+		t.Fatalf("803 : %+v, %v", e, err)
+	}
+	answer = false
+	if _, err := d.AdapterInfo(context.Background()); err == nil {
+		t.Fatal("703 non remplie acceptée")
+	}
+	if _, err := d.Environment(context.Background()); err == nil {
+		t.Fatal("803 non remplie acceptée")
+	}
+	if *calls != 4 {
+		t.Fatalf("%d appels, attendu 4", *calls)
+	}
+}
+
 // La requête 708 part par FSACTL_SEND_LARGE_FIB, sur un tampon de 2 048
 // octets, telle que construite ; une réponse non remplie est refusée.
 func TestConnectorMapRoundTrip(t *testing.T) {
@@ -673,7 +727,9 @@ func TestStoppedContextSendsNothing(t *testing.T) {
 	_, e2 := d.ConnectorMap(ctx)
 	_, _, e3 := d.CacheProtection(ctx)
 	_, e4 := d.ReadPaged(ctx, aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return aacraid.ContainerInfoNeed })
-	for i, e := range []error{e1, e2, e3, e4} {
+	_, e5 := d.AdapterInfo(ctx)
+	_, e6 := d.Environment(ctx)
+	for i, e := range []error{e1, e2, e3, e4, e5, e6} {
 		if !errors.Is(e, ErrStopped) {
 			t.Fatalf("lecture %d : ErrStopped attendu, obtenu %v", i+1, e)
 		}

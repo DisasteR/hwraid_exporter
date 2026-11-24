@@ -134,7 +134,7 @@ func TestQualifiedRequestsOnlyThroughSendFIB(t *testing.T) {
 // prévu impose de mettre à jour ce test en revue.
 func TestQualifiedRequestsAreExactlyExpected(t *testing.T) {
 	got := qualifiedRequests()
-	want := [][]byte{SupplementInfoRequest(), CacheProtectionPresenceRequest(), CacheProtectionStateRequest()}
+	want := [][]byte{SupplementInfoRequest(), AdapterInfoRequest(), EnvironmentRequest(), CacheProtectionPresenceRequest(), CacheProtectionStateRequest()}
 	if len(got) != len(want) {
 		t.Fatalf("%d requêtes qualifiées, %d attendues", len(got), len(want))
 	}

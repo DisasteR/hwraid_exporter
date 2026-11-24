@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -82,6 +83,36 @@ type fakeDev struct {
 	cmCall     int
 	closeOther int // clôtures 0xc5 simulées
 	refused    int // commandes refusées après la fin du contexte
+	// ai : réponse 703 (nil : capteur annoncé, comme la 6805 de référence) ;
+	// env : réponse 803 (nil : 49 °C, seuils 95 et 100, valeurs capturées).
+	ai      *aacraid.AdapterInfo
+	aiErr   error
+	aiCall  int
+	env     *aacraid.Environment
+	envErr  error
+	envCall int
+}
+
+func (f *fakeDev) AdapterInfo(ctx context.Context) (aacraid.AdapterInfo, error) {
+	if f.stopped(ctx) {
+		return aacraid.AdapterInfo{}, aacio.ErrStopped
+	}
+	f.aiCall++
+	if f.ai != nil {
+		return *f.ai, f.aiErr
+	}
+	return aacraid.AdapterInfo{SupportedOptions: 0x141f1d7c}, f.aiErr
+}
+
+func (f *fakeDev) Environment(ctx context.Context) (aacraid.Environment, error) {
+	if f.stopped(ctx) {
+		return aacraid.Environment{}, aacio.ErrStopped
+	}
+	f.envCall++
+	if f.env != nil {
+		return *f.env, f.envErr
+	}
+	return aacraid.Environment{TemperatureCelsius: 49, ThresholdLoCelsius: 95, ThresholdHiCelsius: 100}, f.envErr
 }
 
 // stopped imite l'admission du transport (aacio) : une fois le contexte
@@ -275,6 +306,11 @@ func TestCollectSupplementGate(t *testing.T) {
 	if d.supCall != 4 {
 		t.Fatalf("ancienne réponse 706 réutilisée au retour à l'identité d'origine (%d lectures)", d.supCall)
 	}
+	// Même règle pour la 703 : lue pour c puis pour c3 (le firmware de c2
+	// n'est pas qualifié, aucune 703 ne lui est envoyée), relue au retour.
+	if d.aiCall != 3 {
+		t.Fatalf("703 lue %d fois (attendu 3 : c, c3, puis c de nouveau, l'ancienne réponse étant oubliée)", d.aiCall)
+	}
 
 	for name, sup := range map[string]aacraid.SupplementInfo{
 		"bit absent": {Version: 15, SupportedOptions2: 0x00c86934},
@@ -315,7 +351,7 @@ func TestCollectReportsCapabilitiesCollection(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
 	c := card("0000:01:00.0", "0")
 	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
-	after := []string{"volumes", "disks", DiskInventoryCollector, DiskLocationCollector, CacheProtectionCollector}
+	after := []string{"volumes", "disks", DiskInventoryCollector, DiskLocationCollector, CacheProtectionCollector, TemperatureCollector}
 
 	unq := card("0000:01:00.0", "0")
 	unq.Hosts[0].Firmware = "5.2-0[19109]"
@@ -941,8 +977,8 @@ func TestCollectStopsWithContext(t *testing.T) {
 	// nœud n'est pas vérifié (GET_HBA_INFO refusée elle aussi).
 	d = &fakeDev{info: hba, sup: arcIo}
 	r = withDev(d, nil).Collect(ctx, card("0000:01:00.0", "0"), ref)
-	if d.supCall != 0 || d.cpCall != 0 || len(d.reads) != 0 || d.cmCall != 0 {
-		t.Fatalf("commandes après la fin (706 %d, ZMM %d, paginées %v)", d.supCall, d.cpCall, d.reads)
+	if d.supCall != 0 || d.cpCall != 0 || len(d.reads) != 0 || d.cmCall != 0 || d.aiCall != 0 || d.envCall != 0 {
+		t.Fatalf("commandes après la fin (706 %d, ZMM %d, 703 %d, 803 %d, paginées %v)", d.supCall, d.cpCall, d.aiCall, d.envCall, d.reads)
 	}
 	if r.NodeValid || !errors.Is(r.Err, aacio.ErrStopped) || r.Collected[CapabilitiesCollector] {
 		t.Fatalf("%+v", r)
@@ -1050,4 +1086,83 @@ func TestNoCacheWithIncompleteIdentity(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Collecteur temperature : la 703 est lue une fois et gardée (même clé que
+// la 706), la 803 à chaque cycle, seulement si la carte annonce son capteur
+// (AAC_SUPPORTED_HEAT_SENSOR), comme l'outil de référence.
+func TestCollectTemperature(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
+	c := card("0000:01:00.0", "0")
+
+	t.Run("nominal", func(t *testing.T) {
+		f := &fakeDev{info: hba, sup: arcIo}
+		m := withDev(f, nil)
+		for i := 0; i < 2; i++ {
+			r := m.Collect(context.Background(), c, ref)
+			if !r.Collected[TemperatureCollector] || r.Temperature == nil ||
+				*r.Temperature != (module.Temperature{Celsius: 49, ThresholdLo: 95, ThresholdHi: 100}) {
+				t.Fatalf("cycle %d : %+v / %+v", i, r.Collected, r.Temperature)
+			}
+		}
+		if f.aiCall != 1 || f.envCall != 2 {
+			t.Fatalf("703 lue %d fois, 803 %d fois en 2 cycles (attendu 1 et 2)", f.aiCall, f.envCall)
+		}
+	})
+	t.Run("capteur non annoncé", func(t *testing.T) {
+		f := &fakeDev{info: hba, sup: arcIo, ai: &aacraid.AdapterInfo{SupportedOptions: 0x141f1d7c &^ aacraid.SupportedHeatSensor}}
+		r := withDev(f, nil).Collect(context.Background(), c, ref)
+		if f.envCall != 0 || r.Temperature != nil || !slices.Contains(r.Unsupported, TemperatureCollector) {
+			t.Fatalf("803 envoyée %d fois sans capteur annoncé ; non pris en charge %v", f.envCall, r.Unsupported)
+		}
+		if _, seen := r.Collected[TemperatureCollector]; seen {
+			t.Fatal("collecteur non pris en charge publié en succès ou en échec")
+		}
+	})
+	t.Run("703 en échec", func(t *testing.T) {
+		f := &fakeDev{info: hba, sup: arcIo, aiErr: errors.New("EIO")}
+		m := withDev(f, nil)
+		r := m.Collect(context.Background(), c, ref)
+		if f.envCall != 0 || r.Collected[TemperatureCollector] || r.CollectErr == nil {
+			t.Fatalf("803 envoyée sans 703 : %d ; %+v", f.envCall, r.Collected)
+		}
+		if _, seen := r.Collected[TemperatureCollector]; !seen {
+			t.Fatal("échec de la 703 non publié")
+		}
+		f.aiErr = nil
+		if r := m.Collect(context.Background(), c, ref); !r.Collected[TemperatureCollector] || f.aiCall != 2 {
+			t.Fatalf("échec de la 703 gardé en mémoire : %d lectures", f.aiCall)
+		}
+	})
+	t.Run("803 en échec", func(t *testing.T) {
+		f := &fakeDev{info: hba, sup: arcIo, envErr: errors.New("EIO")}
+		r := withDev(f, nil).Collect(context.Background(), c, ref)
+		if r.Collected[TemperatureCollector] || r.Temperature != nil || r.CollectErr == nil {
+			t.Fatalf("%+v / %+v", r.Collected, r.Temperature)
+		}
+		if !r.Collected["volumes"] {
+			t.Fatal("échec de la température propagé aux autres collecteurs")
+		}
+	})
+	t.Run("carte non qualifiée", func(t *testing.T) {
+		unq := card("0000:01:00.0", "0")
+		unq.Hosts[0].Firmware = "5.2-0[19109]"
+		f := &fakeDev{info: hba, sup: arcIo}
+		r := withDev(f, nil).Collect(context.Background(), unq, ref)
+		if f.aiCall != 0 || f.envCall != 0 || !slices.Contains(r.Unsupported, TemperatureCollector) {
+			t.Fatalf("703/803 envoyées à une carte non qualifiée (%d, %d) ; %v", f.aiCall, f.envCall, r.Unsupported)
+		}
+	})
+	t.Run("identité incomplète", func(t *testing.T) {
+		inc := card("0000:01:00.0", "0")
+		inc.Hosts[0].SerialNumber = ""
+		f := &fakeDev{info: hba, sup: arcIo}
+		m := withDev(f, nil)
+		m.Collect(context.Background(), inc, ref)
+		m.Collect(context.Background(), inc, ref)
+		if f.aiCall != 2 {
+			t.Fatalf("703 gardée sous identité incomplète : %d lectures en 2 cycles", f.aiCall)
+		}
+	})
 }

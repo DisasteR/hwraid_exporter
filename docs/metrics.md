@@ -59,7 +59,7 @@ Valeurs réservées pour les modules à venir, non publiées aujourd'hui : `redu
 
 L'intervalle permet d'écrire des règles qui s'adaptent au réglage, par exemple « aucun succès depuis plus de trois cycles » : `time() - hwraid_collection_last_success_timestamp_seconds > on (job, instance, controller) group_left 3 * hwraid_collection_interval_seconds`. Joindre toujours aussi sur `job` et `instance` : deux hôtes peuvent publier le même identifiant `pci:`.
 
-Collecteurs du module aacraid : `capabilities` (capacités de la carte), `volumes`, `disks`, `disk_inventory`, `disk_location`, `cache_protection`.
+Collecteurs du module aacraid : `capabilities` (capacités de la carte), `volumes`, `disks`, `disk_inventory`, `disk_location`, `cache_protection`, `temperature` (non pris en charge si la carte n'annonce pas de capteur).
 
 ### Volumes
 
@@ -105,6 +105,8 @@ Un disque présent qui n'est membre d'aucun volume (secours, disponible) figure 
 
 | Métrique | Labels | Valeur |
 |---|---|---|
+| `hwraid_controller_temperature_celsius` | `controller` | température du contrôleur, en °C ; absente si la lecture n'a pas abouti dans le cycle |
+| `hwraid_controller_temperature_threshold_celsius` | `controller`, `level` | seuils annoncés par la carte, en °C : `high`, à partir duquel l'outil du constructeur déclare un état anormal (100 sur la 6805), et `low` (95), dont l'outil ne se sert pas pour l'état affiché ; absente comme la température |
 | `hwraid_cache_protection_present` | `controller`, `type`, `vendor_type` | 1 si un module est installé, 0 si la carte établit qu'elle n'en a pas ; absente si la présence n'est pas établie (aacraid : bits d'état sans le bit d'installation) |
 | `hwraid_cache_protection_state` | `controller`, `state` | 1, si un module est installé, ou `unknown` si sa présence n'est pas établie |
 

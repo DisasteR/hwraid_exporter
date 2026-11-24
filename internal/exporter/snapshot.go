@@ -45,6 +45,7 @@ type Controller struct {
 	LastSuccess      map[string]time.Time // collecteur → date du dernier succès
 	CloseUnconfirmed uint64               // clôtures de transfert non nominales cumulées
 	CacheProtection  *module.CacheProtection
+	Temperature      *module.Temperature
 	Volumes          []module.Volume
 	Disks            []module.Disk
 	DiskInventory    []module.DiskInfo
@@ -205,6 +206,7 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 				c.Unsupported = r.Unsupported
 				c.Collected = r.Collected
 				c.CacheProtection = r.CacheProtection
+				c.Temperature = r.Temperature
 				c.LastSuccess = hist.Last(addr)
 				c.Volumes, c.Disks, c.DiskInventory, c.DiskLocations, c.DiskOSDevices = r.Volumes, r.Disks, r.DiskInventory, r.DiskLocations, r.DiskOSDevices
 				if r.CollectErr != nil {
@@ -349,6 +351,19 @@ func Render(s Snapshot) string {
 			if d.CapacityBytes > 0 {
 				fmt.Fprintf(&b, "hwraid_disk_capacity_bytes{%s} %d\n", labels("controller", c.Label, "disk", d.ID), d.CapacityBytes)
 			}
+		}
+	}
+	gauge("hwraid_controller_temperature_celsius", "Controller temperature sensor reading, in degrees Celsius.")
+	for _, c := range s.Controllers {
+		if t := c.Temperature; t != nil {
+			fmt.Fprintf(&b, "hwraid_controller_temperature_celsius{%s} %g\n", labels("controller", c.Label), t.Celsius)
+		}
+	}
+	gauge("hwraid_controller_temperature_threshold_celsius", "Temperature thresholds announced by the controller (aacraid: the vendor tool reports an abnormal state from the high threshold).")
+	for _, c := range s.Controllers {
+		if t := c.Temperature; t != nil {
+			fmt.Fprintf(&b, "hwraid_controller_temperature_threshold_celsius{%s} %g\n", labels("controller", c.Label, "level", "low"), t.ThresholdLo)
+			fmt.Fprintf(&b, "hwraid_controller_temperature_threshold_celsius{%s} %g\n", labels("controller", c.Label, "level", "high"), t.ThresholdHi)
 		}
 	}
 	gauge("hwraid_cache_protection_present", "1 if a cache protection module is installed.")
