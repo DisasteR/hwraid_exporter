@@ -32,6 +32,18 @@ type view struct {
 	at   time.Time
 }
 
+// ViewMaxAge est l'âge au-delà duquel la vue n'est plus servie, pour un
+// intervalle de collecte et un délai de cycle donnés. Une nouvelle vue est
+// publiée au plus « intervalle + délai » après la précédente, même hors
+// délai (la boucle n'attend pas une carte bloquée au-delà de l'échéance) :
+// un délai de plus sert de marge. Au-delà, la boucle elle-même est figée,
+// et une observation resservie ne doit pas suffire à remplir le « for » des
+// règles d'état (5 min) tant que l'intervalle reste sous 4 min (délai de
+// 30 s).
+func ViewMaxAge(interval, timeout time.Duration) time.Duration {
+	return interval + 2*timeout
+}
+
 // NewPublisher crée un publieur qui sert initial ; empty est la vue sans
 // valeur matérielle servie à l'arrêt ou quand la vue a plus de maxAge.
 func NewPublisher(initial, empty string, maxAge time.Duration) *Publisher {

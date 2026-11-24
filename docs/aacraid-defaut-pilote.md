@@ -6,7 +6,7 @@ Cette page décrit le défaut, ses conséquences, ce que fait l'exporter pour ne
 
 ## Symptômes
 
-- L'exporter journalise `cannot allocate memory` sur toutes ses lectures, avec `the driver refused a management command for lack of memory`, et `hwraid_collection_success` passe à 0.
+- L'exporter journalise `cannot allocate memory` sur toutes les commandes qu'il envoie à la carte (`GET_HBA_INFO`, servie par le pilote sans bloc de la réserve, et une 706 gardée en mémoire réussissent encore), avec `the driver refused a management command for lack of memory`, et `hwraid_collection_success` passe à 0.
 - ARCCONF ne trouve plus la carte ; maxView, qui passe par la même réserve, ne peut plus l'interroger non plus.
 - Les entrées-sorties disque continuent normalement : les volumes restent accessibles.
 

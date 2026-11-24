@@ -777,3 +777,36 @@ func TestRunnerOwnLateCloseStaysWithCycle(t *testing.T) {
 		t.Fatalf("rejet compté deux fois : %+v", next)
 	}
 }
+
+// Firmware momentanément illisible (numéro de série et nœud lus) : le
+// module a relu la 706 sous une autre clé. Au retour du firmware, si la
+// relecture se bloque, l'ancien succès n'est pas publié, et les collecteurs
+// déclarés non pris en charge au cycle illisible (carte crue non qualifiée)
+// ne sont pas reconduits.
+func TestTimedOutHeldAfterUnreadableFirmware(t *testing.T) {
+	const addr = "0000:01:00.0"
+	withFw := func(fw string) module.Plan {
+		h := aacHost("host0", addr, "S1")
+		h.Firmware = fw
+		return plan(h)
+	}
+	t0 := time.Unix(1_000_000, 0)
+	ok := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"capabilities": true, "volumes": true}, Cached: []string{"capabilities"}}}
+	unq := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"capabilities": true}, Cached: []string{"capabilities"}, Unsupported: []string{"volumes"}}}
+	timedOut := map[string]module.Result{addr: {TimedOut: true, Collected: map[string]bool{"capabilities": false, "volumes": false}}}
+	tr := NewTracker()
+	tr.Update(ok, []string{addr}, t0)
+	tr.Remember(Build(withFw("5.3-0[19204]"), true, ok, tr, time.Minute))
+	tr.Update(unq, []string{addr}, t0.Add(time.Minute))
+	tr.Remember(Build(withFw(""), true, unq, tr, time.Minute))
+	tr.Update(timedOut, []string{addr}, t0.Add(2*time.Minute))
+	out := Render(Build(withFw("5.3-0[19204]"), true, timedOut, tr, time.Minute))
+	for _, want := range []string{
+		`hwraid_collection_success{controller="serial:S1",collector="capabilities"} 0`,
+		`hwraid_collection_success{controller="serial:S1",collector="volumes"} 0`,
+	} {
+		if !strings.Contains(out, want+"\n") {
+			t.Fatalf("réponse ou déclaration d'une autre clé reprise : %s\n%s", want, out)
+		}
+	}
+}

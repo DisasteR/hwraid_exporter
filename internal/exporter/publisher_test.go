@@ -52,3 +52,20 @@ func TestPublisherStaleView(t *testing.T) {
 		t.Fatal("vue non rétablie après une publication")
 	}
 }
+
+// ViewMaxAge : la vue reste servie entre deux publications normales (au
+// plus intervalle + délai d'écart), mais une boucle figée ne peut pas
+// resservir une seule observation pendant le « for: 5m » des règles d'état,
+// pour les intervalles usuels (le délai de cycle vaut au plus 30 s).
+func TestViewMaxAge(t *testing.T) {
+	for _, interval := range []time.Duration{15 * time.Second, time.Minute, 2 * time.Minute, 3 * time.Minute} {
+		timeout := min(30*time.Second, interval)
+		got := ViewMaxAge(interval, timeout)
+		if got <= interval+timeout {
+			t.Errorf("intervalle %v : %v ne couvre pas l'écart normal entre deux vues (%v)", interval, got, interval+timeout)
+		}
+		if got >= 5*time.Minute {
+			t.Errorf("intervalle %v : une vue figée resservie %v remplit un for: 5m", interval, got)
+		}
+	}
+}

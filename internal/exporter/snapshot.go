@@ -36,8 +36,8 @@ type Controller struct {
 	CollectError           string   // échec d'une lecture firmware
 	// Identity : identité matérielle de la carte pour le suivi d'un cycle à
 	// l'autre (numéro de série lu, identifiants PCI, modèle, firmware, nœuds),
-	// indépendante du label publié ; non publiée. IdentityKnown : numéro de
-	// série et nœuds lus, identité établie.
+	// indépendante du label publié ; non publiée. IdentityKnown : tous ces
+	// champs lus.
 	Identity         string
 	IdentityKnown    bool
 	LateError        string // erreurs d'une collecte tardive non publiée
@@ -108,9 +108,18 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 		for _, rq := range pc.Requests {
 			nodes = append(nodes, rq.Name+":"+strconv.FormatUint(uint64(rq.Minor), 10))
 		}
-		c.Identity = strings.Join([]string{s, pc.Card.PCI.Vendor, pc.Card.PCI.Device, pc.Card.PCI.SubsystemVendor,
-			pc.Card.PCI.SubsystemDevice, c.Model, c.Firmware, strings.Join(nodes, ",")}, "|")
-		c.IdentityKnown = s != "" && len(nodes) > 0
+		fields := []string{s, pc.Card.PCI.Vendor, pc.Card.PCI.Device, pc.Card.PCI.SubsystemVendor,
+			pc.Card.PCI.SubsystemDevice, c.Model, c.Firmware, strings.Join(nodes, ",")}
+		c.Identity = strings.Join(fields, "|")
+		// Identité complète : tous les champs lus (un firmware ou un modèle
+		// illisible change la clé des réponses gardées du module, comme un
+		// numéro de série illisible).
+		c.IdentityKnown = true
+		for _, f := range fields {
+			if f == "" {
+				c.IdentityKnown = false
+			}
+		}
 		// hist : dates et compteur. Repris tant qu'aucun champ lu ne diffère
 		// de l'identité gardée ; sinon, seuls les apports de ce cycle.
 		// capHist : réponses gardées et collecteurs non pris en charge. Repris

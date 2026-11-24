@@ -19,8 +19,9 @@
 # complète » que si rien n'a été perdu en route : aucun retour manqué par la
 # sonde, aucun événement perdu ni restant dans le tampon, compteurs de
 # toutes les CPU lus, autant de lignes écrites que d'événements lus, lecteur
-# sans erreur et limite de taille non atteinte. Le bilan ne couvre que les
-# retours survenus pendant que la sonde était active, d'appels entrés dans
+# sans erreur, limite de taille non atteinte et retrait vérifié. Le bilan
+# ne couvre que les retours survenus pendant que la sonde était active,
+# d'appels entrés dans
 # aac_fib_send après son activation (une commande déjà en cours au lancement
 # n'est pas vue). Un redémarrage retire aussi
 # la sonde. Si le script a disparu sans nettoyer (SIGKILL), retirer à la main
@@ -29,8 +30,10 @@
 # /sys/kernel/tracing, ou /sys/kernel/debug/tracing si
 # /sys/kernel/tracing/events n'existe pas). Le lecteur (cat) peut avoir
 # survécu au script et garder la trace ouverte, ce qui fait échouer rmdir :
-# l'arrêter d'abord.
-#   pkill -KILL -f '/instances/aacfib_<pid>_<suffixe>/trace_pipe'
+# l'arrêter d'abord. Repérer son PID d'après sa commande exacte (cat et le
+# seul chemin de la trace), vérifier la ligne affichée, puis l'arrêter :
+#   ps -eo pid=,args= | awk -v t='<racine>/instances/aacfib_<pid>_<suffixe>/trace_pipe' '$2 == "cat" && $3 == t && NF == 3'
+#   kill -KILL <PID affiché>
 #   rmdir <racine>/instances/aacfib_<pid>_<suffixe>
 #   echo '-:aacfib/ret_<pid>_<suffixe>' >> <racine>/kprobe_events
 #
@@ -218,7 +221,8 @@ cleanup() {
 	[ "$LIMIT" -eq 0 ] || echo "limite de $MAX_MB Mio atteinte : capture arrêtée avant Ctrl+C"
 	[ "$READER_FAILED" -eq 0 ] || echo "le lecteur de la trace s'est arrêté en erreur" >&2
 	if [ "${missed:-x}" = 0 ] && [ "${lost:-x}" = 0 ] && [ "${left:-x}" = 0 ] &&
-		[ "${nread:-x}" = "$lines" ] && [ "$LIMIT" -eq 0 ] && [ "$READER_FAILED" -eq 0 ]; then
+		[ "${nread:-x}" = "$lines" ] && [ "$LIMIT" -eq 0 ] && [ "$READER_FAILED" -eq 0 ] &&
+		[ "$failed" -eq 0 ]; then
 		echo "trace complète"
 	else
 		echo "TRACE INCOMPLÈTE : l'absence de ret=-512 ne prouve pas l'absence de perte" >&2

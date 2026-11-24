@@ -513,6 +513,11 @@ func TestReadPagedClosesOnError(t *testing.T) {
 	if got[len(got)-1] != 84 {
 		t.Fatalf("pas de clôture après l'erreur : %v", got)
 	}
+	// Clôture du même transfert (identifiant 7, total annoncé), après le
+	// dernier morceau lu sans erreur (0) : requête entière comparée.
+	if last, want := f.requests[len(f.requests)-1], aacraid.StopRequest(0x1000, 7, 0); !bytes.Equal(last, want) {
+		t.Fatalf("clôture inattendue :\n%x\nattendu :\n%x", last, want)
+	}
 }
 
 // Ouverture rejetée : clôture envoyée si la taille annoncée le permet,

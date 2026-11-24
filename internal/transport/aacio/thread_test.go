@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -134,6 +135,13 @@ func pollUnderSignals(t *testing.T, run func(func())) (int, error) {
 	defer unix.Close(p[1])
 	tid := make(chan int, 1)
 	sent := make(chan error, 1)
+	// Le thread reste en vie jusqu'au dernier envoi, même si le premier
+	// signal a interrompu ppoll (témoin) : sinon tgkill rendrait ESRCH.
+	allSent := make(chan struct{})
+	// armed : nos signaux partent. Avant, un EINTR vient d'ailleurs (sur un
+	// thread ordinaire, la préemption du runtime Go envoie SIGURG) : ppoll
+	// est relancé.
+	var armed atomic.Bool
 	go func() {
 		id := <-tid
 		task := fmt.Sprintf("/proc/self/task/%d/syscall", id)
@@ -149,11 +157,13 @@ func pollUnderSignals(t *testing.T, run func(func())) (int, error) {
 		if !in {
 			err = errors.New("thread jamais vu dans ppoll")
 		}
+		armed.Store(true)
 		for _, s := range []unix.Signal{unix.SIGURG, unix.SIGTERM, unix.SIGUSR1} {
 			if e := unix.Tgkill(unix.Getpid(), id, s); e != nil && err == nil {
 				err = fmt.Errorf("tgkill %v : %w", s, e)
 			}
 		}
+		close(allSent)
 		time.Sleep(50 * time.Millisecond)
 		unix.Write(p[1], []byte{1})
 		sent <- err
@@ -163,7 +173,13 @@ func pollUnderSignals(t *testing.T, run func(func())) (int, error) {
 	run(func() {
 		tid <- unix.Gettid()
 		fds := []unix.PollFd{{Fd: int32(p[0]), Events: unix.POLLIN}}
-		n, perr = unix.Ppoll(fds, nil, nil)
+		for {
+			n, perr = unix.Ppoll(fds, nil, nil)
+			if !errors.Is(perr, unix.EINTR) || armed.Load() {
+				break
+			}
+		}
+		<-allSent
 	})
 	if err := <-sent; err != nil {
 		t.Fatal(err)

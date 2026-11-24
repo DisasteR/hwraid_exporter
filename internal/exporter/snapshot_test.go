@@ -35,7 +35,8 @@ func (fakeMod) Collect(context.Context, module.Card, []module.NodeRef) module.Re
 
 func aacHost(name, addr, serial string) sysfs.SCSIHost {
 	return sysfs.SCSIHost{Name: name, ProcName: "aacraid", SerialNumber: serial, Model: "6805", Firmware: "5.3-0[19204]",
-		PCI: sysfs.PCIFunction{Address: addr, Driver: "aacraid", Class: "0x010400"}}
+		PCI: sysfs.PCIFunction{Address: addr, Driver: "aacraid", Class: "0x010400",
+			Vendor: "0x9005", Device: "0x028b", SubsystemVendor: "0x9005", SubsystemDevice: "0x0301"}}
 }
 
 func plan(hosts ...sysfs.SCSIHost) module.Plan {

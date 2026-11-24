@@ -196,11 +196,20 @@ func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeR
 	_, h, _ := hostOf(c)
 	key := strings.Join([]string{c.PCI.Address, strconv.FormatUint(refs[0].Dev, 10),
 		c.PCI.Vendor, c.PCI.Device, c.PCI.SubsystemVendor, c.PCI.SubsystemDevice, h.SerialNumber, h.Firmware}, "|")
+	// Identité incomplète (numéro de série, firmware ou identifiant PCI
+	// illisible) : deux cartes successives pourraient partager la clé.
+	// Rien n'est gardé, les réponses sont relues à chaque cycle.
+	if h.SerialNumber == "" || h.Firmware == "" || c.PCI.Vendor == "" || c.PCI.Device == "" ||
+		c.PCI.SubsystemVendor == "" || c.PCI.SubsystemDevice == "" {
+		key = ""
+	}
 	m.forgetOtherKeys(c.PCI.Address, key)
 	sup, err := m.supplementInfo(key, d)
 	r.Collected = map[string]bool{CapabilitiesCollector: err == nil}
 	// Réponse 706 gardée en mémoire : pas de date de dernier succès.
-	r.Cached = []string{CapabilitiesCollector}
+	if key != "" {
+		r.Cached = []string{CapabilitiesCollector}
+	}
 	// Lectures firmware au-delà de 706 : seulement vers un couple modèle et
 	// firmware qualifié (exigence S4) ; toute autre carte est publiée avec
 	// ces collecteurs non pris en charge. Ce classement ne dépend que de
@@ -391,7 +400,7 @@ func (m *Module) connectorMap(key string, d reader, inv []aacraid.DiskInfo) (aac
 		return k.cm, nil
 	}
 	cm, err := d.ConnectorMap()
-	if err != nil {
+	if err != nil || key == "" { // key vide : rien n'est gardé
 		return cm, err
 	}
 	m.mu.Lock()
@@ -598,7 +607,8 @@ func collectCacheProtection(r *module.Result, d reader) {
 
 // supplementInfo lit la réponse 706 une seule fois par carte et par nœud.
 // forgetOtherKeys oublie les réponses gardées pour addr sous une autre clé
-// que key (identité de la carte changée depuis la dernière collecte).
+// que key (identité de la carte changée depuis la dernière collecte, ou
+// devenue incomplète : key vide).
 func (m *Module) forgetOtherKeys(addr, key string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -622,7 +632,7 @@ func (m *Module) supplementInfo(key string, d reader) (aacraid.SupplementInfo, e
 		return s, nil
 	}
 	s, err := d.SupplementInfo()
-	if err != nil {
+	if err != nil || key == "" { // key vide : rien n'est gardé
 		return s, err
 	}
 	m.mu.Lock()

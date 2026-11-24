@@ -29,7 +29,7 @@ func card(addr, uid string) module.Card {
 	return module.Card{
 		PCI: sysfs.PCIFunction{Address: addr, Driver: "aacraid", Class: "0x010400",
 			Vendor: "0x9005", Device: "0x028b", SubsystemVendor: "0x9005", SubsystemDevice: "0x0301"},
-		Hosts: []sysfs.SCSIHost{{Name: "host3", Number: 3, ProcName: "aacraid", UniqueID: uid, Firmware: "5.3-0[19204]"}},
+		Hosts: []sysfs.SCSIHost{{Name: "host3", Number: 3, ProcName: "aacraid", UniqueID: uid, Firmware: "5.3-0[19204]", SerialNumber: "TESTSERIAL"}},
 	}
 }
 
@@ -1013,5 +1013,37 @@ func TestCollectKeepsEveryError(t *testing.T) {
 	}
 	if !strings.Contains(r.CollectErr.Error(), "cache protection") || !strings.Contains(r.CollectErr.Error(), "configuration") {
 		t.Fatalf("collecteurs non nommés : %v", r.CollectErr)
+	}
+}
+
+// Numéro de série ou firmware illisible : la clé des réponses gardées ne
+// distinguerait pas deux cartes successives. Rien n'est gardé : la 706 est
+// relue à chaque cycle et n'est pas déclarée servie depuis la mémoire ; au
+// retour du numéro, la réponse lue sans lui n'est pas réutilisée.
+func TestNoCacheWithIncompleteIdentity(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
+	for name, blank := range map[string]func(*module.Card){
+		"numéro de série": func(c *module.Card) { c.Hosts[0].SerialNumber = "" },
+		"firmware":        func(c *module.Card) { c.Hosts[0].Firmware = "" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := card("0000:01:00.0", "0")
+			blank(&c)
+			f := &fakeDev{info: hba, sup: arcIo}
+			m := withDev(f, nil)
+			for i := 0; i < 2; i++ {
+				if r := m.Collect(context.Background(), c, ref); len(r.Cached) != 0 || !r.Collected[CapabilitiesCollector] {
+					t.Fatalf("cycle %d : %+v", i, r)
+				}
+			}
+			if f.supCall != 2 {
+				t.Fatalf("706 lue %d fois en 2 cycles sous identité incomplète", f.supCall)
+			}
+			m.Collect(context.Background(), card("0000:01:00.0", "0"), ref)
+			if f.supCall != 3 {
+				t.Fatalf("réponse lue sous identité incomplète réutilisée (706 lue %d fois)", f.supCall)
+			}
+		})
 	}
 }
