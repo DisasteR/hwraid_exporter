@@ -76,10 +76,16 @@ Ou construire le binaire (statique, sans cgo) :
 CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=$(git describe --tags --always)" -o hwraid-exporter ./cmd/hwraid-exporter
 ```
 
-Puis installer le binaire téléchargé (`hwraid-exporter-<version>-linux-amd64`) ou construit (`hwraid-exporter`) :
+Puis installer le binaire téléchargé :
 
 ```bash
 sudo install -m 0755 hwraid-exporter-<version>-linux-amd64 /usr/local/bin/hwraid-exporter
+```
+
+ou le binaire construit :
+
+```bash
+sudo install -m 0755 hwraid-exporter /usr/local/bin/hwraid-exporter
 ```
 
 L'unité systemd est jointe à chaque publication GitHub (`hwraid-exporter.service`, somme dans `SHA256SUMS`) ; elle est aussi dans les sources du tag (`deploy/systemd/`) :
@@ -114,7 +120,7 @@ Le code de sortie 3 signale que les nœuds attendus ont changé (carte ajoutée 
 
 ## Limite du pilote aacraid : ne pas interrompre une commande
 
-Le pilote `aacraid` perd un bloc de commande de gestion, jusqu'au redémarrage de la machine, chaque fois qu'un signal interrompt un programme qui attend la carte ; la réserve n'en compte que 8, partagés par l'exporter, ARCCONF et maxView. Mécanisme, conséquences, protections de l'exporter et détection : [aacraid-defaut-pilote.md](aacraid-defaut-pilote.md). Règles d'exploitation :
+Sur les cartes dont les réponses passent par `aac_intr_normal` (série 6, dont la 6805, noyau 4.6 et plus), le pilote `aacraid` perd un bloc de commande de gestion, jusqu'au redémarrage de la machine, chaque fois qu'un signal interrompt un programme qui attend la carte ; la réserve n'en compte que 8, partagés par l'exporter, ARCCONF et maxView. Les cartes servies par l'ancien chemin (`aac_response_normal`) rendent le bloc ; les règles ci-dessous restent valables pour toutes. Mécanisme, conséquences, protections de l'exporter et détection : [aacraid-defaut-pilote.md](aacraid-defaut-pilote.md). Règles d'exploitation :
 
 - arrêter le conteneur par `docker compose down` (qui applique `stop_grace_period`) ou par `docker stop -t 30 <conteneur>` (un `docker stop` sans délai peut retomber sur les 10 s par défaut de Docker), jamais `docker rm -f` ni `docker kill`. L'exporter attend sans limite la fin d'une commande déjà envoyée, en le journalisant toutes les 10 s : `stop_grace_period` (ou `TimeoutStopSec` pour systemd) est le seul délai, à régler sur le temps maximal que vous acceptez d'attendre une carte qui ne répond plus. 30 s convient : une commande rend la main en quelques millisecondes (le délai par défaut de Docker est de 10 s). À son expiration, la commande en cours est interrompue : un bloc perdu, et, pour une grande commande, un risque sur son tampon. Un délai sans limite éviterait de tuer une commande figée, mais bloquerait l'arrêt de la machine ([décision](aacraid-defaut-pilote.md#protections-de-lexporter)) ;
 - ne pas geler le conteneur ou le service (`docker pause`, `systemctl freeze`) : le gel réveille les threads en attente sans passer par un signal, ce qui peut interrompre une commande en cours malgré les protections de l'exporter [Probable, déduit du code du noyau, non essayé]. Arrêter proprement l'exporter avant tout gel ;

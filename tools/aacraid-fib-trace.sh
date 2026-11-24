@@ -19,7 +19,8 @@
 # complète » que si rien n'a été perdu en route : aucun retour manqué par la
 # sonde, aucun événement perdu ni restant dans le tampon, compteurs de
 # toutes les CPU lus, autant de lignes écrites que d'événements lus, lecteur
-# sans erreur, limite de taille non atteinte et retrait vérifié. Le bilan
+# sans erreur, limite de taille non atteinte, capture démarrée et retrait
+# vérifié. Le bilan
 # ne couvre que les retours survenus pendant que la sonde était active,
 # d'appels entrés dans
 # aac_fib_send après son activation (une commande déjà en cours au lancement
@@ -31,8 +32,12 @@
 # /sys/kernel/tracing/events n'existe pas). Le lecteur (cat) peut avoir
 # survécu au script et garder la trace ouverte, ce qui fait échouer rmdir :
 # l'arrêter d'abord. Repérer son PID d'après sa commande exacte (cat et le
-# seul chemin de la trace), vérifier la ligne affichée, puis l'arrêter :
+# seul chemin de la trace), puis vérifier que sa sortie est bien le fichier
+# de cette capture (« écriture dans … » au démarrage). En cas de doute
+# (aucune ligne, plusieurs, autre sortie), ne rien tuer : un redémarrage
+# retire aussi l'instance et la sonde.
 #   ps -eo pid=,args= | awk -v t='<racine>/instances/aacfib_<pid>_<suffixe>/trace_pipe' '$2 == "cat" && $3 == t && NF == 3'
+#   readlink /proc/<PID affiché>/fd/1    # doit être /var/tmp/aacfib.<suffixe>/trace.txt
 #   kill -KILL <PID affiché>
 #   rmdir <racine>/instances/aacfib_<pid>_<suffixe>
 #   echo '-:aacfib/ret_<pid>_<suffixe>' >> <racine>/kprobe_events
@@ -136,6 +141,9 @@ buffer_stats() {
 
 READER=
 READER_FAILED=0
+# STARTED : sonde activée et lecteur lancé. Sans cela, aucune capture n'a eu
+# lieu, quels que soient les compteurs.
+STARTED=0
 
 # ours : le lecteur noté est toujours notre processus fils (son PID n'a pas
 # été réattribué à un autre programme).
@@ -220,9 +228,10 @@ cleanup() {
 	echo "événements lus : ${nread:-inconnu}, lignes écrites : $lines"
 	[ "$LIMIT" -eq 0 ] || echo "limite de $MAX_MB Mio atteinte : capture arrêtée avant Ctrl+C"
 	[ "$READER_FAILED" -eq 0 ] || echo "le lecteur de la trace s'est arrêté en erreur" >&2
+	[ "$STARTED" -eq 1 ] || echo "capture jamais démarrée (arrêt avant l'activation de la sonde ou le lancement du lecteur)" >&2
 	if [ "${missed:-x}" = 0 ] && [ "${lost:-x}" = 0 ] && [ "${left:-x}" = 0 ] &&
 		[ "${nread:-x}" = "$lines" ] && [ "$LIMIT" -eq 0 ] && [ "$READER_FAILED" -eq 0 ] &&
-		[ "$failed" -eq 0 ]; then
+		[ "$failed" -eq 0 ] && [ "$STARTED" -eq 1 ]; then
 		echo "trace complète"
 	else
 		echo "TRACE INCOMPLÈTE : l'absence de ret=-512 ne prouve pas l'absence de perte" >&2
@@ -272,6 +281,7 @@ trap 'PENDING=1' HUP INT TERM
 	exec cat "$I/trace_pipe"
 ) >&3 &
 READER=$!
+STARTED=1
 trap 'exit 0' HUP INT TERM
 [ "$PENDING" -eq 0 ] || exit 0
 # Le shell attend dans wait, qu'un signal interrompt aussitôt.

@@ -53,19 +53,17 @@ func TestPublisherStaleView(t *testing.T) {
 	}
 }
 
-// ViewMaxAge : la vue reste servie entre deux publications normales (au
-// plus intervalle + délai d'écart), mais une boucle figée ne peut pas
-// resservir une seule observation pendant le « for: 5m » des règles d'état,
-// pour les intervalles usuels (le délai de cycle vaut au plus 30 s).
+// ViewMaxAge : une vue n'est retirée que si la boucle n'a rien publié
+// pendant au moins l'écart normal entre deux vues (intervalle + délai) plus
+// un intervalle entier de marge pour la découverte et le rendu, qui ne
+// comptent pas dans le délai de cycle. Un délai court ne réduit pas cette
+// marge.
 func TestViewMaxAge(t *testing.T) {
-	for _, interval := range []time.Duration{15 * time.Second, time.Minute, 2 * time.Minute, 3 * time.Minute} {
-		timeout := min(30*time.Second, interval)
-		got := ViewMaxAge(interval, timeout)
-		if got <= interval+timeout {
-			t.Errorf("intervalle %v : %v ne couvre pas l'écart normal entre deux vues (%v)", interval, got, interval+timeout)
-		}
-		if got >= 5*time.Minute {
-			t.Errorf("intervalle %v : une vue figée resservie %v remplit un for: 5m", interval, got)
+	for _, interval := range []time.Duration{15 * time.Second, time.Minute, 2 * time.Minute, 5 * time.Minute} {
+		for _, timeout := range []time.Duration{time.Second, min(30*time.Second, interval)} {
+			if got, need := ViewMaxAge(interval, timeout), 2*interval+timeout; got < need {
+				t.Errorf("intervalle %v, délai %v : vue retirée après %v, avant %v (cycle lent mais vivant)", interval, timeout, got, need)
+			}
 		}
 	}
 }

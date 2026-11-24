@@ -183,8 +183,8 @@ func serve(args []string) int {
 
 	// --- Collecte et service ---------------------------------------------
 	// Vue sans valeur matérielle : avant la première collecte, à l'arrêt, et
-	// si la boucle de collecte ne publie plus depuis un intervalle et deux
-	// délais de cycle (exporter.ViewMaxAge).
+	// si la boucle de collecte ne publie plus depuis trois intervalles et un
+	// délai de cycle (exporter.ViewMaxAge).
 	empty := exporter.Render(exporter.Snapshot{})
 	pub := exporter.NewPublisher(empty, empty, exporter.ViewMaxAge(*interval, *timeout))
 

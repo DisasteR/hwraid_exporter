@@ -32,16 +32,16 @@ type view struct {
 	at   time.Time
 }
 
-// ViewMaxAge est l'âge au-delà duquel la vue n'est plus servie, pour un
-// intervalle de collecte et un délai de cycle donnés. Une nouvelle vue est
+// ViewMaxAge est l'âge au-delà duquel la vue n'est plus servie : la boucle
+// de collecte est alors tenue pour figée. En temps normal, une vue est
 // publiée au plus « intervalle + délai » après la précédente, même hors
-// délai (la boucle n'attend pas une carte bloquée au-delà de l'échéance) :
-// un délai de plus sert de marge. Au-delà, la boucle elle-même est figée,
-// et une observation resservie ne doit pas suffire à remplir le « for » des
-// règles d'état (5 min) tant que l'intervalle reste sous 4 min (délai de
-// 30 s).
+// délai, à quoi s'ajoutent la découverte sysfs et le rendu, hors délai de
+// cycle. La marge de deux intervalles couvre ces étapes lentes sans retirer
+// une vue valide. Cette borne ne garantit rien sur le « for » des règles :
+// Prometheus garde le dernier échantillon jusqu'au scrape qui le marque
+// périmé.
 func ViewMaxAge(interval, timeout time.Duration) time.Duration {
-	return interval + 2*timeout
+	return 3*interval + timeout
 }
 
 // NewPublisher crée un publieur qui sert initial ; empty est la vue sans

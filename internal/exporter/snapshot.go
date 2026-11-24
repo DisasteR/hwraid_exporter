@@ -108,18 +108,12 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 		for _, rq := range pc.Requests {
 			nodes = append(nodes, rq.Name+":"+strconv.FormatUint(uint64(rq.Minor), 10))
 		}
-		fields := []string{s, pc.Card.PCI.Vendor, pc.Card.PCI.Device, pc.Card.PCI.SubsystemVendor,
-			pc.Card.PCI.SubsystemDevice, c.Model, c.Firmware, strings.Join(nodes, ",")}
-		c.Identity = strings.Join(fields, "|")
-		// Identité complète : tous les champs lus (un firmware ou un modèle
-		// illisible change la clé des réponses gardées du module, comme un
-		// numéro de série illisible).
-		c.IdentityKnown = true
-		for _, f := range fields {
-			if f == "" {
-				c.IdentityKnown = false
-			}
-		}
+		// Identité commune avec les réponses gardées des modules
+		// (module.Card.Identity), complétée des nœuds déclarés ; complète si
+		// tous les champs sont lus.
+		fields, complete := pc.Card.Identity()
+		c.Identity = strings.Join(append(fields, strings.Join(nodes, ",")), "|")
+		c.IdentityKnown = complete && len(nodes) > 0
 		// hist : dates et compteur. Repris tant qu'aucun champ lu ne diffère
 		// de l'identité gardée ; sinon, seuls les apports de ce cycle.
 		// capHist : réponses gardées et collecteurs non pris en charge. Repris
@@ -141,11 +135,31 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 			if lr, ok := results[addr]; ok && lr.LateErr != nil {
 				c.LateError = lr.LateErr.Error()
 			}
+			// Nœud en erreur : aucune lecture, mais les dates de dernier
+			// succès restent publiées (hors collecteurs connus comme non pris
+			// en charge). Sinon, une alternance de cycles en erreur de nœud
+			// et de cycles hors délai ferait disparaître une série sur deux,
+			// et aucune règle de perte de visibilité n'atteindrait son délai.
+			nodeErrLast := func() map[string]time.Time {
+				out := map[string]time.Time{}
+				skip := map[string]bool{}
+				for _, col := range capHist.Unsupported(addr) {
+					skip[col] = true
+				}
+				for col, at := range hist.Last(addr) {
+					if !skip[col] {
+						out[col] = at
+					}
+				}
+				return out
+			}
 			switch r, ok := results[addr]; {
 			case pc.Err != nil:
 				c.NodeError = pc.Err.Error()
+				c.LastSuccess = nodeErrLast()
 			case !ok:
 				c.NodeError = "no collection for this card"
+				c.LastSuccess = nodeErrLast()
 			case r.TimedOut:
 				// Nœud non observé : management_node_valid n'est pas publié.
 				c.NodeChecked, c.TimedOut = false, true
@@ -168,6 +182,7 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 				c.CollectError = "collection timed out"
 			case r.Err != nil:
 				c.NodeError = r.Err.Error()
+				c.LastSuccess = nodeErrLast()
 			default:
 				c.NodeValid = r.NodeValid
 				c.Unsupported = r.Unsupported

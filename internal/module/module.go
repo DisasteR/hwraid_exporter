@@ -28,6 +28,37 @@ type Card struct {
 	Hosts []sysfs.SCSIHost // triés par numéro d'hôte
 }
 
+// Identity rend l'identité matérielle de la carte telle que sysfs la
+// décrit : numéro de série, identifiants PCI (fabricant, périphérique et
+// leurs équivalents de sous-système), modèle et firmware, dans cet ordre.
+// Pour chaque attribut d'hôte, le premier hôte qui le renseigne. complete :
+// tous ces champs sont lus. C'est la définition commune au suivi par carte
+// de l'exporter et aux réponses gardées des modules : une identité
+// incomplète ne distingue pas deux cartes successives.
+func (c Card) Identity() (fields []string, complete bool) {
+	first := func(get func(sysfs.SCSIHost) string) string {
+		for _, h := range c.Hosts {
+			if v := get(h); v != "" {
+				return v
+			}
+		}
+		return ""
+	}
+	fields = []string{
+		first(func(h sysfs.SCSIHost) string { return h.SerialNumber }),
+		c.PCI.Vendor, c.PCI.Device, c.PCI.SubsystemVendor, c.PCI.SubsystemDevice,
+		first(func(h sysfs.SCSIHost) string { return h.Model }),
+		first(func(h sysfs.SCSIHost) string { return h.Firmware }),
+	}
+	complete = true
+	for _, f := range fields {
+		if f == "" {
+			complete = false
+		}
+	}
+	return fields, complete
+}
+
 // NodeRequest est la déclaration d'un nœud par un module.
 type NodeRequest struct {
 	Name    string // nom dans le répertoire des nœuds dédiés

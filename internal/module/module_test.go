@@ -6,6 +6,7 @@ package module
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/DisasteR/hwraid_exporter/internal/nodes"
@@ -187,5 +188,36 @@ func TestKeepPrepared(t *testing.T) {
 	}
 	if got := p.KeepPrepared(majors, nil); got != 0 {
 		t.Fatalf("aucune carte préparée : %#x", got)
+	}
+}
+
+// Identity : chaque champ illisible rend l'identité incomplète ; un attribut
+// d'hôte vient du premier hôte qui le renseigne.
+func TestCardIdentity(t *testing.T) {
+	full := func() Card {
+		return Card{
+			PCI: sysfs.PCIFunction{Vendor: "0x9005", Device: "0x028b", SubsystemVendor: "0x9005", SubsystemDevice: "0x0301"},
+			Hosts: []sysfs.SCSIHost{{SerialNumber: "", Model: "6805"},
+				{SerialNumber: "S1", Firmware: "5.3-0[19204]"}},
+		}
+	}
+	f, ok := full().Identity()
+	if !ok || strings.Join(f, "|") != "S1|0x9005|0x028b|0x9005|0x0301|6805|5.3-0[19204]" {
+		t.Fatalf("identité : %v, complète %v", f, ok)
+	}
+	for name, blank := range map[string]func(*Card){
+		"série":                     func(c *Card) { c.Hosts[1].SerialNumber = "" },
+		"fabricant":                 func(c *Card) { c.PCI.Vendor = "" },
+		"périphérique":              func(c *Card) { c.PCI.Device = "" },
+		"fabricant du sous-système": func(c *Card) { c.PCI.SubsystemVendor = "" },
+		"sous-système":              func(c *Card) { c.PCI.SubsystemDevice = "" },
+		"modèle":                    func(c *Card) { c.Hosts[0].Model = "" },
+		"firmware":                  func(c *Card) { c.Hosts[1].Firmware = "" },
+	} {
+		c := full()
+		blank(&c)
+		if _, ok := c.Identity(); ok {
+			t.Errorf("%s illisible : identité déclarée complète", name)
+		}
 	}
 }

@@ -12,7 +12,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -92,8 +91,10 @@ func TestQuietThreadMask(t *testing.T) {
 // Un signal adressé au thread pendant un appel bloquant ne l'interrompt
 // pas. ppoll n'est jamais relancé par le noyau : sans masque, il rendrait
 // EINTR, comme l'attente du pilote aacraid rend -ERESTARTSYS. Les signaux
-// partent quand /proc montre le thread dans ppoll. Témoin : le même
-// scénario sur un thread ordinaire rend EINTR.
+// partent quand /proc montre le thread dans ppoll. Témoin : sur un thread
+// ordinaire qui bloque seulement SIGURG (la préemption du runtime Go ne
+// peut donc pas l'interrompre), SIGUSR1 seul rend EINTR : l'interruption
+// vient de ce signal.
 func TestQuietThreadNotInterrupted(t *testing.T) {
 	requireProc(t)
 	sigs := make(chan os.Signal, 4)
@@ -105,7 +106,7 @@ func TestQuietThreadNotInterrupted(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer q.stop()
-	if n, err := pollUnderSignals(t, q.run); err != nil || n != 1 {
+	if n, err := pollUnderSignals(t, q.run, unix.SIGURG, unix.SIGTERM, unix.SIGUSR1); err != nil || n != 1 {
 		t.Fatalf("attente interrompue : n=%d, err=%v", n, err)
 	}
 	plain := func(f func()) {
@@ -113,19 +114,24 @@ func TestQuietThreadNotInterrupted(t *testing.T) {
 		go func() {
 			defer close(done)
 			runtime.LockOSThread() // thread rendu au système en fin de goroutine
+			var urg unix.Sigset_t
+			urg.Val[(unix.SIGURG-1)/64] |= 1 << ((uint(unix.SIGURG) - 1) % 64)
+			if err := unix.PthreadSigmask(unix.SIG_BLOCK, &urg, nil); err != nil {
+				panic(err)
+			}
 			f()
 		}()
 		<-done
 	}
-	if _, err := pollUnderSignals(t, plain); !errors.Is(err, unix.EINTR) {
+	if _, err := pollUnderSignals(t, plain, unix.SIGUSR1); !errors.Is(err, unix.EINTR) {
 		t.Fatalf("témoin : ppoll non interrompu sur un thread ordinaire (err=%v) : le test n'exerce pas la fenêtre", err)
 	}
 }
 
-// pollUnderSignals attend sur un tube, dans run, et adresse SIGURG,
-// SIGTERM et SIGUSR1 au thread une fois qu'il est entré dans ppoll, puis
-// libère l'attente par une écriture.
-func pollUnderSignals(t *testing.T, run func(func())) (int, error) {
+// pollUnderSignals attend sur un tube, dans run, et adresse les signaux
+// sigs au thread une fois qu'il est entré dans ppoll, puis libère l'attente
+// par une écriture.
+func pollUnderSignals(t *testing.T, run func(func()), sigs ...unix.Signal) (int, error) {
 	t.Helper()
 	var p [2]int
 	if err := unix.Pipe2(p[:], unix.O_CLOEXEC); err != nil {
@@ -135,13 +141,9 @@ func pollUnderSignals(t *testing.T, run func(func())) (int, error) {
 	defer unix.Close(p[1])
 	tid := make(chan int, 1)
 	sent := make(chan error, 1)
-	// Le thread reste en vie jusqu'au dernier envoi, même si le premier
-	// signal a interrompu ppoll (témoin) : sinon tgkill rendrait ESRCH.
+	// Le thread reste en vie jusqu'au dernier envoi, même si un signal a
+	// interrompu ppoll (témoin) : sinon tgkill rendrait ESRCH.
 	allSent := make(chan struct{})
-	// armed : nos signaux partent. Avant, un EINTR vient d'ailleurs (sur un
-	// thread ordinaire, la préemption du runtime Go envoie SIGURG) : ppoll
-	// est relancé.
-	var armed atomic.Bool
 	go func() {
 		id := <-tid
 		task := fmt.Sprintf("/proc/self/task/%d/syscall", id)
@@ -157,8 +159,7 @@ func pollUnderSignals(t *testing.T, run func(func())) (int, error) {
 		if !in {
 			err = errors.New("thread jamais vu dans ppoll")
 		}
-		armed.Store(true)
-		for _, s := range []unix.Signal{unix.SIGURG, unix.SIGTERM, unix.SIGUSR1} {
+		for _, s := range sigs {
 			if e := unix.Tgkill(unix.Getpid(), id, s); e != nil && err == nil {
 				err = fmt.Errorf("tgkill %v : %w", s, e)
 			}
@@ -173,12 +174,7 @@ func pollUnderSignals(t *testing.T, run func(func())) (int, error) {
 	run(func() {
 		tid <- unix.Gettid()
 		fds := []unix.PollFd{{Fd: int32(p[0]), Events: unix.POLLIN}}
-		for {
-			n, perr = unix.Ppoll(fds, nil, nil)
-			if !errors.Is(perr, unix.EINTR) || armed.Load() {
-				break
-			}
-		}
+		n, perr = unix.Ppoll(fds, nil, nil)
 		<-allSent
 	})
 	if err := <-sent; err != nil {

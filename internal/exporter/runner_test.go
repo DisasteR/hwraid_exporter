@@ -810,3 +810,32 @@ func TestTimedOutHeldAfterUnreadableFirmware(t *testing.T) {
 		}
 	}
 }
+
+// Nœud en erreur (GET_HBA_INFO en échec) après une collecte réussie : les
+// dates de dernier succès restent publiées, hors collecteurs connus comme
+// non pris en charge, pour que la perte de visibilité reste continue même
+// si ces cycles alternent avec des cycles hors délai.
+func TestNodeErrorKeepsLastSuccess(t *testing.T) {
+	const addr = "0000:01:00.0"
+	t0 := time.Unix(1_000_000, 0)
+	tr := NewTracker()
+	ok := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"capabilities": true, "volumes": true, "disks": true}, Cached: []string{"capabilities"}, Unsupported: []string{"cache_protection"}}}
+	tr.Update(map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"cache_protection": true}}}, []string{addr}, t0.Add(-time.Minute))
+	tr.Update(ok, []string{addr}, t0)
+	tr.Remember(Build(plan(aacHost("host0", addr, "S1")), true, ok, tr, time.Minute))
+	nodeErr := map[string]module.Result{addr: {Err: errors.New("GET_HBA_INFO: EIO")}}
+	tr.Update(nodeErr, []string{addr}, t0.Add(time.Minute))
+	out := Render(Build(plan(aacHost("host0", addr, "S1")), true, nodeErr, tr, time.Minute))
+	for _, want := range []string{
+		`hwraid_management_node_valid{controller="serial:S1"} 0`,
+		`hwraid_collection_last_success_timestamp_seconds{controller="serial:S1",collector="volumes"} 1000000`,
+		`hwraid_collection_last_success_timestamp_seconds{controller="serial:S1",collector="disks"} 1000000`,
+	} {
+		if !strings.Contains(out, want+"\n") {
+			t.Fatalf("ligne absente : %s\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, `collector="cache_protection"`) {
+		t.Fatalf("date publiée pour un collecteur non pris en charge\n%s", out)
+	}
+}

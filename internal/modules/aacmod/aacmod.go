@@ -189,19 +189,16 @@ func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeR
 			info.AdapterNumber, info.Bus, info.Device, info.Function, info.VendorID, info.DeviceID, info.SubVendorID, info.SubSystemID)}
 	}
 	r := module.Result{NodeValid: true}
-	// Réponses gardées (706, 708) : rattachées à la carte telle que sysfs la
-	// décrit (adresse, nœud, identifiants PCI, numéro de série, firmware).
-	// Une carte remplacée ou un firmware mis à jour change la clé : tout est
-	// relu.
-	_, h, _ := hostOf(c)
-	key := strings.Join([]string{c.PCI.Address, strconv.FormatUint(refs[0].Dev, 10),
-		c.PCI.Vendor, c.PCI.Device, c.PCI.SubsystemVendor, c.PCI.SubsystemDevice, h.SerialNumber, h.Firmware}, "|")
-	// Identité incomplète (numéro de série, firmware ou identifiant PCI
-	// illisible) : deux cartes successives pourraient partager la clé.
-	// Rien n'est gardé, les réponses sont relues à chaque cycle.
-	if h.SerialNumber == "" || h.Firmware == "" || c.PCI.Vendor == "" || c.PCI.Device == "" ||
-		c.PCI.SubsystemVendor == "" || c.PCI.SubsystemDevice == "" {
-		key = ""
+	// Réponses gardées (706, 708) : rattachées à l'adresse, au nœud et à
+	// l'identité matérielle de la carte (module.Card.Identity : numéro de
+	// série, identifiants PCI, modèle, firmware). Une carte remplacée ou un
+	// firmware mis à jour change la clé : tout est relu. Identité
+	// incomplète : deux cartes successives pourraient partager la clé ; rien
+	// n'est gardé, les réponses sont relues à chaque cycle.
+	fields, complete := c.Identity()
+	key := ""
+	if complete {
+		key = strings.Join(append([]string{c.PCI.Address, strconv.FormatUint(refs[0].Dev, 10)}, fields...), "|")
 	}
 	m.forgetOtherKeys(c.PCI.Address, key)
 	sup, err := m.supplementInfo(key, d)

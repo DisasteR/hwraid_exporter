@@ -29,7 +29,7 @@ func card(addr, uid string) module.Card {
 	return module.Card{
 		PCI: sysfs.PCIFunction{Address: addr, Driver: "aacraid", Class: "0x010400",
 			Vendor: "0x9005", Device: "0x028b", SubsystemVendor: "0x9005", SubsystemDevice: "0x0301"},
-		Hosts: []sysfs.SCSIHost{{Name: "host3", Number: 3, ProcName: "aacraid", UniqueID: uid, Firmware: "5.3-0[19204]", SerialNumber: "TESTSERIAL"}},
+		Hosts: []sysfs.SCSIHost{{Name: "host3", Number: 3, ProcName: "aacraid", UniqueID: uid, Firmware: "5.3-0[19204]", SerialNumber: "TESTSERIAL", Model: "6805"}},
 	}
 }
 
@@ -1026,6 +1026,7 @@ func TestNoCacheWithIncompleteIdentity(t *testing.T) {
 	for name, blank := range map[string]func(*module.Card){
 		"numéro de série": func(c *module.Card) { c.Hosts[0].SerialNumber = "" },
 		"firmware":        func(c *module.Card) { c.Hosts[0].Firmware = "" },
+		"modèle":          func(c *module.Card) { c.Hosts[0].Model = "" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := card("0000:01:00.0", "0")

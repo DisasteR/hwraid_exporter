@@ -1,6 +1,6 @@
 # Défaut du pilote aacraid : blocs de commande perdus
 
-Le pilote Linux `aacraid` perd un bloc de commande de gestion chaque fois qu'un signal interrompt un programme qui attend la réponse de la carte. Les blocs perdus ne reviennent qu'au redémarrage de la machine. Quand il n'en reste plus, aucun outil ne peut plus gérer la carte, et le pilote ne peut plus demander à la carte de vider son cache à l'arrêt.
+Sur les cartes dont les réponses passent par `aac_intr_normal` (série 6, dont la 6805, noyau 4.6 et plus ; [mécanisme](#mécanisme)), le pilote Linux `aacraid` perd un bloc de commande de gestion chaque fois qu'un signal interrompt un programme qui attend la réponse de la carte. L'ancien chemin `aac_response_normal` rend le bloc. Les blocs perdus ne reviennent qu'au redémarrage de la machine. Quand il n'en reste plus, aucun outil ne peut plus gérer la carte, et le pilote ne peut plus demander à la carte de vider son cache à l'arrêt.
 
 Cette page décrit le défaut, ses conséquences, ce que fait l'exporter pour ne pas le déclencher et comment détecter une fuite. Les règles d'exploitation qui en découlent sont dans le [guide de déploiement](deploiement.md#limite-du-pilote-aacraid--ne-pas-interrompre-une-commande).
 

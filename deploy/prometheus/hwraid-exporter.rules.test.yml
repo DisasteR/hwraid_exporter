@@ -399,6 +399,32 @@ tests:
         alertname: HwraidControllerUnsupported
         exp_alerts: []
 
+  # Après un succès, alternance de cycles en erreur de nœud
+  # (management_node_valid 0) et de cycles hors délai (série absente) :
+  # HwraidManagementNodeInvalid n'atteint jamais son délai, mais les dates de
+  # dernier succès, publiées à chaque cycle (y compris en erreur de nœud),
+  # gardent HwraidCollectionStale continue : la perte de visibilité est
+  # signalée.
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_management_node_valid{controller="serial:A"}'
+        values: '1 0 stale 0 stale 0 stale 0 stale 0 stale 0 stale 0 stale 0 stale 0 stale 0'
+      - series: 'hwraid_collection_last_success_timestamp_seconds{controller="serial:A",collector="volumes"}'
+        values: '0x20'
+      - series: 'hwraid_collection_interval_seconds{controller="serial:A"}'
+        values: '60x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: HwraidManagementNodeInvalid
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: HwraidCollectionStale
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: "serial:A", collector: volumes}
+            exp_annotations:
+              summary: "Lecture volumes sans succès depuis plus de 3 cycles (serial:A)"
+              description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter ; « cannot allocate memory » sur toutes les lectures signale probablement la réserve de commandes du pilote aacraid épuisée : avec le réglage par défaut du pilote, un redémarrage ne videra alors pas le cache de la carte ; lire docs/aacraid-defaut-pilote.md avant de redémarrer."
+
   # Carte reconnue (backend pris en charge), firmware non qualifié : volumes
   # non lus, alerte après 1 h. La lecture des capacités réussit, et
   # HwraidCollectionStale ne voit rien. Une carte qualifiée (B) ne publie
