@@ -157,7 +157,7 @@ groups:
           severity: warning
         annotations:
           summary: "Réglage ou état du cache d'écriture non reconnu, volume {{ $labels.volume }} ({{ $labels.controller }})"
-          description: "La carte décrit le cache d'écriture du volume avec une valeur non qualifiée : les alertes de cache d'écriture ne couvrent plus ce volume. Vérifier le cache avec l'outil du constructeur."
+          description: "La carte décrit le réglage ou l'état du cache d'écriture du volume avec une valeur non qualifiée. État inconnu : HwraidVolumeWriteCacheUnprotected, HwraidVolumeWriteCacheProtectionUnknown et HwraidVolumeWriteCacheInactive ne peuvent plus se déclencher pour ce volume ; réglage inconnu : HwraidVolumeWriteCacheAlwaysOn et HwraidVolumeWriteCacheInactive. Vérifier le cache avec l'outil du constructeur."
 
       - alert: HwraidVolumeWriteCacheAlwaysOn
         expr: hwraid_volume_write_cache_policy{policy="write_back_always"} == 1

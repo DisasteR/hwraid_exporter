@@ -37,9 +37,10 @@ var ioctlFn = func(fd int, req uint32, buf []byte) error {
 // mémoire. ioctl_send_fib (commctrl.c) rend ENOMEM dans deux cas : sa
 // réserve de blocs de commande de gestion est vide, ce qui ne se répare que
 // par un redémarrage (voir thread.go), ou, pour une commande plus grande que
-// le bloc, le tampon DMA n'a pas pu être alloué, ce qui est passager. Des
+// le bloc, le tampon DMA n'a pas pu être alloué, selon la mémoire du noyau à
+// cet instant, sans rien consommer de la réserve. Des
 // ENOMEM répétés sur toutes les lectures désignent la réserve vide.
-var ErrDriverNoMemory = errors.New("the driver refused a management command for lack of memory; two possible causes: its management command pool is exhausted (aacraid loses one block per interrupted command, only a reboot restores it), or a large command could not get a DMA buffer (transient); the same error on every read points to the first, see docs/aacraid-defaut-pilote.md")
+var ErrDriverNoMemory = errors.New("the driver refused a management command for lack of memory; two possible causes: its management command pool is exhausted (aacraid loses one block per interrupted command, only a reboot restores it), or a large command could not get a DMA buffer (depends on free kernel memory, does not consume the pool); the same error on every read points to the first, see docs/aacraid-defaut-pilote.md")
 
 // ErrStopped : la collecte est arrêtée (échéance du cycle ou arrêt du
 // service) ; aucune nouvelle commande n'est envoyée à la carte.

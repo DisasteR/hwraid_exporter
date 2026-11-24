@@ -6,7 +6,7 @@ Ces règles sont un point de départ : seuils, durées et gravités sont à adap
 
 ## Principes
 
-- **Un trou de lecture n'éteint pas une alerte, et ne réveille jamais une valeur périmée.** Quand une lecture échoue, l'exporter retire les séries au lieu de publier une valeur non observée. Les règles ne prennent que l'état publié ; une alerte déjà déclenchée reste active **10 minutes** après la disparition de sa condition (`keep_firing_for`, Prometheus 2.42 et plus, vmalert). En contrepartie, une alerte s'éteint 10 minutes après le retour à la normale, et le délai `for` d'une alerte pas encore déclenchée repart de zéro après un trou. Une lecture qui échoue durablement est signalée par `HwraidCollectionStale`.
+- **Un trou de lecture n'éteint pas une alerte, et ne réveille jamais une valeur périmée.** Quand une lecture échoue, l'exporter retire les séries au lieu de publier une valeur non observée. Les règles ne prennent que l'état publié ; une alerte déjà déclenchée reste active **10 minutes** après la disparition de sa condition (`keep_firing_for`, Prometheus 2.42 et plus, vmalert). Les 10 minutes se comptent à partir de la première évaluation de la règle où la condition est absente : si une lecture échoue puis qu'un état sain est publié quelques minutes plus tard, l'alerte s'éteint moins de 10 minutes après ce retour ; à l'inverse, le délai de collecte, l'intervalle de lecture de Prometheus et celui d'évaluation des règles s'ajoutent au trou. En contrepartie, une alerte s'éteint jusqu'à 10 minutes après le retour à la normale, et le délai `for` d'une alerte pas encore déclenchée repart de zéro après un trou. Une lecture qui échoue durablement est signalée par `HwraidCollectionStale`.
 - **Joindre sur `job` et `instance`.** Deux hôtes peuvent publier le même identifiant de contrôleur (`pci:0000:01:00.0`) : toutes les jointures portent aussi `job` et `instance`.
 - **La perte de visibilité est une alerte à part entière.** Une lecture qui échoue durablement, un exporter absent ou un nœud de gestion invalide empêchent les alertes d'état de se déclencher : ils sont signalés séparément.
 - **`unknown` n'est pas une panne**, mais un état qui doit être compris (voir ci-dessous).
@@ -45,7 +45,7 @@ Ces règles sont un point de départ : seuils, durées et gravités sont à adap
 L'intervalle de collecte est configurable (`-interval`, 1 minute par défaut) et publié par `hwraid_collection_interval_seconds`.
 
 - `HwraidCollectionStale` s'y adapte d'elle-même : le seuil vaut trois intervalles.
-- Les alertes restent actives **10 minutes** sans leur condition (`keep_firing_for`), ce qui couvre au moins deux cycles tant que l'intervalle ne dépasse pas 5 minutes. Au-delà, un seul cycle en échec retire les séries plus longtemps, et une alerte de panne pourrait s'éteindre. `keep_firing_for` n'accepte pas de durée calculée : il faut alors le porter à au moins deux fois l'intervalle. `HwraidCollectionIntervalTooLong` signale ce cas.
+- Les alertes restent actives **10 minutes** sans leur condition (`keep_firing_for`), ce qui couvre au moins deux cycles tant que l'intervalle ne dépasse pas 5 minutes, à condition que le délai de collecte (`-collect-timeout`) et les intervalles de Prometheus restent courts devant eux. Au-delà, un seul cycle en échec retire les séries plus longtemps, et une alerte de panne pourrait s'éteindre. `keep_firing_for` n'accepte pas de durée calculée : il faut alors le porter à au moins deux fois l'intervalle. `HwraidCollectionIntervalTooLong` signale ce cas.
 
 ## Cas particulier : volume `unknown`
 

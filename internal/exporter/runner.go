@@ -24,7 +24,11 @@ import (
 type Runner struct {
 	mu       sync.Mutex
 	inflight map[string]chan done // adresse PCI → collecte en cours
-	running  sync.WaitGroup       // collectes non terminées
+	// active compte les collectes non terminées ; idle, s'il existe, est
+	// fermé quand active retombe à zéro. Aucune goroutine d'attente : un
+	// appel répété à Drain ne laisse rien derrière lui.
+	active int
+	idle   chan struct{}
 	// late garde, par carte, les lectures rejetées (clôture 0xc5) portées
 	// par un résultat tardif écarté : elles ont bien eu lieu et sont
 	// reportées dans le prochain résultat de la carte.
@@ -86,9 +90,9 @@ func (r *Runner) Run(ctx context.Context, jobs map[string]func() module.Result, 
 		ch := make(chan done, 1)
 		r.inflight[addr] = ch
 		waiting[addr] = ch
-		r.running.Add(1)
+		r.active++
 		go func() {
-			defer r.running.Done()
+			defer r.finished()
 			res := job()
 			ch <- done{res: res, at: time.Now()}
 		}()
@@ -153,22 +157,40 @@ func finishedInTime(at, dl time.Time, canceled bool) bool {
 	return dl.IsZero() || !at.After(dl)
 }
 
+// finished retire une collecte terminée et réveille Drain s'il n'en reste
+// aucune.
+func (r *Runner) finished() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.active--
+	if r.active == 0 && r.idle != nil {
+		close(r.idle)
+		r.idle = nil
+	}
+}
+
 // Drain attend, au plus timeout, la fin des collectes encore en cours,
 // y compris celles abandonnées à l'échéance d'un cycle. Il rend false si
-// l'une d'elles n'a pas rendu la main à temps.
+// l'une d'elles n'a pas rendu la main à temps. Il peut être rappelé autant
+// de fois que nécessaire : il ne crée aucune goroutine.
 //
 // À l'arrêt du service, sortir pendant une commande de gestion l'interrompt
 // dans le pilote, qui perd alors un bloc de commande (voir aacio).
 func (r *Runner) Drain(timeout time.Duration) bool {
-	done := make(chan struct{})
-	go func() {
-		r.running.Wait()
-		close(done)
-	}()
+	r.mu.Lock()
+	if r.active == 0 {
+		r.mu.Unlock()
+		return true
+	}
+	if r.idle == nil {
+		r.idle = make(chan struct{})
+	}
+	idle := r.idle
+	r.mu.Unlock()
 	t := time.NewTimer(timeout)
 	defer t.Stop()
 	select {
-	case <-done:
+	case <-idle:
 		return true
 	case <-t.C:
 		return false

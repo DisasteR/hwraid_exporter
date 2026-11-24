@@ -13,15 +13,17 @@
 # La sonde s'exécute à chaque retour de aac_fib_send, entrées-sorties disque
 # comprises ; le filtre écarte ensuite celles-ci (-115, -EINPROGRESS).
 # Arrêt par Ctrl+C ou SIGTERM : la sonde est coupée, le tampon vidé dans la
-# sortie, la sonde retirée et le retrait vérifié. Le bilan par programme dit
-# si la trace est complète : retours non saisis par la sonde, événements
-# perdus par le tampon, limite de taille atteinte. Un redémarrage retire
-# aussi la sonde.
+# sortie, la sonde retirée et le retrait vérifié. Le bilan ne dit « trace
+# complète » que si rien n'a été perdu en route : aucun retour manqué par la
+# sonde, aucun événement perdu ni restant dans le tampon, compteurs de
+# toutes les CPU lus, autant de lignes écrites que d'événements lus, lecteur
+# sans erreur et limite de taille non atteinte. Un redémarrage retire aussi
+# la sonde.
 #
 # Usage : sudo tools/aacraid-fib-trace.sh
 #   La trace va dans un répertoire privé créé par mktemp sous /var/tmp, dont
 #   le chemin est affiché ; elle n'est lisible que par root. La capture
-#   s'arrête à AACFIB_MAX_MB Mio (100 par défaut).
+#   s'arrête à AACFIB_MAX_MB Mio (entier de 1 à 100000, 100 par défaut).
 set -eu
 
 if [ $# -ne 0 ]; then
@@ -34,11 +36,15 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 MAX_MB=${AACFIB_MAX_MB:-100}
 case $MAX_MB in
-'' | *[!0-9]*)
-	echo "AACFIB_MAX_MB doit être un nombre de Mio" >&2
+'' | *[!0-9]* | ???????*)
+	echo "AACFIB_MAX_MB doit être un entier de 1 à 100000" >&2
 	exit 2
 	;;
 esac
+if [ "$MAX_MB" -lt 1 ] || [ "$MAX_MB" -gt 100000 ]; then
+	echo "AACFIB_MAX_MB doit être un entier de 1 à 100000" >&2
+	exit 2
+fi
 MAX=$((MAX_MB * 1024 * 1024))
 
 T=/sys/kernel/tracing
@@ -76,33 +82,62 @@ probe_state() {
 	fi
 }
 
-# buffer_lost : événements perdus par le tampon de l'instance (écrasés ou
-# rejetés), toutes CPU confondues ; vide si illisible.
-buffer_lost() {
-	cat "$I"/per_cpu/cpu*/stats 2>/dev/null |
-		awk -F: '$1 == "overrun" || $1 == "commit overrun" || $1 == "dropped events" {n += $2; ok = 1}
-			END {if (ok) print n}'
+# buffer_stats : somme, sur toutes les CPU de l'instance, des événements
+# perdus (écrasés ou rejetés), restants et lus, sous la forme
+# « perdus restants lus ». Rien si une CPU est illisible ou incomplète.
+buffer_stats() {
+	n=0
+	lost=0
+	left=0
+	nread=0
+	for f in "$I"/per_cpu/cpu*/stats; do
+		[ -r "$f" ] || return 0
+		v=$(awk -F': *' '
+			$1 == "overrun" {o = $2; k++}
+			$1 == "commit overrun" {c = $2; k++}
+			$1 == "dropped events" {d = $2; k++}
+			$1 == "entries" {e = $2; k++}
+			$1 == "read events" {r = $2; k++}
+			END {if (k == 5) print o + c + d, e, r}' "$f") || return 0
+		[ -n "$v" ] || return 0
+		# Découpage voulu des trois nombres.
+		# shellcheck disable=SC2086
+		set -- $v
+		lost=$((lost + $1))
+		left=$((left + $2))
+		nread=$((nread + $3))
+		n=$((n + 1))
+	done
+	[ "$n" -gt 0 ] || return 0
+	echo "$lost $left $nread"
 }
 
 READER=
+READER_FAILED=0
 LIMIT=0
 cleanup() {
 	trap - EXIT INT TERM
 	failed=0
-	# 1. Plus aucun nouvel événement ; 2. le lecteur vide le tampon ;
-	# 3. il est arrêté.
+	# 1. Plus aucun nouvel événement.
 	if [ -e "$I/events/aacfib/$EV/enable" ]; then
 		echo 0 > "$I/events/aacfib/$EV/enable" || failed=1
 	fi
+	# 2. Le lecteur vide le tampon (au plus 10 s), puis il est arrêté.
 	if [ -n "$READER" ]; then
-		sleep 1
+		i=0
+		while [ "$i" -lt 10 ] && kill -0 "$READER" 2>/dev/null; do
+			stats=$(buffer_stats)
+			[ -n "$stats" ] && [ "$(echo "$stats" | cut -d' ' -f2)" -eq 0 ] && break
+			sleep 1
+			i=$((i + 1))
+		done
 		kill "$READER" 2>/dev/null || true
 		wait "$READER" 2>/dev/null || true
 	fi
-	# Pertes, lues avant le retrait : retours que la sonde n'a pas saisis,
-	# événements que le tampon n'a pas gardés.
+	# 3. Bilan des pertes, lu avant le retrait.
 	missed=$(awk -v e="$EV" '$1 == e || $1 == "aacfib/" e {print $3}' "$T/kprobe_profile" 2>/dev/null || true)
-	lost=$(buffer_lost || true)
+	stats=$(buffer_stats)
+	lines=$(wc -l < "$OUT")
 	if [ -d "$I" ]; then
 		rmdir "$I" || failed=1
 	fi
@@ -123,12 +158,24 @@ cleanup() {
 	else
 		echo "sonde retirée"
 	fi
-	echo "retours non saisis par la sonde : ${missed:-inconnu}"
-	echo "événements perdus par le tampon : ${lost:-inconnu}"
-	if [ "$LIMIT" -eq 1 ]; then
-		echo "limite de $MAX_MB Mio atteinte : capture arrêtée avant Ctrl+C"
+	lost=
+	left=
+	nread=
+	if [ -n "$stats" ]; then
+		# Découpage voulu des trois nombres.
+		# shellcheck disable=SC2086
+		set -- $stats
+		lost=$1
+		left=$2
+		nread=$3
 	fi
-	if [ "${missed:-x}" = 0 ] && [ "${lost:-x}" = 0 ]; then
+	echo "retours non saisis par la sonde : ${missed:-inconnu}"
+	echo "événements perdus par le tampon : ${lost:-inconnu}, restés dans le tampon : ${left:-inconnu}"
+	echo "événements lus : ${nread:-inconnu}, lignes écrites : $lines"
+	[ "$LIMIT" -eq 0 ] || echo "limite de $MAX_MB Mio atteinte : capture arrêtée avant Ctrl+C"
+	[ "$READER_FAILED" -eq 0 ] || echo "le lecteur de la trace s'est arrêté en erreur" >&2
+	if [ "${missed:-x}" = 0 ] && [ "${lost:-x}" = 0 ] && [ "${left:-x}" = 0 ] &&
+		[ "${nread:-x}" = "$lines" ] && [ "$LIMIT" -eq 0 ] && [ "$READER_FAILED" -eq 0 ]; then
 		echo "trace complète"
 	else
 		echo "TRACE INCOMPLÈTE : l'absence de ret=-512 ne prouve pas l'absence de perte" >&2
@@ -155,13 +202,21 @@ mkdir "$I"
 echo 'ret != -115' > "$I/events/aacfib/$EV/filter"
 echo 1 > "$I/events/aacfib/$EV/enable"
 echo "sonde active, écriture dans $OUT (Ctrl+C pour arrêter, limite $MAX_MB Mio)"
-cat "$I/trace_pipe" >&3 &
+# Lecteur : écrit chaque événement aussitôt et s'arrête (code 3) avant de
+# dépasser la limite ; une erreur d'écriture l'arrête aussi.
+awk -v max="$MAX" '{
+	n += length($0) + 1
+	if (n > max) exit 3
+	print
+	if (fflush() != 0) exit 4
+}' "$I/trace_pipe" >&3 &
 READER=$!
-# Surveillance de la taille ; un signal est traité au plus une seconde après.
-while kill -0 "$READER" 2>/dev/null; do
-	sleep 1
-	if [ "$(wc -c < "$OUT")" -ge "$MAX" ]; then
-		LIMIT=1
-		break
-	fi
-done
+# Le shell attend dans wait, qu'un signal interrompt aussitôt.
+rc=0
+wait "$READER" || rc=$?
+READER=
+if [ "$rc" -eq 3 ]; then
+	LIMIT=1
+else
+	READER_FAILED=1
+fi

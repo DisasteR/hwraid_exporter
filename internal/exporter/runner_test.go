@@ -6,6 +6,7 @@ package exporter
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -253,5 +254,31 @@ func TestRunnerKeepsLateErrors(t *testing.T) {
 	}
 	if out := r.Run(within(t, time.Second), ok, nil); out[a].LateErr != nil {
 		t.Fatalf("erreur tardive rendue deux fois : %v", out[a].LateErr)
+	}
+}
+
+// Drain rappelé pendant une collecte bloquée, comme à l'arrêt toutes les
+// 10 s : aucune goroutine ne s'accumule.
+func TestRunnerDrainLeavesNothing(t *testing.T) {
+	const a = "0000:01:00.0"
+	release := make(chan struct{})
+	r := NewRunner()
+	r.Run(within(t, 10*time.Millisecond), map[string]func() module.Result{a: func() module.Result {
+		<-release
+		return module.Result{}
+	}}, nil)
+	r.Drain(time.Millisecond)
+	before := runtime.NumGoroutine()
+	for i := 0; i < 50; i++ {
+		if r.Drain(time.Millisecond) {
+			t.Fatal("Drain réussit pendant une collecte bloquée")
+		}
+	}
+	if after := runtime.NumGoroutine(); after > before {
+		t.Fatalf("%d goroutines après 50 appels à Drain, %d avant", after, before)
+	}
+	close(release)
+	if !r.Drain(2 * time.Second) {
+		t.Fatal("Drain échoue après la fin de la collecte")
 	}
 }

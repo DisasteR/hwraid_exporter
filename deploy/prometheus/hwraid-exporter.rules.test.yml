@@ -187,8 +187,9 @@ tests:
 
   # État passager : un seul cycle « dégradé » puis optimal ne déclenche pas
   # d'alerte (le délai de 5 min porte sur l'état courant). Un disque vu une
-  # fois en panne déclenche aussitôt (pas de délai), et l'alerte s'éteint
-  # 10 min après son retour (keep_firing_for).
+  # fois en panne (à 3 min) déclenche aussitôt (pas de délai) ; l'alerte
+  # reste active 10 min après la première évaluation sans panne (4 min),
+  # puis s'éteint.
   - interval: 1m
     input_series:
       - series: 'hwraid_volume_state{controller="serial:A",volume="b3",state="optimal"}'
@@ -203,7 +204,21 @@ tests:
       - eval_time: 9m
         alertname: HwraidVolumeDegraded
         exp_alerts: []
-      - eval_time: 14m
+      - eval_time: 3m
+        alertname: HwraidDiskFailed
+        exp_alerts:
+          - exp_labels: {severity: critical, controller: "serial:A", disk: d7, state: failed}
+            exp_annotations:
+              summary: "Disque d7 en panne (serial:A)"
+              description: "Disque membre d'un volume mais absent de la carte."
+      - eval_time: 12m
+        alertname: HwraidDiskFailed
+        exp_alerts:
+          - exp_labels: {severity: critical, controller: "serial:A", disk: d7, state: failed}
+            exp_annotations:
+              summary: "Disque d7 en panne (serial:A)"
+              description: "Disque membre d'un volume mais absent de la carte."
+      - eval_time: 15m
         alertname: HwraidDiskFailed
         exp_alerts: []
 
@@ -858,8 +873,8 @@ tests:
           - exp_labels: {severity: warning, controller: "serial:A", volume: v0}
             exp_annotations:
               summary: "Réglage ou état du cache d'écriture non reconnu, volume v0 (serial:A)"
-              description: "La carte décrit le cache d'écriture du volume avec une valeur non qualifiée : les alertes de cache d'écriture ne couvrent plus ce volume. Vérifier le cache avec l'outil du constructeur."
+              description: "La carte décrit le réglage ou l'état du cache d'écriture du volume avec une valeur non qualifiée. État inconnu : HwraidVolumeWriteCacheUnprotected, HwraidVolumeWriteCacheProtectionUnknown et HwraidVolumeWriteCacheInactive ne peuvent plus se déclencher pour ce volume ; réglage inconnu : HwraidVolumeWriteCacheAlwaysOn et HwraidVolumeWriteCacheInactive. Vérifier le cache avec l'outil du constructeur."
           - exp_labels: {severity: warning, controller: "serial:B", volume: v0}
             exp_annotations:
               summary: "Réglage ou état du cache d'écriture non reconnu, volume v0 (serial:B)"
-              description: "La carte décrit le cache d'écriture du volume avec une valeur non qualifiée : les alertes de cache d'écriture ne couvrent plus ce volume. Vérifier le cache avec l'outil du constructeur."
+              description: "La carte décrit le réglage ou l'état du cache d'écriture du volume avec une valeur non qualifiée. État inconnu : HwraidVolumeWriteCacheUnprotected, HwraidVolumeWriteCacheProtectionUnknown et HwraidVolumeWriteCacheInactive ne peuvent plus se déclencher pour ce volume ; réglage inconnu : HwraidVolumeWriteCacheAlwaysOn et HwraidVolumeWriteCacheInactive. Vérifier le cache avec l'outil du constructeur."

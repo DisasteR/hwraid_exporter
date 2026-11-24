@@ -6,11 +6,11 @@ Cette page décrit le défaut, ses conséquences, ce que fait l'exporter pour ne
 
 ## Symptômes
 
-- L'exporter journalise `cannot allocate memory` sur toutes ses lectures, avec `management command pool is probably exhausted`, et `hwraid_collection_success` passe à 0.
+- L'exporter journalise `cannot allocate memory` sur toutes ses lectures, avec `the driver refused a management command for lack of memory`, et `hwraid_collection_success` passe à 0.
 - ARCCONF ne trouve plus la carte ; maxView, qui passe par la même réserve, ne peut plus l'interroger non plus.
 - Les entrées-sorties disque continuent normalement : les volumes restent accessibles.
 
-Le pilote rend aussi `ENOMEM` quand il ne peut pas allouer le tampon d'une commande plus grande qu'un bloc (`ioctl_send_fib`, `commctrl.c`). Cet échec est passager et touche une seule lecture, par exemple la carte des connecteurs (2 048 octets). Un `ENOMEM` isolé, suivi de lectures réussies, n'est donc pas une réserve vide. Des `ENOMEM` sur toutes les lectures, et ARCCONF qui ne trouve plus la carte, le sont très probablement.
+Le pilote rend aussi `ENOMEM` quand il ne peut pas allouer le tampon d'une commande plus grande qu'un bloc (`ioctl_send_fib`, `commctrl.c`). Cet échec dépend de la mémoire du noyau disponible à cet instant, ne touche que les grandes commandes, par exemple la carte des connecteurs (2 048 octets), et ne consomme pas la réserve. Un `ENOMEM` isolé sur une grande commande, alors que les autres lectures réussissent, n'est donc pas une réserve vide. Des `ENOMEM` sur toutes les lectures, et ARCCONF qui ne trouve plus la carte, le sont très probablement.
 
 Seul un redémarrage de la machine reconstitue la réserve. Lisez la section « Conséquence à l'arrêt » avant de redémarrer.
 
@@ -39,7 +39,7 @@ Linux dispose de deux chemins pour demander à la carte de vider son cache d'éc
 | Chemin | Quand | Bloc utilisé | Avec la réserve vide |
 |---|---|---|---|
 | Commande de gestion `VM_CloseAll` (`aac_send_shutdown`, `comminit.c`) | à l'arrêt de la machine, quel que soit le réglage `cache` | réserve de gestion | n'est pas envoyée, sans message |
-| Vidage SCSI `SYNCHRONIZE CACHE` (`aachba.c`) | à chaque `fsync` et à l'arrêt, seulement si le volume annonce un cache d'écriture, et selon le réglage `cache` (section suivante) | bloc propre à chaque entrée-sortie | peut être envoyé |
+| Vidage SCSI `SYNCHRONIZE CACHE` (`aachba.c`) | quand Linux en adresse un au volume (par exemple lors d'un `fsync` ou à l'arrêt), seulement si le volume annonce un cache d'écriture, et selon le réglage `cache` (section suivante) | bloc propre à chaque entrée-sortie | peut être envoyé |
 
 Ce que l'on sait, et ce que l'on ne sait pas :
 
@@ -74,6 +74,13 @@ Depuis la v0.1.2 :
 - un `SIGKILL` (`docker kill`, `docker rm -f`, fin du délai de grâce) ;
 - les blocs perdus par les autres outils.
 
+**Décision : le délai d'arrêt du superviseur reste borné (30 s dans les profils livrés).** Une commande qui ne rend jamais la main serait tuée à 30 s, et son bloc perdu. Un arrêt sans limite (`TimeoutStopSec=infinity`) l'éviterait, mais une carte figée bloquerait alors `systemctl stop` et le redémarrage de toute la machine. Perdre un bloc est préféré à une machine qui ne redémarre plus. Allonger ce délai reste possible, pour qui accepte ce risque.
+
+**Limites connues :**
+- si l'exporter doit sortir avec le code 3 (nœuds changés) pendant qu'une autre carte a une commande bloquée, il attend la fin de cette commande et sert entre-temps le dernier instantané, sans le signaler ;
+- la vérification de l'arrêt précède le passage de la commande au thread dédié : une commande vérifiée juste avant l'arrêt part quand même, et va au bout sans être interrompue ;
+- le test de bout en bout de l'arrêt assemble la boucle, l'ordonnanceur, le module et le transport comme `serve`, mais ne lance pas `serve` lui-même ; l'arrêt de `serve` a été vérifié sur l'hôte de référence.
+
 ## Détecter une fuite et son auteur
 
 [`tools/aacraid-fib-trace.sh`](../tools/aacraid-fib-trace.sh) pose une sonde du noyau sur le retour de `aac_fib_send`. Il n'y a rien à installer ; il faut être root. Pour chaque commande de gestion, la sonde note le programme qui l'a envoyée et le code rendu.
@@ -96,10 +103,10 @@ Le paramètre `cache` du module est un champ de bits. Il décide si le volume an
 | Valeur | Effet |
 |---|---|
 | `2` (défaut) | Aucun cache annoncé, demandes de vidage ignorées. |
-| `0` | Cache annoncé. Linux demande un vidage à chaque `fsync` et à l'arrêt. |
+| `0` | Cache annoncé. Le pilote transmet à la carte les demandes de vidage que Linux lui adresse (par exemple lors d'un `fsync` ou à l'arrêt), sans garantie qu'elles aboutissent. |
 | `7` | Cache annoncé. Le pilote répond « fait » à une demande de vidage sans l'envoyer à la carte quand il croit le cache protégé par la batterie ou le ZMM. Il ne le croit que s'il a reçu de la carte un événement batterie précis ; sinon il envoie le vidage, comme avec `0`. |
 
-Avec `0`, et avec `7` tant que le pilote ne croit pas le cache protégé, les programmes qui appellent souvent `fsync` (bases de données) vident le cache de la carte à chaque appel. Quand le cache est protégé, cela coûte en performance. Le paramètre se modifie à chaud dans `/sys/module/aacraid/parameters/cache`. Le volume doit ensuite être relu (`echo 1 > /sys/block/sdX/device/rescan`). Pour qu'il survive au redémarrage, il faut un fichier dans `/etc/modprobe.d/`, puis reconstruire l'initramfs. L'exporter ne modifie jamais ce réglage.
+Avec `0`, et avec `7` tant que le pilote ne croit pas le cache protégé, les programmes qui appellent souvent `fsync` (bases de données) peuvent faire envoyer une demande de vidage à la carte à chaque appel. Quand le cache est protégé, cela coûte en performance. Le paramètre se modifie à chaud dans `/sys/module/aacraid/parameters/cache`. Le volume doit ensuite être relu (`echo 1 > /sys/block/sdX/device/rescan`). Pour qu'il survive au redémarrage, il faut un fichier dans `/etc/modprobe.d/`, puis reconstruire l'initramfs. L'exporter ne modifie jamais ce réglage.
 
 ## Validation
 
