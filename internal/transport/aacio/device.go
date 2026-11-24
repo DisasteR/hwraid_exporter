@@ -39,7 +39,7 @@ var ioctlFn = func(fd int, req uint32, buf []byte) error {
 // par un redémarrage (voir thread.go), ou, pour une commande plus grande que
 // le bloc, le tampon DMA n'a pas pu être alloué, ce qui est passager. Des
 // ENOMEM répétés sur toutes les lectures désignent la réserve vide.
-var ErrDriverNoMemory = errors.New("the driver refused a management command for lack of memory: its management command pool is probably exhausted (aacraid loses one block per interrupted command, only a reboot restores it), unless a large command could not get a DMA buffer; see docs/aacraid-defaut-pilote.md")
+var ErrDriverNoMemory = errors.New("the driver refused a management command for lack of memory; two possible causes: its management command pool is exhausted (aacraid loses one block per interrupted command, only a reboot restores it), or a large command could not get a DMA buffer (transient); the same error on every read points to the first, see docs/aacraid-defaut-pilote.md")
 
 // ErrStopped : la collecte est arrêtée (échéance du cycle ou arrêt du
 // service) ; aucune nouvelle commande n'est envoyée à la carte.
@@ -337,13 +337,15 @@ func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size 
 	if err := errors.Join(readErr, stopErr); err != nil {
 		return nil, false, err
 	}
+	// Lecture rejetée (0xc5) : aucune donnée n'est rendue ; c'est ReadPaged
+	// qui décide d'une seconde tentative, sous son propre contrôle d'arrêt.
+	if rejected {
+		return nil, true, nil
+	}
 	// Arrêt pendant le transfert : la séquence engagée (morceau 0 puis
 	// clôture) est allée au bout, mais la lecture n'est pas rendue.
 	if err := admit(ctx); err != nil {
 		return nil, false, fmt.Errorf("read %d: %w", r, err)
-	}
-	if rejected {
-		return nil, true, nil
 	}
 	return data, false, nil
 }

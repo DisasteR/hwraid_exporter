@@ -263,7 +263,7 @@ func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.
 	if err != nil {
 		r.Collected[DiskInventoryCollector] = false
 		r.Collected[DiskLocationCollector] = false
-		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("configuration: %w", err))
+		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("configuration: %w; disk inventory and location not read", err))
 		return
 	}
 	r.Volumes, r.Disks = vols, disks
@@ -271,7 +271,7 @@ func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.
 	r.Collected[DiskInventoryCollector] = err == nil
 	if err != nil {
 		r.Collected[DiskLocationCollector] = false
-		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("disk inventory: %w", err))
+		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("disk inventory: %w; disk location not read", err))
 		return
 	}
 	for _, i := range inv {

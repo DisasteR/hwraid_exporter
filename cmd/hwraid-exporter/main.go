@@ -46,10 +46,9 @@ const nodesDir = "/dev/hwraid_exporter"
 // superviseur doit relancer le processus pour refaire la préparation.
 const exitNodeChanged = 3
 
-// shutdownWait borne l'attente de la collecte en cours à l'arrêt. Elle doit
-// rester sous le délai d'arrêt du superviseur (stop_grace_period de
-// Compose, TimeoutStopSec de systemd), au-delà duquel il tue le processus.
-const shutdownWait = 20 * time.Second
+// shutdownWarnEvery : à l'arrêt, intervalle des avertissements tant qu'une
+// commande de la carte n'a pas rendu la main.
+const shutdownWarnEvery = 10 * time.Second
 
 func main() {
 	bi, _ := debug.ReadBuildInfo()
@@ -288,6 +287,9 @@ func serve(args []string) int {
 				// Adresse PCI et non label : le label peut contenir la série (S9).
 				log.Warn("invalid management node", "pci", c.PCIAddress, "err", c.NodeError)
 			}
+			if c.LateError != "" {
+				log.Warn("a collection finished after its timeout, not published", "pci", c.PCIAddress, "err", c.LateError)
+			}
 			if c.TimedOut {
 				log.Warn("collection timed out", "pci", c.PCIAddress, "timeout", *timeout)
 			} else if c.CollectError != "" {
@@ -319,7 +321,7 @@ func serve(args []string) int {
 	loopDone := make(chan struct{})
 	go func() {
 		defer close(loopDone)
-		runLoop(loopCtx, *interval, collect)
+		lifecycle.RunLoop(loopCtx, *interval, collect)
 	}()
 
 	code := 0
@@ -332,60 +334,18 @@ func serve(args []string) int {
 	// Aucun nouveau cycle ne démarre et le cycle en cours n'envoie plus de
 	// nouvelle commande : seules les commandes déjà envoyées restent à
 	// attendre, y compris celles des collectes abandonnées à leur échéance.
-	// Une commande qui ne répond pas en shutdownWait est abandonnée : le
-	// processus sort, au risque de perdre ce bloc, plutôt que d'être tué par
-	// le superviseur. Les signaux suivants restent captés : seul SIGKILL
-	// abrège l'attente.
+	// L'attente n'a pas de limite interne : seul le délai du superviseur
+	// (stop_grace_period, TimeoutStopSec) l'abrège, par SIGKILL. Les signaux
+	// suivants restent captés.
 	stopLoop()
-	log.Info("stopping: waiting for the collection in progress", "max", shutdownWait)
-	if !waitIdle(loopDone, runner.Drain, shutdownWait) {
-		// Arrêt en échec : le superviseur et l'exploitant doivent le voir.
-		log.Error("stopping while a card command is still pending: the aacraid driver may lose a management command until the next reboot")
-		if code == 0 {
-			code = 1
-		}
-	}
+	log.Info("stopping: waiting for the card commands in progress")
+	lifecycle.WaitIdle(loopDone, runner.Drain, shutdownWarnEvery, func(waited time.Duration) {
+		log.Warn("stopping: a card command has not returned yet; killing the process now would make the aacraid driver lose a management command until the next reboot", "waited", waited.Round(time.Second))
+	})
 	shut, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shut)
 	return code
-}
-
-// runLoop lance un cycle de collecte tout de suite, puis à chaque interval,
-// jusqu'à la fin de ctx. Aucun cycle ne démarre une fois ctx terminé ;
-// collect reçoit ctx pour arrêter le cycle en cours.
-func runLoop(ctx context.Context, interval time.Duration, collect func(context.Context)) {
-	if ctx.Err() != nil {
-		return
-	}
-	collect(ctx)
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			if ctx.Err() != nil {
-				return // arrêt demandé en même temps que le tic
-			}
-			collect(ctx)
-		}
-	}
-}
-
-// waitIdle attend, au plus wait en tout, la fin de la boucle de collecte
-// (loopDone) puis celle des collectes encore en cours (drain).
-func waitIdle(loopDone <-chan struct{}, drain func(time.Duration) bool, wait time.Duration) bool {
-	end := time.Now().Add(wait)
-	t := time.NewTimer(wait)
-	defer t.Stop()
-	select {
-	case <-loopDone:
-	case <-t.C:
-		return false
-	}
-	return drain(time.Until(end))
 }
 
 // sameSpecs compare deux ensembles de nœuds attendus (déjà triés par nom).

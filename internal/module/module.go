@@ -48,7 +48,8 @@ type Result struct {
 	// Unsupported liste les collecteurs que la carte ne permet pas
 	// (hwraid_collector_supported = 0).
 	Unsupported []string
-	// CollectErr : échecs des lectures firmware du cycle, un par collecteur
+	// CollectErr : échecs des lectures firmware du cycle, un par lecture en
+	// échec, avec les lectures qui en dépendaient et n'ont pas été tentées
 	// (errors.Join), sans effet sur NodeValid.
 	CollectErr error
 	// CacheProtection est l'état du module de protection du cache lu
@@ -79,6 +80,10 @@ type Result struct {
 	// TimedOut : la collecte n'a pas rendu la main avant l'échéance du
 	// cycle. Rien n'a été observé, pas même la validité du nœud.
 	TimedOut bool
+	// LateErr : erreurs d'une collecte précédente de la carte, terminée
+	// après son échéance et donc non publiée ; renseigné par l'ordonnanceur
+	// pour le journal.
+	LateErr error
 }
 
 // Volume est un conteneur RAID et son état.

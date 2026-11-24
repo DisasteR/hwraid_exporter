@@ -6,8 +6,7 @@ Ces règles sont un point de départ : seuils, durées et gravités sont à adap
 
 ## Principes
 
-- **L'état publié prime ; la dernière valeur connue ne couvre qu'un trou de lecture.** Quand une lecture échoue, l'exporter retire les séries d'état au lieu de publier une valeur non observée, et Prometheus les marque périmées. Chaque règle d'état prend donc l'état courant, ou, si l'objet n'a plus aucune série d'état, sa dernière valeur sur 10 minutes (`last_over_time(…[10m]) unless on (…) <métrique>`). Une panne survit ainsi à un échec de lecture ponctuel, et un état passager ne prolonge pas l'alerte une fois l'objet revenu à un autre état : les délais (`for`) portent sur l'état réel. Cas limite assumé : un objet redevenu sain puis aussitôt illisible (moins de 10 minutes) peut faire revenir l'alerte pendant le trou ; `HwraidCollectionStale` l'accompagne.
-  Limite des règles d'état : si l'état d'un objet change puis qu'une lecture échoue dans les 10 minutes, l'ancien état peut être repris jusqu'à la fin de la fenêtre. Les règles du cache d'écriture n'ont pas cette limite (voir « Cache d'écriture »).
+- **Un trou de lecture n'éteint pas une alerte, et ne réveille jamais une valeur périmée.** Quand une lecture échoue, l'exporter retire les séries au lieu de publier une valeur non observée. Les règles ne prennent que l'état publié ; une alerte déjà déclenchée reste active **10 minutes** après la disparition de sa condition (`keep_firing_for`, Prometheus 2.42 et plus, vmalert). En contrepartie, une alerte s'éteint 10 minutes après le retour à la normale, et le délai `for` d'une alerte pas encore déclenchée repart de zéro après un trou. Une lecture qui échoue durablement est signalée par `HwraidCollectionStale`.
 - **Joindre sur `job` et `instance`.** Deux hôtes peuvent publier le même identifiant de contrôleur (`pci:0000:01:00.0`) : toutes les jointures portent aussi `job` et `instance`.
 - **La perte de visibilité est une alerte à part entière.** Une lecture qui échoue durablement, un exporter absent ou un nœud de gestion invalide empêchent les alertes d'état de se déclencher : ils sont signalés séparément.
 - **`unknown` n'est pas une panne**, mais un état qui doit être compris (voir ci-dessous).
@@ -25,7 +24,7 @@ Ces règles sont un point de départ : seuils, durées et gravités sont à adap
 | `HwraidCacheProtectionFailed` | protection du cache `failed` | 5 min | warning | remplacer le module ; en attendant, régler le cache d'écriture en mode « seulement si protégé » (Adaptec : `SETCACHE … wbb`) |
 | `HwraidCacheProtectionStateUnknown` | protection du cache `unknown` (combinaison d'état non qualifiée) | 30 min | warning | vérifier avec l'outil du constructeur ; sa protection n'est pas garantie |
 | `HwraidCacheProtectionNotReady` | protection du cache `charging` | 2 h | warning | une charge normale dure quelques minutes |
-| `HwraidVolumeWriteCacheUnprotected` | cache d'écriture actif (`hwraid_volume_write_cache_enabled` 1) alors que la protection est absente, `failed` ou `charging` | 5 min | critical | une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente : régler le cache en mode « seulement si protégé » (`wbb`) ou le désactiver |
+| `HwraidVolumeWriteCacheUnprotected` | cache d'écriture actif (`hwraid_volume_write_cache_enabled` 1) alors que la protection est absente, `failed` ou `charging` | 5 min | critical | une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente : régler le cache en mode « seulement si protégé » (`wbb`) ou le désactiver, puis vérifier que `hwraid_volume_write_cache_enabled` passe à 0 |
 | `HwraidVolumeWriteCacheProtectionUnknown` | cache d'écriture actif alors que la protection est `unknown`, ou que la carte ne permet pas de la lire (`hwraid_collector_supported{collector="cache_protection"}` 0) | 30 min | warning | protection non garantie : vérifier le module avec l'outil du constructeur |
 | `HwraidVolumeWriteCacheAlwaysOn` | réglage `write_back_always` | 15 min | warning | risque latent : une panne du module laisserait le cache actif ; préférer `write_back_when_protected` |
 | `HwraidVolumeWriteCacheInactive` | cache d'écriture inactif alors que le réglage le demande et que la protection est `optimal` | 2 h | info | écritures ralenties : la carte n'a pas réactivé le cache, vérifier avec l'outil du constructeur |
@@ -46,7 +45,7 @@ Ces règles sont un point de départ : seuils, durées et gravités sont à adap
 L'intervalle de collecte est configurable (`-interval`, 1 minute par défaut) et publié par `hwraid_collection_interval_seconds`.
 
 - `HwraidCollectionStale` s'y adapte d'elle-même : le seuil vaut trois intervalles.
-- Les règles d'état retiennent la dernière valeur connue sur **10 minutes**, ce qui couvre au moins deux cycles tant que l'intervalle ne dépasse pas 5 minutes. Au-delà, un seul cycle en échec retire les séries d'état plus longtemps que la fenêtre, et une alerte de panne pourrait s'éteindre. PromQL n'accepte pas de durée calculée dans une fenêtre : il faut alors porter ces fenêtres à au moins deux fois l'intervalle. `HwraidCollectionIntervalTooLong` signale ce cas.
+- Les alertes restent actives **10 minutes** sans leur condition (`keep_firing_for`), ce qui couvre au moins deux cycles tant que l'intervalle ne dépasse pas 5 minutes. Au-delà, un seul cycle en échec retire les séries plus longtemps, et une alerte de panne pourrait s'éteindre. `keep_firing_for` n'accepte pas de durée calculée : il faut alors le porter à au moins deux fois l'intervalle. `HwraidCollectionIntervalTooLong` signale ce cas.
 
 ## Cas particulier : volume `unknown`
 
@@ -54,10 +53,10 @@ Sur une grappe à plusieurs niveaux (par exemple quatre miroirs assemblés), le 
 
 ## Cache d'écriture
 
-Les règles du cache d'écriture ne portent que sur les volumes de premier niveau (`parent` vide) : les volumes assemblés portent le même réglage, et une même cause donnerait sinon une alerte par volume.
+Les règles du cache d'écriture évaluent chaque volume, membres d'un assemblage compris. Sur l'hôte de référence, les volumes membres ont toujours eu le même réglage et le même état que leur volume de premier niveau, mais rien ne le garantit : une même cause donne donc une alerte par volume, à regrouper par `controller` dans Alertmanager.
 
 - `HwraidVolumeWriteCacheUnprotected` est l'alerte de risque immédiat. Elle s'appuie sur l'état effectif du cache, pas sur le réglage : en mode « seulement si protégé », une carte dont le module tombe en panne coupe d'elle-même le cache, et l'alerte ne se déclenche pas. Elle ne retient que les protections dont le défaut est établi (absente, `failed`, `charging`) ; une protection `unknown` donne `HwraidVolumeWriteCacheProtectionUnknown`, de gravité moindre.
-- **Trous de lecture.** Pendant une lecture en échec (`hwraid_collection_success` à 0 ou absent pour `volumes` ou `cache_protection`), une série reprend sa dernière valeur sur 10 minutes, à condition qu'elle ait été présente lors de la dernière lecture réussie (`hwraid_collection_last_success_timestamp_seconds`) : un échec passager ne remet pas à zéro le délai d'une alerte, et un état changé ou un volume supprimé avant l'échec n'est jamais repris. Une lecture réussie ne garde que les valeurs publiées. Cette condition suppose que Prometheus lise l'exporter au moins une fois par cycle de collecte.
+- Après un réglage en mode « seulement si protégé » ou en écriture directe, `hwraid_volume_write_cache_enabled` doit passer à 0 : c'est la vérification que la carte a bien coupé le cache.
 - `HwraidVolumeWriteCacheUnknown` signale la perte de visibilité : la lecture réussit, mais le réglage ou l'état du cache n'est pas reconnu, et les autres alertes ne peuvent plus se déclencher pour ce volume.
 - `HwraidVolumeWriteCacheAlwaysOn` signale le réglage qui transforme une panne du module en risque de perte.
 - `HwraidVolumeWriteCacheInactive` sert notamment après le remplacement d'un module : la protection redevient `optimal`, et le cache doit se réactiver.

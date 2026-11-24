@@ -171,12 +171,13 @@ Chaque mesure d’état expose uniquement l’état observé avec la valeur 1. U
 
 Une lecture en échec retire les valeurs métier de la fonction concernée : l’exporter ne publie pas de valeur qu’il n’a pas observée. Les règles d’alerte doivent donc tolérer un trou ponctuel, par exemple un dépassement d’échéance causé par un outil constructeur (section 6.3), et alerter séparément sur la perte de visibilité :
 
-```promql
-# Panne RAID : état courant, ou dernière valeur connue si l'objet n'a plus
-# de série d'état (échec de lecture ponctuel)
-hwraid_volume_state{state=~"degraded|failed"} == 1
-or (last_over_time(hwraid_volume_state{state=~"degraded|failed"}[10m]) == 1
-    unless on (job, instance, controller, volume) hwraid_volume_state)
+```yaml
+# Panne RAID : état publié ; l'alerte déclenchée survit 10 min à un échec
+# de lecture ponctuel, sans jamais reprendre une valeur périmée.
+- alert: HwraidVolumeDegraded
+  expr: hwraid_volume_state{state=~"degraded|failed"} == 1
+  for: 5m
+  keep_firing_for: 10m
 ```
 
 ```promql
@@ -262,7 +263,7 @@ Le gestionnaire HTTP charge une seule référence au snapshot publié pour toute
 
 **Démarrage et fraîcheur.** Publier avant l’ouverture HTTP une vue initiale avec `hwraid_snapshot_ready 0` et sans valeurs matérielles. Le premier résultat de découverte publié porte `hwraid_snapshot_ready 1`, y compris en cas d’échec ; `hwraid_discovery_success` indique le succès ou l’échec. Pour chaque couple contrôleur/fonction, publier la date du dernier succès dès qu’un succès existe. Une lecture en échec publie `hwraid_collection_success 0` et retire les valeurs métier de cette fonction. Dimensionner le seuil de péremption par rapport à l’intervalle effectif de chaque contrôleur et à la durée de collecte tolérée.
 
-**Arrêt.** Un appel en cours ne doit pas être interrompu : sous `aacraid`, une commande de gestion interrompue perd un bloc de commande du pilote jusqu’au redémarrage (docs/aacraid-defaut-pilote.md). À l’arrêt, aucun nouveau cycle ne démarre et le cycle en cours n’envoie plus de commande ; seules les commandes déjà envoyées sont attendues, dans une limite (20 s) inférieure au délai d’arrêt documenté (`TimeoutStopSec`, `stop_grace_period` : 30 s). Le serveur HTTP est fermé ensuite. Une commande qui ne répond pas dans cette limite est abandonnée et l’abandon journalisé.
+**Arrêt.** Un appel en cours ne doit pas être interrompu : sous `aacraid`, une commande de gestion interrompue perd un bloc de commande du pilote jusqu’au redémarrage (docs/aacraid-defaut-pilote.md). À l’arrêt, aucun nouveau cycle ne démarre et le cycle en cours n’envoie plus de commande ; seules les commandes déjà envoyées sont attendues, sans limite interne, avec un avertissement toutes les 10 s. Le serveur HTTP est fermé ensuite. Le seul délai est celui du superviseur (`TimeoutStopSec`, `stop_grace_period`, 30 s dans les exemples), réglé par l’exploitant : au-delà, il tue le processus, et la commande en cours est perdue pour la réserve du pilote.
 
 ### 6.5 Accès Docker sur Debian / OpenMediaVault
 

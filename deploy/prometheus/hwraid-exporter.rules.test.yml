@@ -182,11 +182,13 @@ tests:
         exp_alerts:
           - exp_labels: {severity: info, controller: "serial:B"}
             exp_annotations:
-              summary: "Intervalle de collecte de 600 s : allonger les fenêtres des règles d'état (serial:B)"
-              description: "Les règles d'état retiennent la dernière valeur connue sur 10 minutes, soit au moins deux cycles pour un intervalle de 5 minutes au plus. Au-delà, passer ces fenêtres à au moins deux fois l'intervalle."
+              summary: "Intervalle de collecte de 600 s : allonger keep_firing_for (serial:B)"
+              description: "Les alertes d'état restent actives 10 minutes après la disparition de leur condition (keep_firing_for), soit au moins deux cycles pour un intervalle de 5 minutes au plus. Au-delà, passer keep_firing_for à au moins deux fois l'intervalle."
 
   # État passager : un seul cycle « dégradé » puis optimal ne déclenche pas
-  # d'alerte (le délai de 5 min porte sur l'état courant).
+  # d'alerte (le délai de 5 min porte sur l'état courant). Un disque vu une
+  # fois en panne déclenche aussitôt (pas de délai), et l'alerte s'éteint
+  # 10 min après son retour (keep_firing_for).
   - interval: 1m
     input_series:
       - series: 'hwraid_volume_state{controller="serial:A",volume="b3",state="optimal"}'
@@ -201,7 +203,7 @@ tests:
       - eval_time: 9m
         alertname: HwraidVolumeDegraded
         exp_alerts: []
-      - eval_time: 6m
+      - eval_time: 14m
         alertname: HwraidDiskFailed
         exp_alerts: []
 
@@ -218,7 +220,7 @@ tests:
       - series: 'hwraid_collection_interval_seconds{job="hwraid",instance="b:9799",controller="pci:0000:01:00.0"}'
         values: '60x20'
       - series: 'hwraid_volume_state{job="hwraid",instance="a:9799",controller="pci:0000:01:00.0",volume="1",state="degraded"}'
-        values: '1 stale _x20'
+        values: '1x20'
       - series: 'hwraid_volume_state{job="hwraid",instance="b:9799",controller="pci:0000:01:00.0",volume="1",state="optimal"}'
         values: '1x20'
     alert_rule_test:
@@ -229,8 +231,8 @@ tests:
             exp_annotations:
               summary: "Lecture volumes sans succès depuis plus de 3 cycles (pci:0000:01:00.0)"
               description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter ; « cannot allocate memory » sur toutes les lectures signale probablement la réserve de commandes du pilote aacraid épuisée : avec le réglage par défaut du pilote, un redémarrage ne videra alors pas le cache de la carte ; lire docs/aacraid-defaut-pilote.md avant de redémarrer."
-      # Trou de lecture sur a : la panne de a reste visible malgré le volume
-      # optimal de même identifiant sur b.
+      # La panne de a reste visible malgré le volume optimal de même
+      # identifiant sur b.
       - eval_time: 6m
         alertname: HwraidVolumeDegraded
         exp_alerts:
@@ -306,8 +308,8 @@ tests:
         alertname: HwraidControllerDisappeared
         exp_alerts: []
 
-  # Module de protection retiré : l'absence confirmée (present = 0) met fin
-  # à l'alerte de panne sans attendre la fenêtre de 10 minutes.
+  # Module de protection retiré : l'alerte de panne s'éteint 10 min après
+  # la disparition de l'état « en panne » (keep_firing_for).
   - interval: 1m
     input_series:
       - series: 'hwraid_cache_protection_state{controller="serial:A",state="failed"}'
@@ -322,7 +324,7 @@ tests:
             exp_annotations:
               summary: "Protection du cache en panne (serial:A)"
               description: "Le module de protection du cache ne protège plus les données en attente d'écriture. Régler le cache d'écriture des volumes en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) pour qu'il reste coupé jusqu'au remplacement du module ; HwraidVolumeWriteCacheUnprotected signale un cache resté actif."
-      - eval_time: 9m
+      - eval_time: 17m
         alertname: HwraidCacheProtectionFailed
         exp_alerts: []
 
@@ -362,7 +364,7 @@ tests:
             exp_annotations:
               summary: "État du volume 1d000000 non déterminé (serial:A)"
               description: "La carte a répondu mais l'état n'est pas interprétable avec certitude (type non qualifié, membre non optimal sur un assemblage). Vérifier les volumes membres et l'outil du constructeur."
-      - eval_time: 40m
+      - eval_time: 46m
         alertname: HwraidVolumeStateUnknown
         exp_alerts: []
       - eval_time: 59m
@@ -414,13 +416,14 @@ tests:
             exp_annotations:
               summary: "Protection du cache en charge depuis plus de 2 h (serial:B)"
               description: "Un module sain se charge en quelques minutes : une charge qui n'aboutit pas annonce une panne du module."
-      - eval_time: 140m
+      - eval_time: 141m
         alertname: HwraidCacheProtectionNotReady
         exp_alerts: []
 
   # Cache d'écriture actif avec une protection en panne : alerte critique
-  # sur le volume de premier niveau seulement, puis fin de l'alerte quand le
-  # cache se coupe. Réglage forcé (wb) signalé, puis fin quand il passe en wbb.
+  # sur chaque volume, membre compris ; le cache coupé à 21 min, l'alerte
+  # s'éteint 10 min plus tard (keep_firing_for). Réglage forcé (wb) signalé,
+  # fin 10 min après le passage en wbb.
   - interval: 1m
     input_series:
       - series: 'hwraid_volume_info{controller="serial:A",volume="v0",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""}'
@@ -437,6 +440,8 @@ tests:
         values: '_x21 1x19'
       - series: 'hwraid_volume_write_cache_policy{controller="serial:A",volume="m1",policy="write_back_always",vendor_policy="Enabled"}'
         values: '1x20 stale _x19'
+      - series: 'hwraid_volume_write_cache_policy{controller="serial:A",volume="m1",policy="write_back_when_protected",vendor_policy="On when protected by battery/ZMM"}'
+        values: '_x21 1x19'
       - series: 'hwraid_collection_success{controller="serial:A",collector="volumes"}'
         values: '1x40'
       - series: 'hwraid_collection_success{controller="serial:A",collector="cache_protection"}'
@@ -452,29 +457,74 @@ tests:
       - eval_time: 6m
         alertname: HwraidVolumeWriteCacheUnprotected
         exp_alerts:
+          - exp_labels: {severity: critical, controller: "serial:A", volume: m1}
+            exp_annotations:
+              summary: "Cache d'écriture actif sans protection, volume m1 (serial:A)"
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier que hwraid_volume_write_cache_enabled passe à 0."
           - exp_labels: {severity: critical, controller: "serial:A", volume: v0}
             exp_annotations:
               summary: "Cache d'écriture actif sans protection, volume v0 (serial:A)"
-              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver."
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier que hwraid_volume_write_cache_enabled passe à 0."
       - eval_time: 16m
         alertname: HwraidVolumeWriteCacheAlwaysOn
         exp_alerts:
+          - exp_labels: {severity: warning, controller: "serial:A", volume: m1, policy: write_back_always, vendor_policy: Enabled}
+            exp_annotations:
+              summary: "Cache d'écriture forcé, volume m1 (serial:A)"
+              description: "Le cache d'écriture reste actif même si le module de protection tombe en panne : une panne du module expose alors les écritures en attente. Préférer le mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb)."
           - exp_labels: {severity: warning, controller: "serial:A", volume: v0, policy: write_back_always, vendor_policy: Enabled}
             exp_annotations:
               summary: "Cache d'écriture forcé, volume v0 (serial:A)"
               description: "Le cache d'écriture reste actif même si le module de protection tombe en panne : une panne du module expose alors les écritures en attente. Préférer le mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb)."
       - eval_time: 25m
         alertname: HwraidVolumeWriteCacheUnprotected
+        exp_alerts:
+          - exp_labels: {severity: critical, controller: "serial:A", volume: m1}
+            exp_annotations:
+              summary: "Cache d'écriture actif sans protection, volume m1 (serial:A)"
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier que hwraid_volume_write_cache_enabled passe à 0."
+          - exp_labels: {severity: critical, controller: "serial:A", volume: v0}
+            exp_annotations:
+              summary: "Cache d'écriture actif sans protection, volume v0 (serial:A)"
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier que hwraid_volume_write_cache_enabled passe à 0."
+      - eval_time: 32m
+        alertname: HwraidVolumeWriteCacheUnprotected
         exp_alerts: []
-      - eval_time: 25m
+      - eval_time: 32m
         alertname: HwraidVolumeWriteCacheAlwaysOn
         exp_alerts: []
       - eval_time: 39m
         alertname: HwraidVolumeWriteCacheInactive
         exp_alerts: []
 
-  # Lecture de la protection en échec de 6 à 20 min : la dernière panne
-  # connue garde l'alerte 10 min. Module absent (B) : alerte ; en charge (C) : alerte.
+  # Membre au cache actif sous un volume au cache inactif : l'alerte porte
+  # sur le membre.
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_volume_info{controller="serial:A",volume="v0",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""}'
+        values: '1x20'
+      - series: 'hwraid_volume_info{controller="serial:A",volume="m1",name="Array0",raid_level="raid1",vendor_level="1",parent="v0"}'
+        values: '1x20'
+      - series: 'hwraid_volume_write_cache_enabled{controller="serial:A",volume="v0"}'
+        values: '0x20'
+      - series: 'hwraid_volume_write_cache_enabled{controller="serial:A",volume="m1"}'
+        values: '1x20'
+      - series: 'hwraid_cache_protection_present{controller="serial:A",type="flash_supercap",vendor_type="zmm"}'
+        values: '1x20'
+      - series: 'hwraid_cache_protection_state{controller="serial:A",state="failed"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: HwraidVolumeWriteCacheUnprotected
+        exp_alerts:
+          - exp_labels: {severity: critical, controller: "serial:A", volume: m1}
+            exp_annotations:
+              summary: "Cache d'écriture actif sans protection, volume m1 (serial:A)"
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier que hwraid_volume_write_cache_enabled passe à 0."
+
+  # Lecture de la protection en échec de 6 à 20 min : l'alerte déjà
+  # déclenchée reste active 10 min (A). Module absent (B) : alerte ; en
+  # charge (C) : alerte.
   - interval: 1m
     input_series:
       - series: 'hwraid_volume_info{controller="serial:A",volume="v0",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""}'
@@ -518,29 +568,30 @@ tests:
           - exp_labels: {severity: critical, controller: "serial:A", volume: v0}
             exp_annotations:
               summary: "Cache d'écriture actif sans protection, volume v0 (serial:A)"
-              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver."
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier que hwraid_volume_write_cache_enabled passe à 0."
           - exp_labels: {severity: critical, controller: "serial:B", volume: v0}
             exp_annotations:
               summary: "Cache d'écriture actif sans protection, volume v0 (serial:B)"
-              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver."
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier que hwraid_volume_write_cache_enabled passe à 0."
           - exp_labels: {severity: critical, controller: "serial:C", volume: v0}
             exp_annotations:
               summary: "Cache d'écriture actif sans protection, volume v0 (serial:C)"
-              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver."
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier que hwraid_volume_write_cache_enabled passe à 0."
       - eval_time: 19m
         alertname: HwraidVolumeWriteCacheUnprotected
         exp_alerts:
           - exp_labels: {severity: critical, controller: "serial:B", volume: v0}
             exp_annotations:
               summary: "Cache d'écriture actif sans protection, volume v0 (serial:B)"
-              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver."
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier que hwraid_volume_write_cache_enabled passe à 0."
           - exp_labels: {severity: critical, controller: "serial:C", volume: v0}
             exp_annotations:
               summary: "Cache d'écriture actif sans protection, volume v0 (serial:C)"
-              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver."
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier que hwraid_volume_write_cache_enabled passe à 0."
 
-  # Lecture des volumes en échec de 8 à 11 min (séries absentes) : l'alerte
-  # critique et l'alerte de réglage forcé ne repartent pas de zéro.
+  # Lecture des volumes en échec de 8 à 11 min : l'alerte critique déjà
+  # déclenchée reste active. L'alerte de réglage forcé, pas encore
+  # déclenchée, repart de zéro (déclenchée à 27 min au lieu de 15).
   - interval: 1m
     input_series:
       - series: 'hwraid_volume_info{controller="serial:A",volume="v0",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""}'
@@ -564,8 +615,11 @@ tests:
           - exp_labels: {severity: critical, controller: "serial:A", volume: v0}
             exp_annotations:
               summary: "Cache d'écriture actif sans protection, volume v0 (serial:A)"
-              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver."
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier que hwraid_volume_write_cache_enabled passe à 0."
       - eval_time: 16m
+        alertname: HwraidVolumeWriteCacheAlwaysOn
+        exp_alerts: []
+      - eval_time: 27m
         alertname: HwraidVolumeWriteCacheAlwaysOn
         exp_alerts:
           - exp_labels: {severity: warning, controller: "serial:A", volume: v0, policy: write_back_always, vendor_policy: Enabled}
@@ -573,37 +627,56 @@ tests:
               summary: "Cache d'écriture forcé, volume v0 (serial:A)"
               description: "Le cache d'écriture reste actif même si le module de protection tombe en panne : une panne du module expose alors les écritures en attente. Préférer le mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb)."
 
-  # Volume supprimé à 10 min, lecture réussie : l'alerte s'éteint aussitôt,
-  # sans garder la dernière valeur.
+  # Panne brève de la protection (pas encore d'alerte), protection
+  # optimale, puis lecture en échec : l'ancienne panne ne déclenche rien.
   - interval: 1m
     input_series:
       - series: 'hwraid_volume_info{controller="serial:A",volume="v0",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""}'
-        values: '1x9 stale _x10'
+        values: '1x30'
       - series: 'hwraid_volume_write_cache_enabled{controller="serial:A",volume="v0"}'
-        values: '1x9 stale _x10'
+        values: '1x30'
       - series: 'hwraid_collection_success{controller="serial:A",collector="volumes"}'
-        values: '1x20'
+        values: '1x30'
       - series: 'hwraid_collection_success{controller="serial:A",collector="cache_protection"}'
-        values: '1x20'
+        values: '1x9 0x21'
       - series: 'hwraid_cache_protection_present{controller="serial:A",type="flash_supercap",vendor_type="zmm"}'
-        values: '1x20'
+        values: '1x9 stale _x20'
       - series: 'hwraid_cache_protection_state{controller="serial:A",state="failed"}'
-        values: '1x20'
+        values: '1x2 stale _x27'
+      - series: 'hwraid_cache_protection_state{controller="serial:A",state="optimal"}'
+        values: '_x3 1x6 stale _x20'
     alert_rule_test:
-      - eval_time: 8m
+      - eval_time: 12m
         alertname: HwraidVolumeWriteCacheUnprotected
-        exp_alerts:
-          - exp_labels: {severity: critical, controller: "serial:A", volume: v0}
-            exp_annotations:
-              summary: "Cache d'écriture actif sans protection, volume v0 (serial:A)"
-              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver."
-      - eval_time: 11m
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: HwraidVolumeWriteCacheUnprotected
+        exp_alerts: []
+
+  # Volume supprimé avant toute alerte, puis lecture des volumes en échec :
+  # rien n'est repris.
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_volume_info{controller="serial:A",volume="v0",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""}'
+        values: '1x2 stale _x27'
+      - series: 'hwraid_volume_write_cache_enabled{controller="serial:A",volume="v0"}'
+        values: '1x2 stale _x27'
+      - series: 'hwraid_collection_success{controller="serial:A",collector="volumes"}'
+        values: '1x4 0x25'
+      - series: 'hwraid_collection_success{controller="serial:A",collector="cache_protection"}'
+        values: '1x30'
+      - series: 'hwraid_cache_protection_present{controller="serial:A",type="flash_supercap",vendor_type="zmm"}'
+        values: '1x30'
+      - series: 'hwraid_cache_protection_state{controller="serial:A",state="failed"}'
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 12m
         alertname: HwraidVolumeWriteCacheUnprotected
         exp_alerts: []
 
   # Protection redevenue opérationnelle, cache resté inactif : information
-  # après 2 h, malgré une lecture de la protection en échec de 60 à 63 min ;
-  # aucune alerte avec un réglage write_through, ni une fois le cache réactivé.
+  # après 2 h ; aucune alerte avec un réglage write_through, ni 10 min après
+  # la réactivation du cache.
   - interval: 1m
     input_series:
       - series: 'hwraid_volume_info{controller="serial:A",volume="v0",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""}'
@@ -623,13 +696,13 @@ tests:
       - series: 'hwraid_collection_success{controller="serial:B",collector="volumes"}'
         values: '1x200'
       - series: 'hwraid_collection_success{controller="serial:A",collector="cache_protection"}'
-        values: '1x59 0x3 1x137'
+        values: '1x200'
       - series: 'hwraid_collection_success{controller="serial:B",collector="cache_protection"}'
         values: '1x200'
       - series: 'hwraid_cache_protection_present{controller="serial:A",type="flash_supercap",vendor_type="zmm"}'
-        values: '1x59 stale _x2 1x137'
+        values: '1x200'
       - series: 'hwraid_cache_protection_state{controller="serial:A",state="optimal"}'
-        values: '1x59 stale _x2 1x137'
+        values: '1x200'
       - series: 'hwraid_cache_protection_present{controller="serial:B",type="flash_supercap",vendor_type="zmm"}'
         values: '1x200'
       - series: 'hwraid_cache_protection_state{controller="serial:B",state="optimal"}'
@@ -645,10 +718,10 @@ tests:
             exp_annotations:
               summary: "Cache d'écriture inactif malgré une protection opérationnelle, volume v0 (serial:A)"
               description: "Le réglage demande un cache d'écriture et le module de protection est opérationnel, mais la carte n'a pas réactivé le cache : écritures plus lentes. Vérifier l'état du cache avec l'outil du constructeur."
-      - eval_time: 160m
+      - eval_time: 162m
         alertname: HwraidVolumeWriteCacheInactive
         exp_alerts: []
-      - eval_time: 160m
+      - eval_time: 162m
         alertname: HwraidVolumeWriteCacheUnprotected
         exp_alerts: []
 
@@ -720,114 +793,6 @@ tests:
         alertname: HwraidVolumeWriteCacheUnprotected
         exp_alerts: []
 
-  # Lecture des volumes réussie, état du cache non reconnu (A) ou réglage
-  # non reconnu (B) : avertissement ; rien pour un volume entièrement qualifié (C).
-  - interval: 1m
-    input_series:
-      - series: 'hwraid_volume_info{controller="serial:A",volume="v0",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""}'
-        values: '1x40'
-      - series: 'hwraid_volume_write_cache_policy{controller="serial:A",volume="v0",policy="write_back_when_protected",vendor_policy="On when protected by battery/ZMM"}'
-        values: '1x40'
-      - series: 'hwraid_volume_info{controller="serial:B",volume="v0",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""}'
-        values: '1x40'
-      - series: 'hwraid_volume_write_cache_policy{controller="serial:B",volume="v0",policy="unknown",vendor_policy="value 7"}'
-        values: '1x40'
-      - series: 'hwraid_volume_write_cache_enabled{controller="serial:B",volume="v0"}'
-        values: '0x40'
-      - series: 'hwraid_volume_info{controller="serial:C",volume="v0",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""}'
-        values: '1x40'
-      - series: 'hwraid_volume_write_cache_policy{controller="serial:C",volume="v0",policy="write_back_when_protected",vendor_policy="On when protected by battery/ZMM"}'
-        values: '1x40'
-      - series: 'hwraid_volume_write_cache_enabled{controller="serial:C",volume="v0"}'
-        values: '0x40'
-      - series: 'hwraid_collection_success{controller="serial:A",collector="volumes"}'
-        values: '1x40'
-      - series: 'hwraid_collection_success{controller="serial:B",collector="volumes"}'
-        values: '1x40'
-      - series: 'hwraid_collection_success{controller="serial:C",collector="volumes"}'
-        values: '1x40'
-    alert_rule_test:
-      - eval_time: 29m
-        alertname: HwraidVolumeWriteCacheUnknown
-        exp_alerts: []
-      - eval_time: 31m
-        alertname: HwraidVolumeWriteCacheUnknown
-        exp_alerts:
-          - exp_labels: {severity: warning, controller: "serial:A", volume: v0}
-            exp_annotations:
-              summary: "Réglage ou état du cache d'écriture non reconnu, volume v0 (serial:A)"
-              description: "La carte décrit le cache d'écriture du volume avec une valeur non qualifiée : les alertes de cache d'écriture ne couvrent plus ce volume. Vérifier le cache avec l'outil du constructeur."
-          - exp_labels: {severity: warning, controller: "serial:B", volume: v0}
-            exp_annotations:
-              summary: "Réglage ou état du cache d'écriture non reconnu, volume v0 (serial:B)"
-              description: "La carte décrit le cache d'écriture du volume avec une valeur non qualifiée : les alertes de cache d'écriture ne couvrent plus ce volume. Vérifier le cache avec l'outil du constructeur."
-
-  # Protection en panne, puis optimale, puis lecture en échec : l'ancienne
-  # panne n'est pas reprise (elle n'était pas dans la dernière lecture réussie).
-  - interval: 1m
-    input_series:
-      - series: 'hwraid_volume_info{controller="serial:A",volume="v0",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""}'
-        values: '1x30'
-      - series: 'hwraid_volume_write_cache_enabled{controller="serial:A",volume="v0"}'
-        values: '1x30'
-      - series: 'hwraid_collection_success{controller="serial:A",collector="volumes"}'
-        values: '1x30'
-      - series: 'hwraid_collection_last_success_timestamp_seconds{controller="serial:A",collector="volumes"}'
-        values: '0+60x30'
-      - series: 'hwraid_collection_success{controller="serial:A",collector="cache_protection"}'
-        values: '1x14 0x16'
-      - series: 'hwraid_collection_last_success_timestamp_seconds{controller="serial:A",collector="cache_protection"}'
-        values: '0 60 120 180 240 300 360 420 480 540 600 660 720 780 840 840 840 840 840 840 840 840 840 840 840 840 840 840 840 840 840'
-      - series: 'hwraid_cache_protection_present{controller="serial:A",type="flash_supercap",vendor_type="zmm"}'
-        values: '1x14 stale _x15'
-      - series: 'hwraid_cache_protection_state{controller="serial:A",state="failed"}'
-        values: '1x12 stale _x17'
-      - series: 'hwraid_cache_protection_state{controller="serial:A",state="optimal"}'
-        values: '_x13 1x1 stale _x15'
-    alert_rule_test:
-      - eval_time: 10m
-        alertname: HwraidVolumeWriteCacheUnprotected
-        exp_alerts:
-          - exp_labels: {severity: critical, controller: "serial:A", volume: v0}
-            exp_annotations:
-              summary: "Cache d'écriture actif sans protection, volume v0 (serial:A)"
-              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver."
-      - eval_time: 21m
-        alertname: HwraidVolumeWriteCacheUnprotected
-        exp_alerts: []
-
-  # Volume supprimé lors d'une lecture réussie, puis lecture en échec : le
-  # volume n'est pas repris.
-  - interval: 1m
-    input_series:
-      - series: 'hwraid_volume_info{controller="serial:A",volume="v0",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""}'
-        values: '1x12 stale _x17'
-      - series: 'hwraid_volume_write_cache_enabled{controller="serial:A",volume="v0"}'
-        values: '1x12 stale _x17'
-      - series: 'hwraid_collection_success{controller="serial:A",collector="volumes"}'
-        values: '1x14 0x16'
-      - series: 'hwraid_collection_last_success_timestamp_seconds{controller="serial:A",collector="volumes"}'
-        values: '0 60 120 180 240 300 360 420 480 540 600 660 720 780 840 840 840 840 840 840 840 840 840 840 840 840 840 840 840 840 840'
-      - series: 'hwraid_collection_success{controller="serial:A",collector="cache_protection"}'
-        values: '1x30'
-      - series: 'hwraid_collection_last_success_timestamp_seconds{controller="serial:A",collector="cache_protection"}'
-        values: '0+60x30'
-      - series: 'hwraid_cache_protection_present{controller="serial:A",type="flash_supercap",vendor_type="zmm"}'
-        values: '1x30'
-      - series: 'hwraid_cache_protection_state{controller="serial:A",state="failed"}'
-        values: '1x30'
-    alert_rule_test:
-      - eval_time: 10m
-        alertname: HwraidVolumeWriteCacheUnprotected
-        exp_alerts:
-          - exp_labels: {severity: critical, controller: "serial:A", volume: v0}
-            exp_annotations:
-              summary: "Cache d'écriture actif sans protection, volume v0 (serial:A)"
-              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver."
-      - eval_time: 21m
-        alertname: HwraidVolumeWriteCacheUnprotected
-        exp_alerts: []
-
   # Cache actif, collecteur de protection non pris en charge par la carte :
   # avertissement de protection inconnue.
   - interval: 1m
@@ -854,19 +819,15 @@ tests:
         alertname: HwraidVolumeWriteCacheUnprotected
         exp_alerts: []
 
-  # État du cache non reconnu, lecture des volumes en échec de 10 à 12 min
-  # (A), et réglage non reconnu dont la valeur brute change (B) : le délai
-  # de l'alerte n'est pas remis à zéro.
+  # État du cache non reconnu (A), réglage non reconnu dont la valeur brute
+  # change (B) : avertissement, une série par volume ; rien pour un volume
+  # entièrement qualifié (C).
   - interval: 1m
     input_series:
       - series: 'hwraid_volume_info{controller="serial:A",volume="v0",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""}'
-        values: '1x9 stale _x2 1x27'
+        values: '1x40'
       - series: 'hwraid_volume_write_cache_policy{controller="serial:A",volume="v0",policy="write_back_when_protected",vendor_policy="On when protected by battery/ZMM"}'
-        values: '1x9 stale _x2 1x27'
-      - series: 'hwraid_collection_success{controller="serial:A",collector="volumes"}'
-        values: '1x9 0x2 1x27'
-      - series: 'hwraid_collection_last_success_timestamp_seconds{controller="serial:A",collector="volumes"}'
-        values: '0 60 120 180 240 300 360 420 480 540 540 540 540 780 840 900 960 1020 1080 1140 1200 1260 1320 1380 1440 1500 1560 1620 1680 1740 1800 1860 1920 1980 2040 2100 2160 2220 2280 2340 2400'
+        values: '1x40'
       - series: 'hwraid_volume_info{controller="serial:B",volume="v0",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""}'
         values: '1x40'
       - series: 'hwraid_volume_write_cache_enabled{controller="serial:B",volume="v0"}'
@@ -875,9 +836,22 @@ tests:
         values: '1x15 stale _x23'
       - series: 'hwraid_volume_write_cache_policy{controller="serial:B",volume="v0",policy="unknown",vendor_policy="value 8"}'
         values: '_x16 1x23'
+      - series: 'hwraid_volume_info{controller="serial:C",volume="v0",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""}'
+        values: '1x40'
+      - series: 'hwraid_volume_write_cache_policy{controller="serial:C",volume="v0",policy="write_back_when_protected",vendor_policy="On when protected by battery/ZMM"}'
+        values: '1x40'
+      - series: 'hwraid_volume_write_cache_enabled{controller="serial:C",volume="v0"}'
+        values: '0x40'
+      - series: 'hwraid_collection_success{controller="serial:A",collector="volumes"}'
+        values: '1x40'
       - series: 'hwraid_collection_success{controller="serial:B",collector="volumes"}'
         values: '1x40'
+      - series: 'hwraid_collection_success{controller="serial:C",collector="volumes"}'
+        values: '1x40'
     alert_rule_test:
+      - eval_time: 29m
+        alertname: HwraidVolumeWriteCacheUnknown
+        exp_alerts: []
       - eval_time: 31m
         alertname: HwraidVolumeWriteCacheUnknown
         exp_alerts:

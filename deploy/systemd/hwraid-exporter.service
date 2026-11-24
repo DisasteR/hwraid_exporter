@@ -18,8 +18,9 @@ ExecStart=/usr/local/bin/hwraid-exporter serve -listen 127.0.0.1:9799 -interval 
 # refait la préparation.
 Restart=on-failure
 RestartSec=10s
-# À l'arrêt, l'exporter attend jusqu'à 20 s la fin de la commande en cours
-# (docs/deploiement.md, « Limite du pilote aacraid »).
+# À l'arrêt, l'exporter attend sans limite la fin de la commande en cours ;
+# ce délai est le seul qui l'abrège (docs/deploiement.md, « Limite du pilote
+# aacraid »).
 TimeoutStopSec=30s
 
 # Capacités de la phase de préparation seulement ; ensemble ambiant vide.

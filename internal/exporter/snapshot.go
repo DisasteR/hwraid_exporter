@@ -33,6 +33,7 @@ type Controller struct {
 	NodeError              string
 	Unsupported            []string // collecteurs non pris en charge par la carte
 	CollectError           string   // échec d'une lecture firmware
+	LateError              string   // erreurs d'une collecte tardive non publiée
 	Collected              map[string]bool
 	LastSuccess            map[string]time.Time // collecteur → date du dernier succès
 	CloseUnconfirmed       uint64               // clôtures de transfert non nominales cumulées
@@ -95,6 +96,9 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 			c.Backend = pc.Module.Name()
 			c.CloseUnconfirmed = tracker.Closes(addr)
 			c.NodeChecked = true
+			if lr, ok := results[addr]; ok && lr.LateErr != nil {
+				c.LateError = lr.LateErr.Error()
+			}
 			switch r, ok := results[addr]; {
 			case pc.Err != nil:
 				c.NodeError = pc.Err.Error()

@@ -2,7 +2,7 @@
 
 Prometheus exporter for hardware RAID controllers. It talks directly to the Linux drivers and needs no vendor tool (ARCCONF, StorCLI, ssacli) at runtime.
 
-> **Status: v0.1.2.** First target: Adaptec 6805 (`aacraid` driver). Validated on real hardware: optimal volume and disk states, RAID levels, disk inventory, location and Linux device, failed cache protection (ZMM), volume write-cache policy (all three settings) and state (off). The degraded, rebuilding and failed volume states and the charging and optimal ZMM states are covered by tests on constructed data only, not yet observed on hardware. The write cache turning on again once the ZMM is optimal is not yet observed on hardware. Not yet available: task progress (rebuild), controller statistics.
+> **Status: v0.1.2.** First target: Adaptec 6805 (`aacraid` driver). Validated on real hardware: optimal volume and disk states, RAID levels, disk inventory, location and Linux device, failed cache protection (ZMM), volume write-cache policy (all three settings) and state: on with the `wb` setting (capture of 2026-11-23, ZMM failed), off with `wbb` and `wt`. The degraded, rebuilding and failed volume states and the charging and optimal ZMM states are covered by tests on constructed data only, not yet observed on hardware. The write cache turning on again under `wbb` once the ZMM is optimal is not yet observed on hardware. Not yet available: task progress (rebuild), controller statistics.
 
 ## How it works
 
@@ -61,9 +61,10 @@ services:
     # a firewall.
     command: ["serve", "-listen", "0.0.0.0:9799"]
     restart: unless-stopped
-    # On SIGTERM the exporter waits up to 20 s for a card command already
-    # sent: killing it during one makes the aacraid driver lose a command
-    # block until the next reboot (docs/aacraid-defaut-pilote.md). Docker's
+    # On SIGTERM the exporter waits, with no limit of its own, for a card
+    # command already sent: killing it during one makes the aacraid driver
+    # lose a command block until the next reboot
+    # (docs/aacraid-defaut-pilote.md). This is the only limit; Docker's
     # default is 10 s.
     stop_grace_period: 30s
 ```

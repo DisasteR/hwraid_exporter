@@ -29,6 +29,9 @@ type Runner struct {
 	// par un résultat tardif écarté : elles ont bien eu lieu et sont
 	// reportées dans le prochain résultat de la carte.
 	late map[string]int
+	// lateErr garde de même les erreurs de ces résultats tardifs, pour le
+	// journal.
+	lateErr map[string]error
 }
 
 // done est le résultat d'une collecte et l'heure à laquelle elle a fini.
@@ -39,7 +42,16 @@ type done struct {
 
 // NewRunner crée un ordonnanceur sans collecte en cours.
 func NewRunner() *Runner {
-	return &Runner{inflight: map[string]chan done{}, late: map[string]int{}}
+	return &Runner{inflight: map[string]chan done{}, late: map[string]int{}, lateErr: map[string]error{}}
+}
+
+// keepLate garde ce qui reste utile d'un résultat tardif écarté : ses
+// lectures rejetées et ses erreurs. Appelé verrou tenu.
+func (r *Runner) keepLate(addr string, res module.Result) {
+	r.late[addr] += res.CloseUnconfirmed
+	if e := errors.Join(res.Err, res.CollectErr); e != nil {
+		r.lateErr[addr] = errors.Join(r.lateErr[addr], e)
+	}
 }
 
 // harvest récupère, sans attendre, les collectes tardives terminées, pour
@@ -49,7 +61,7 @@ func (r *Runner) harvest() {
 	for addr, ch := range r.inflight {
 		select {
 		case d := <-ch:
-			r.late[addr] += d.res.CloseUnconfirmed
+			r.keepLate(addr, d.res)
 			delete(r.inflight, addr)
 		default:
 		}
@@ -104,7 +116,7 @@ func (r *Runner) Run(ctx context.Context, jobs map[string]func() module.Result, 
 		if inTime(d) {
 			out[addr] = d.res
 		} else {
-			r.late[addr] += d.res.CloseUnconfirmed
+			r.keepLate(addr, d.res)
 		}
 		r.mu.Unlock()
 	}
@@ -118,11 +130,13 @@ func (r *Runner) Run(ctx context.Context, jobs map[string]func() module.Result, 
 			}
 			out[addr] = module.Result{TimedOut: true, Collected: failed}
 		}
-		if n := r.late[addr]; n > 0 {
+		if n, e := r.late[addr], r.lateErr[addr]; n > 0 || e != nil {
 			res := out[addr]
 			res.CloseUnconfirmed += n
+			res.LateErr = e
 			out[addr] = res
 			delete(r.late, addr)
+			delete(r.lateErr, addr)
 		}
 	}
 	return out

@@ -52,7 +52,7 @@ Valeurs réservées pour les modules à venir, non publiées aujourd'hui : `redu
 | `hwraid_collection_success` | `controller`, `collector` | 1 si la dernière lecture du collecteur a abouti ; 0 si elle a échoué, ou n'a pas pu être tentée parce qu'une lecture dont elle dépend a échoué dans le même cycle ; absente si la collecte de la carte n'a pas été tentée |
 | `hwraid_collector_supported` | `controller`, `collector` | 0 si la carte ne permet pas ce collecteur ; absente sinon |
 | `hwraid_collection_last_success_timestamp_seconds` | `controller`, `collector` | date Unix du dernier cycle où la lecture a abouti ; absente tant qu'elle n'a jamais abouti depuis le démarrage de l'exporter, et pour un collecteur servi par une réponse gardée en mémoire (`capabilities`) |
-| `hwraid_transfer_close_unconfirmed_total` | `controller` | compteur des lectures paginées rejetées parce que leur clôture a été confirmée par un statut non nominal (aacraid : `0xc5`, observé quand un autre outil, comme maxView, interroge la carte en même temps). Une lecture rejetée est refaite une fois dans le même cycle ; ses données ne sont jamais publiées. Les rejets d'une collecte rendue après son délai sont comptés au cycle suivant |
+| `hwraid_transfer_close_unconfirmed_total` | `controller` | compteur des lectures paginées rejetées parce que leur clôture a été confirmée par un statut non nominal (aacraid : `0xc5`, observé quand un autre outil, comme maxView, interroge la carte en même temps). Une lecture rejetée est refaite une fois dans le même cycle ; ses données ne sont jamais publiées. Une seconde tentative n'a lieu que si la première lecture n'a pas eu d'autre erreur et que le cycle n'est ni échu ni arrêté. Les rejets d'une collecte rendue après son délai sont comptés quand la même adresse PCI est de nouveau collectée ; si la carte a disparu, ils ne sont jamais comptés |
 | `hwraid_collection_interval_seconds` | `controller` | intervalle de collecte effectif (option `-interval`), publié pour chaque carte prise en charge |
 
 **Collecte hors délai.** Les cartes sont collectées en parallèle ; une carte qui n'a pas répondu dans le délai (`-collect-timeout`, 30 s par défaut ou l'intervalle s'il est plus court) est publiée avec tous ses collecteurs à 0, sans série d'état, et ses dates de dernier succès sont conservées. Tant que la commande bloquée n'a pas rendu la main, aucune nouvelle commande n'est envoyée à cette carte.
@@ -97,7 +97,7 @@ hwraid_disk_info{serial!=""} * on (host, serial) group_left (device)
   label_replace(smartctl_device{serial_number!=""}, "serial", "$1", "serial_number", "(.+)")
 ```
 
-La jointure échoue si smartctl_exporter publie deux séries pour le même numéro sur un hôte (disque vu par deux nœuds) : il faut alors en choisir une, par exemple avec `max by (host, serial, device)`.
+La jointure exige une seule série `smartctl_device` par couple `(host, serial)`. Si smartctl_exporter voit le même disque par deux nœuds, filtrer avant la jointure celui à garder (par exemple `smartctl_device{device=~"sg.*"}`) ; si le nœud n'est pas utile, joindre sur `max by (host, serial) (…)` et retirer `device` de `group_left`.
 
 Un disque présent qui n'est membre d'aucun volume (secours, disponible) figure dans `hwraid_disk_info`, mais n'a pas de `hwraid_disk_state` tant que son état n'est pas établi. La santé SMART des disques est hors périmètre : elle relève d'outils dédiés.
 

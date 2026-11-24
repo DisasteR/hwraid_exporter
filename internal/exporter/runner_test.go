@@ -5,6 +5,7 @@ package exporter
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -230,5 +231,27 @@ func TestFinishedInTime(t *testing.T) {
 		if got := finishedInTime(c.at, c.dl, c.canceled); got != c.want {
 			t.Errorf("%s : %v, attendu %v", c.name, got, c.want)
 		}
+	}
+}
+
+// Les erreurs d'une collecte tardive écartée ne sont pas perdues : elles
+// sont rendues une fois, pour le journal, avec le résultat suivant.
+func TestRunnerKeepsLateErrors(t *testing.T) {
+	const a = "0000:01:00.0"
+	release := make(chan struct{})
+	nomem := errors.New("ENOMEM sur la lecture 229")
+	r := NewRunner()
+	r.Run(within(t, 10*time.Millisecond), map[string]func() module.Result{a: func() module.Result {
+		<-release
+		return module.Result{CollectErr: nomem}
+	}}, nil)
+	close(release)
+	r.Drain(time.Second)
+	ok := map[string]func() module.Result{a: func() module.Result { return module.Result{} }}
+	if out := r.Run(within(t, time.Second), ok, nil); !errors.Is(out[a].LateErr, nomem) {
+		t.Fatalf("erreur tardive perdue : %+v", out[a])
+	}
+	if out := r.Run(within(t, time.Second), ok, nil); out[a].LateErr != nil {
+		t.Fatalf("erreur tardive rendue deux fois : %v", out[a].LateErr)
 	}
 }
