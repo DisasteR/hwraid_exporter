@@ -22,9 +22,10 @@
 # sans erreur et limite de taille non atteinte. Le bilan ne couvre que les
 # retours survenus pendant que la sonde était active. Un redémarrage retire aussi
 # la sonde. Si le script a disparu sans nettoyer (SIGKILL), retirer à la main
-# l'instance et la sonde affichées au démarrage, sous la racine de trace
-# qu'il a utilisée (<racine> : /sys/kernel/tracing, ou
-# /sys/kernel/debug/tracing si la première n'existe pas) :
+# l'instance et la sonde affichées au démarrage (« sonde … active, instance
+# … »), sous la racine de trace qu'il a utilisée (<racine> :
+# /sys/kernel/tracing, ou /sys/kernel/debug/tracing si
+# /sys/kernel/tracing/events n'existe pas) :
 #   rmdir <racine>/instances/aacfib_<pid>_<suffixe>
 #   echo '-:aacfib/ret_<pid>_<suffixe>' >> <racine>/kprobe_events
 #

@@ -356,10 +356,11 @@ func TestRunnerLateErrorsAtStop(t *testing.T) {
 	}
 }
 
-// Numéro de série devenu lisible sur la même carte (pci: puis serial:) :
-// le succès gardé en mémoire est conservé. Un cycle sans collecte effective
-// (nœud non vérifié) ne réattribue pas ce succès à une autre identité.
-func TestTimedOutHeldIdentityContinuity(t *testing.T) {
+// Changement d'identité à la même adresse PCI, y compris pci: puis
+// serial: : rien ne prouve qu'il s'agit de la même carte, le succès gardé en
+// mémoire n'est pas transmis. Un cycle sans collecte effective (nœud non
+// vérifié) n'établit pas non plus de nouvelle identité.
+func TestTimedOutHeldIdentityChange(t *testing.T) {
 	const addr = "0000:01:00.0"
 	tr := NewTracker()
 	t0 := time.Unix(1_000_000, 0)
@@ -367,17 +368,20 @@ func TestTimedOutHeldIdentityContinuity(t *testing.T) {
 	tr.Update(ok, []string{addr}, t0)
 	tr.Remember(Build(plan(aacHost("host0", addr, "")), true, ok, tr, time.Minute))
 	timedOut := map[string]module.Result{addr: {TimedOut: true, Collected: map[string]bool{"capabilities": false}}}
-	s1 := Build(plan(aacHost("host0", addr, "S1")), true, timedOut, tr, time.Minute)
-	if want := `hwraid_collection_success{controller="serial:S1",collector="capabilities"} 1`; !strings.Contains(Render(s1), want+"\n") {
-		t.Fatalf("succès perdu quand le numéro devient lisible : %s\n%s", want, Render(s1))
+	out := Render(Build(plan(aacHost("host0", addr, "S1")), true, timedOut, tr, time.Minute))
+	if want := `hwraid_collection_success{controller="serial:S1",collector="capabilities"} 0`; !strings.Contains(out, want+"\n") {
+		t.Fatalf("succès transmis à une identité nouvelle : %s\n%s", want, out)
 	}
-	tr.Remember(s1)
-	// Cycle sans collecte effective sous une autre identité, puis hors délai.
+	// Succès établi sous S1 ; un cycle sans collecte effective sous S2
+	// ne change pas l'identité retenue.
+	tr2 := NewTracker()
+	tr2.Update(ok, []string{addr}, t0)
+	tr2.Remember(Build(plan(aacHost("host0", addr, "S1")), true, ok, tr2, time.Minute))
 	noNode := map[string]module.Result{addr: {NodeValid: false}}
-	tr.Remember(Build(plan(aacHost("host0", addr, "S2")), true, noNode, tr, time.Minute))
-	out := Render(Build(plan(aacHost("host0", addr, "S2")), true, timedOut, tr, time.Minute))
-	if want := `hwraid_collection_success{controller="serial:S2",collector="capabilities"} 0`; !strings.Contains(out, want+"\n") {
-		t.Fatalf("succès réattribué sans collecte effective : %s\n%s", want, out)
+	tr2.Remember(Build(plan(aacHost("host0", addr, "S2")), true, noNode, tr2, time.Minute))
+	out = Render(Build(plan(aacHost("host0", addr, "S1")), true, timedOut, tr2, time.Minute))
+	if want := `hwraid_collection_success{controller="serial:S1",collector="capabilities"} 1`; !strings.Contains(out, want+"\n") {
+		t.Fatalf("identité changée par un cycle sans collecte effective : %s\n%s", want, out)
 	}
 }
 

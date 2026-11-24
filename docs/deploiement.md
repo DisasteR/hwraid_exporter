@@ -62,7 +62,11 @@ L'image est publique : aucune authentification n'est nécessaire pour la téléc
 
 ## Installation native (systemd)
 
-Chaque publication GitHub fournit le binaire statique (`hwraid-exporter-<version>-linux-amd64`, mêmes octets que dans l'image), les licences (`hwraid-exporter-<version>-licenses.tar.gz`), l'unité systemd (`hwraid-exporter.service`) et `SHA256SUMS`, qui couvre ces trois fichiers. Avant l'installation, vérifier au moins le binaire et l'unité ; la commande échoue si l'un des deux manque ou diffère :
+Chaque publication GitHub fournit le binaire statique (`hwraid-exporter-<version>-linux-amd64`, mêmes octets que dans l'image), les licences (`hwraid-exporter-<version>-licenses.tar.gz`), l'unité systemd (`hwraid-exporter.service`) et `SHA256SUMS`, qui couvre ces trois fichiers. Avant l'installation, vérifier le binaire et l'unité. Le premier contrôle échoue si l'un des deux n'est pas listé dans `SHA256SUMS`, le second si un fichier listé manque sur le disque ou si sa somme diffère :
+
+```bash
+test "$(grep -cE ' (hwraid-exporter-[^ ]+-linux-amd64|hwraid-exporter\.service)$' SHA256SUMS)" -eq 2
+```
 
 ```bash
 grep -E ' (hwraid-exporter-[^ ]+-linux-amd64|hwraid-exporter\.service)$' SHA256SUMS | sha256sum -c --strict
