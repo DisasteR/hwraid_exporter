@@ -515,6 +515,8 @@ func volumesOf(cs []aacraid.Container, ev aacraid.Evaluation) []module.Volume {
 		if c.Info.Parent != aacraid.NoUID {
 			v.Parent = uidID(c.Info.Parent)
 		}
+		v.WriteCachePolicy, v.VendorWriteCachePolicy = writeCachePolicy(c.Info.WriteCachePolicy)
+		v.WriteCacheEnabled = writeCacheEnabled(c.Info.WriteCacheEnabled)
 		for _, m := range c.Members {
 			if m.Disk != aacraid.NoUID {
 				v.Members = append(v.Members, fmt.Sprintf("d%d", m.Disk))
@@ -525,6 +527,32 @@ func volumesOf(cs []aacraid.Container, ev aacraid.Evaluation) []module.Volume {
 		out = append(out, v)
 	}
 	return out
+}
+
+// writeCachePolicy traduit le réglage du cache d'écriture : valeurs
+// observées avec l'outil de référence (docs/aacraid-interface.md) ; autre
+// valeur publiée unknown, jamais devinée.
+func writeCachePolicy(p uint32) (policy, vendor string) {
+	switch p {
+	case aacraid.WriteCacheAlways:
+		return "write_back_always", "Enabled"
+	case aacraid.WriteCacheWhenProtected:
+		return "write_back_when_protected", "On when protected by battery/ZMM"
+	case aacraid.WriteCacheDisabled:
+		return "write_through", "Disabled"
+	}
+	return "unknown", fmt.Sprintf("value %d", p)
+}
+
+// writeCacheEnabled traduit l'état effectif du cache d'écriture ; une autre
+// valeur que 0 ou 1 n'établit rien.
+func writeCacheEnabled(e uint32) *bool {
+	switch e {
+	case 0, 1:
+		on := e == 1
+		return &on
+	}
+	return nil
 }
 
 func disksOf(ev aacraid.Evaluation) []module.Disk {

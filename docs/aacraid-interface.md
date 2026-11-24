@@ -112,7 +112,11 @@ Sur l'hôte de référence : 5 conteneurs, numéros 0, `0xfc`, `0xfd`, `0xfe`, `
 | 52-55 | UID du conteneur qui l'assemble, `0xffffffff` sinon | `0xffffffff` (volume), UID du volume (miroirs) |
 | 56-59 | nombre de membres | 4 (volume), 2 (miroirs) |
 | 64-71 | taille en blocs de 512 octets | 62 495 109 120 (= 30 515 190 Mio) |
+| 148-151 | réglage du cache d'écriture : 2 = « Enabled » (toujours actif, `wb` dans ARCCONF), 1 = « On when protected by battery/ZMM » (`wbb`), 0 = « Disabled » (`wt`) [observé] | 1 |
+| 156-159 | état effectif du cache d'écriture : 1 = « On », 0 = « Off » [observé] | 0 (module de protection en panne) |
 | 296-311 | nom, chaîne terminée par un octet nul, lue sur 16 octets au plus (longueur maximale non établie) | `Array0` |
+
+**Cache d'écriture.** Positions établies en changeant le réglage avec l'outil témoin et en comparant les lectures de chaque état, sur les cinq conteneurs de l'hôte de référence (module de protection en panne) : réglage « Enabled », état « On » ; réglage « On when protected », état « Off » ; réglage « Disabled », état « Off ». Le passage du deuxième au troisième ne change que l'octet 148 : c'est le réglage. L'octet 156 est le seul autre octet qui ait changé : c'est l'état. Le passage de l'état à « On » avec le réglage « On when protected » et un module opérationnel reste à observer. Une autre valeur de réglage est publiée `unknown` ; une autre valeur d'état n'est pas publiée. Les octets 144 et 152 valent 1 dans toutes les captures, quand l'outil affiche le cache de lecture « Enabled » et « On » ; ils ne sont pas utilisés.
 
 L'exporter publie le niveau RAID de `hwraid_volume_info` dans le vocabulaire normalisé ([metrics.md](metrics.md)) et, dans `vendor_level`, dans les termes de l'outil témoin : type 3 → `raid_level="raid1"`, `vendor_level="1"` ; type 1 → `raid_level="concat"`, `vendor_level="RAID_volume"` (assemblage par concaténation) ; tout autre type → `raid_level="unknown"`, `vendor_level="type N"`.
 

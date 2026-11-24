@@ -36,7 +36,7 @@ Tout signal reçu par un programme pendant qu'une de ses commandes de gestion at
 
 Avec le réglage par défaut du pilote (`cache=2`, `aachba.c`), Linux ne demande jamais non plus ce vidage. Le pilote annonce un volume sans cache d'écriture (WCE à 0) et ignore les demandes de vidage SCSI. Ni `fsync()` ni l'arrêt ne vident donc le cache de la carte.
 
-Si le cache d'écriture de la carte est actif sans protection (module ZMM ou batterie en panne, ou cache forcé en écriture différée), un redémarrage avec la réserve vide peut perdre les dernières écritures. C'est arrivé sur l'hôte de référence le 2026-11-23 : des fichiers écrits dans les secondes qui ont précédé le redémarrage ont été retrouvés corrompus. Avant de redémarrer une machine dont la réserve est vide :
+Si le cache d'écriture de la carte est actif sans protection (module ZMM ou batterie en panne, ou cache forcé en écriture différée), un redémarrage avec la réserve vide peut perdre les dernières écritures. C'est arrivé sur l'hôte de référence le 2026-11-23 : des fichiers écrits dans les secondes qui ont précédé le redémarrage ont été retrouvés corrompus. L'alerte `HwraidVolumeWriteCacheUnprotected` ([alerts.md](alerts.md)) signale un cache d'écriture actif sans protection opérationnelle. Avant de redémarrer une machine dont la réserve est vide :
 
 1. arrêter les applications qui écrivent ;
 2. lancer `sync` ;

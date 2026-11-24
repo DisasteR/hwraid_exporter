@@ -99,7 +99,19 @@ const (
 	containerParent  = 52
 	containerMembers = 56
 	containerBlocks  = 64
-	containerName    = 296
+	// Cache d'écriture (docs/aacraid-interface.md, section 5) : réglage
+	// configuré et état effectif.
+	containerWriteCachePolicy  = 148
+	containerWriteCacheEnabled = 156
+	containerName              = 296
+)
+
+// Réglage du cache d'écriture d'un conteneur (mot à l'octet 148), dans les
+// termes de l'outil de référence. Autre valeur : non observée.
+const (
+	WriteCacheDisabled      = 0 // « Disabled » (wt)
+	WriteCacheWhenProtected = 1 // « On when protected by battery/ZMM » (wbb)
+	WriteCacheAlways        = 2 // « Enabled » (wb)
 )
 
 // ContainerInfo regroupe les champs utilisés de l'information de conteneur
@@ -109,6 +121,10 @@ type ContainerInfo struct {
 	Members           int
 	Blocks            uint64 // taille en blocs de 512 octets
 	Name              string
+	// WriteCachePolicy : réglage configuré du cache d'écriture (valeur
+	// brute, WriteCache*). WriteCacheEnabled : état effectif (valeur brute,
+	// 1 = actif, 0 = inactif ; autre valeur non observée).
+	WriteCachePolicy, WriteCacheEnabled uint32
 }
 
 // DecodeContainerInfo décode l'information de conteneur.
@@ -128,6 +144,9 @@ func DecodeContainerInfo(d []byte) (ContainerInfo, error) {
 		Members: int(le.Uint32(d[containerMembers:])),
 		Blocks:  le.Uint64(d[containerBlocks:]),
 		Name:    printable(name),
+
+		WriteCachePolicy:  le.Uint32(d[containerWriteCachePolicy:]),
+		WriteCacheEnabled: le.Uint32(d[containerWriteCacheEnabled:]),
 	}
 	if c.Members < 1 || c.Members > MaxMembers {
 		return ContainerInfo{}, fmt.Errorf("container info %#x: %d members", c.UID, c.Members)

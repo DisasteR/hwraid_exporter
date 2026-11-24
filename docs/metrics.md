@@ -20,6 +20,7 @@ Les métriques sont **les mêmes quel que soit le pilote, le contrôleur ou le c
 | `hwraid_disk_state` / `state` | `online`, `rebuilding`, `failed` | toutes |
 | `hwraid_cache_protection_state` / `state` | `optimal`, `charging`, `failed`, `unknown` | toutes (`charging` et `optimal` non encore observés sur matériel ; `unknown` pour toute combinaison de bits non qualifiée, jamais publiée comme saine) |
 | `hwraid_volume_info` / `raid_level` | `raid0`, `raid1`, `raid1e`, `raid5`, `raid6`, `raid10`, `raid50`, `raid60`, `concat`, `unknown` | `raid1`, `concat`, `unknown` |
+| `hwraid_volume_write_cache_policy` / `policy` | `write_back_always` (cache actif même sans protection), `write_back_when_protected` (actif seulement si le module de protection est opérationnel), `write_through` (désactivé), `unknown` | toutes sauf `unknown` (les trois réglages observés sur matériel) |
 | `hwraid_cache_protection_present` / `type` | `flash_supercap` (supercondensateur et mémoire flash : ZMM/AFM, CacheVault, FBWC), `battery` (BBU) | `flash_supercap` |
 
 `unknown` signifie que la carte a répondu, mais que l'exporter ne sait pas interpréter la réponse avec certitude (type de volume non qualifié, drapeau inconnu, propagation non établie). C'est un état à surveiller, pas une panne.
@@ -68,6 +69,10 @@ Collecteurs du module aacraid : `capabilities` (capacités de la carte), `volume
 | `hwraid_volume_state` | `controller`, `volume`, `state` | 1 |
 | `hwraid_volume_capacity_bytes` | `controller`, `volume` | taille en octets |
 | `hwraid_volume_member` | `controller`, `volume`, `member` | 1 ; `member` est un disque (`d<n>`) ou un volume (identifiant) |
+| `hwraid_volume_write_cache_policy` | `controller`, `volume`, `policy`, `vendor_policy` | 1 ; réglage configuré du cache d'écriture, normalisé dans `policy` et dans les termes de l'outil du constructeur dans `vendor_policy` |
+| `hwraid_volume_write_cache_enabled` | `controller`, `volume` | 1 si le cache d'écriture est actif à cet instant (écriture différée), 0 sinon ; absente si la carte rend une valeur non qualifiée |
+
+Le réglage et l'état du cache d'écriture viennent de la même lecture que le reste du volume : aucune commande de plus. Le réglage dit ce que l'administrateur a demandé ; l'état dit ce que la carte fait, par exemple un cache coupé parce que le module de protection est en panne. Les volumes assemblés portent le même réglage que le volume de premier niveau. Le cache de lecture n'est pas publié.
 
 Une grappe à plusieurs niveaux (par exemple quatre miroirs assemblés) publie un volume par niveau. L'état d'un volume de premier niveau vaut `unknown` quand l'un de ses volumes membres n'est pas optimal et que la propagation n'est pas établie pour ce type : la perte de redondance reste visible sur le volume membre.
 
@@ -110,7 +115,6 @@ Prévues au cahier des charges, pas encore publiées :
 | `hwraid_task_progress_ratio` (reconstruction, vérification…) | décodage de la réponse aux requêtes de tâches (à capturer pendant une reconstruction) |
 | `hwraid_controller_state`, `hwraid_controller_temperature_celsius` | lecture d'état et des capteurs de la carte |
 | Emplacement des disques derrière un expandeur ou un fond de panier (boîtier, emplacement) | matériel correspondant et capture de l'outil témoin |
-| `hwraid_volume_write_cache_enabled` | position de l'état du cache d'écriture dans la lecture de volume |
 
 ## Exemple
 
@@ -122,6 +126,8 @@ hwraid_volume_info{controller="serial:XXXX",volume="1d000000",name="Array0",raid
 hwraid_volume_info{controller="serial:XXXX",volume="1d000004",name="Array0",raid_level="raid1",vendor_level="1",parent="1d000000"} 1
 hwraid_volume_state{controller="serial:XXXX",volume="1d000004",state="optimal"} 1
 hwraid_volume_member{controller="serial:XXXX",volume="1d000004",member="d7"} 1
+hwraid_volume_write_cache_policy{controller="serial:XXXX",volume="1d000000",policy="write_back_when_protected",vendor_policy="On when protected by battery/ZMM"} 1
+hwraid_volume_write_cache_enabled{controller="serial:XXXX",volume="1d000000"} 0
 hwraid_disk_state{controller="serial:XXXX",disk="d7",state="online"} 1
 hwraid_disk_info{controller="serial:XXXX",disk="d7",vendor="ATA",model="ST8000VN0022-2EL",firmware="SC61",serial="XXXXXXXX",wwn="0x5000c500xxxxxxxx"} 1
 hwraid_disk_capacity_bytes{controller="serial:XXXX",disk="d7"} 8001563222016

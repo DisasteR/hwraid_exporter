@@ -2,7 +2,7 @@
 
 Prometheus exporter for hardware RAID controllers. It talks directly to the Linux drivers and needs no vendor tool (ARCCONF, StorCLI, ssacli) at runtime.
 
-> **Status: v0.1.1.** First target: Adaptec 6805 (`aacraid` driver). Validated on real hardware: optimal volume and disk states, RAID levels, disk inventory, location and Linux device, failed cache protection (ZMM). The degraded, rebuilding and failed volume states and the charging and optimal ZMM states are covered by tests on constructed data only, not yet observed on hardware. Not yet available: task progress (rebuild), write-cache state, controller statistics.
+> **Status: v0.1.1.** First target: Adaptec 6805 (`aacraid` driver). Validated on real hardware: optimal volume and disk states, RAID levels, disk inventory, location and Linux device, failed cache protection (ZMM), volume write-cache policy (all three settings) and state (off). The degraded, rebuilding and failed volume states and the charging and optimal ZMM states are covered by tests on constructed data only, not yet observed on hardware. The write cache turning on again once the ZMM is optimal is not yet observed on hardware. Not yet available: task progress (rebuild), controller statistics.
 
 ## How it works
 

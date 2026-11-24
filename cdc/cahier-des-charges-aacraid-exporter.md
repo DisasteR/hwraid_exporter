@@ -40,7 +40,7 @@ Chaque lecture utilisée par un module est qualifiée par comparaison avec l’o
 | Tâche de fond | Type, cible et avancement lorsque fourni. Priorité à la reconstruction. | Attribuer la tâche au bon contrôleur et à la bonne cible. Une tâche active à 0 % diffère d’une absence de tâche. Un type de tâche non reconnu est publié comme `other`. |
 | Protection du cache | Présence et état du module de protection du cache, par contrôleur. Première cible : AFM‑600 (ZMM) de la 6805. | Distinguer absence confirmée, module présent, état inconnu, lecture impossible et fonction non prise en charge. Un module en charge ne doit pas déclencher une alerte « module absent ». |
 
-Une remontée explicite du mode de cache effectif peut compléter le ZMM. L’état du module seul ne suffit pas à conclure que le cache d’écriture est activé, désactivé ou protégé pour chaque volume.
+L’état du module seul ne suffit pas à conclure que le cache d’écriture est activé, désactivé ou protégé pour chaque volume : le réglage configuré et l’état effectif du cache d’écriture sont publiés par volume (`hwraid_volume_write_cache_policy`, `hwraid_volume_write_cache_enabled`).
 
 ## 3. Module AACRAID
 
@@ -130,7 +130,8 @@ Les noms ci-dessous sont proposés pour la première version. La liste exacte de
 | `hwraid_collection_interval_seconds` | `controller` | Intervalle effectif de collecte. |
 | `hwraid_controller_state`, `hwraid_volume_state`, `hwraid_disk_state`, `hwraid_cache_protection_state` | objet + `state` | État observé, valeur 1. |
 | `hwraid_volume_info`, `hwraid_volume_member`, `hwraid_disk_info` | objet ; `raid_level` normalisé et `vendor_level` pour les volumes, `member` (disque ou volume) pour les relations | Relations et inventaire, valeur 1. |
-| `hwraid_volume_capacity_bytes`, `hwraid_task_progress_ratio`, `hwraid_cache_protection_present` (`type` normalisé, `vendor_type`), `hwraid_controller_temperature_celsius` | objet | Mesures. |
+| `hwraid_volume_write_cache_policy` | volume ; `policy` normalisé et `vendor_policy` | Réglage configuré du cache d’écriture, valeur 1. |
+| `hwraid_volume_capacity_bytes`, `hwraid_volume_write_cache_enabled` (0 ou 1), `hwraid_task_progress_ratio`, `hwraid_cache_protection_present` (`type` normalisé, `vendor_type`), `hwraid_controller_temperature_celsius` | objet | Mesures. |
 
 Extrait synthétique d’un même scrape. Deux cartes possèdent chacune un volume 0. La première reconstruit son volume et porte un ZMM. Dans cet exemple illustratif, le futur module MegaRAID de la seconde carte signale explicitement l’absence du module.
 

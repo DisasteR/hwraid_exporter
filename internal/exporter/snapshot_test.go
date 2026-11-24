@@ -197,11 +197,13 @@ func TestCacheProtectionRender(t *testing.T) {
 }
 
 func TestVolumeRender(t *testing.T) {
+	off := false
 	p := plan(aacHost("host0", "0000:01:00.0", "S1"))
 	res := map[string]module.Result{"0000:01:00.0": {NodeValid: true,
 		Volumes: []module.Volume{
 			{ID: "1d000000", Name: "Array0", RaidLevel: "concat", VendorLevel: "RAID_volume", CapacityBytes: 1024, State: "unknown", Members: []string{"1d000004"}},
-			{ID: "1d000004", Name: "Array0", RaidLevel: "raid1", VendorLevel: "1", Parent: "1d000000", CapacityBytes: 512, State: "degraded", Members: []string{"d3", "d7"}},
+			{ID: "1d000004", Name: "Array0", RaidLevel: "raid1", VendorLevel: "1", Parent: "1d000000", CapacityBytes: 512, State: "degraded", Members: []string{"d3", "d7"},
+				WriteCachePolicy: "write_back_when_protected", VendorWriteCachePolicy: "On when protected by battery/ZMM", WriteCacheEnabled: &off},
 		},
 		Disks: []module.Disk{{ID: "d3", State: "online"}, {ID: "d7", State: "failed"}}}}
 	out := Render(Build(p, true, res, nil, 0))
@@ -212,9 +214,20 @@ func TestVolumeRender(t *testing.T) {
 		`hwraid_volume_capacity_bytes{controller="serial:S1",volume="1d000000"} 1024`,
 		`hwraid_volume_member{controller="serial:S1",volume="1d000004",member="d7"} 1`,
 		`hwraid_disk_state{controller="serial:S1",disk="d7",state="failed"} 1`,
+		`hwraid_volume_write_cache_policy{controller="serial:S1",volume="1d000004",policy="write_back_when_protected",vendor_policy="On when protected by battery/ZMM"} 1`,
+		`hwraid_volume_write_cache_enabled{controller="serial:S1",volume="1d000004"} 0`,
 	} {
 		if !strings.Contains(out, line+"\n") {
 			t.Fatalf("ligne absente : %s\n%s", line, out)
+		}
+	}
+	// Volume sans cache d'écriture établi : aucune série.
+	for _, absent := range []string{
+		`hwraid_volume_write_cache_policy{controller="serial:S1",volume="1d000000"`,
+		`hwraid_volume_write_cache_enabled{controller="serial:S1",volume="1d000000"}`,
+	} {
+		if strings.Contains(out, absent) {
+			t.Fatalf("série inattendue : %s\n%s", absent, out)
 		}
 	}
 }

@@ -90,6 +90,15 @@ type Volume struct {
 	CapacityBytes uint64
 	State         string
 	Members       []string // ID des conteneurs membres ou « d<N> » des disques
+	// WriteCachePolicy : réglage configuré du cache d'écriture, normalisé
+	// (docs/metrics.md : write_back_always, write_back_when_protected,
+	// write_through ou unknown) ; vide si non publié.
+	// VendorWriteCachePolicy : le même réglage dans les termes de l'outil
+	// constructeur.
+	WriteCachePolicy, VendorWriteCachePolicy string
+	// WriteCacheEnabled : état effectif du cache d'écriture ; nil si non
+	// établi.
+	WriteCacheEnabled *bool
 }
 
 // Disk est un disque membre d'un conteneur et son état.

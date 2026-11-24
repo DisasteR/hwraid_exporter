@@ -201,6 +201,22 @@ func Render(s Snapshot) string {
 			fmt.Fprintf(&b, "hwraid_volume_capacity_bytes{%s} %d\n", labels("controller", c.Label, "volume", v.ID), v.CapacityBytes)
 		}
 	}
+	gauge("hwraid_volume_write_cache_policy", "Configured write cache policy of the volume, value 1.")
+	for _, c := range s.Controllers {
+		for _, v := range c.Volumes {
+			if v.WriteCachePolicy != "" {
+				fmt.Fprintf(&b, "hwraid_volume_write_cache_policy{%s} 1\n", labels("controller", c.Label, "volume", v.ID, "policy", v.WriteCachePolicy, "vendor_policy", v.VendorWriteCachePolicy))
+			}
+		}
+	}
+	gauge("hwraid_volume_write_cache_enabled", "1 if the volume's write cache is currently active (write-back), 0 if not.")
+	for _, c := range s.Controllers {
+		for _, v := range c.Volumes {
+			if v.WriteCacheEnabled != nil {
+				fmt.Fprintf(&b, "hwraid_volume_write_cache_enabled{%s} %d\n", labels("controller", c.Label, "volume", v.ID), b2i(*v.WriteCacheEnabled))
+			}
+		}
+	}
 	gauge("hwraid_volume_member", "Members of each volume (disk or volume), value 1.")
 	for _, c := range s.Controllers {
 		for _, v := range c.Volumes {

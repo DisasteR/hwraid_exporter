@@ -70,6 +70,13 @@ func TestDecodeReferenceConfiguration(t *testing.T) {
 		vol.Blocks != 62495109120 || vol.Name != "Array0" {
 		t.Fatalf("volume : %+v", vol)
 	}
+	// Cache d'écriture au moment de la capture : réglage « Enabled » (2),
+	// état « On » (1), sur chaque conteneur.
+	for _, c := range cs {
+		if c.Info.WriteCachePolicy != WriteCacheAlways || c.Info.WriteCacheEnabled != 1 {
+			t.Fatalf("cache d'écriture %#x : %+v", c.Info.UID, c.Info)
+		}
+	}
 	// Miroirs et leurs disques, dans l'ordre de l'outil de référence.
 	want := map[uint32][2]uint32{0x1d000001: {0, 4}, 0x1d000002: {5, 1}, 0x1d000003: {6, 2}, 0x1d000004: {3, 7}}
 	for _, c := range cs[1:] {

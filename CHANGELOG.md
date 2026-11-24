@@ -6,6 +6,8 @@
 - aacraid: controller commands are sent from a dedicated thread that blocks asynchronous signals. The `aacraid` driver loses one management command block, until the next reboot, each time a signal interrupts a command waiting for the card; the Go runtime's own preemption signal (`SIGURG`) could do so. Once the driver's pool is empty, every management tool fails with `ENOMEM`.
 - On `SIGTERM`, the exporter starts no new cycle and waits up to 20 s for the commands in progress before exiting. The systemd unit sets `TimeoutStopSec=30s`.
 - `ENOMEM` on a controller command is reported as a probably exhausted driver pool, which only a reboot restores.
+- aacraid: volume write cache published: `hwraid_volume_write_cache_policy` (configured setting: `write_back_always`, `write_back_when_protected`, `write_through`) and `hwraid_volume_write_cache_enabled` (current state), read from the volume information already collected, with no extra controller command.
+- Alert rules: `HwraidVolumeWriteCacheUnprotected` (critical: write cache active while cache protection is missing or not optimal), `HwraidVolumeWriteCacheAlwaysOn`, `HwraidVolumeWriteCacheInactive`; `HwraidCacheProtectionFailed`, `HwraidCollectionStale` and `HwraidCollectionNeverSucceeded` now say what to do.
 - Documentation of the `aacraid` driver defect (`docs/aacraid-defaut-pilote.md`) and `tools/aacraid-fib-trace.sh`, a kernel probe that names the programs losing command blocks.
 
 ## v0.1.1 — 2026-11-23

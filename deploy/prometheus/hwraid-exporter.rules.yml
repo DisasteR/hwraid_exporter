@@ -98,7 +98,7 @@ groups:
           severity: warning
         annotations:
           summary: "Protection du cache en panne ({{ $labels.controller }})"
-          description: "Le module de protection du cache ne protège plus les données en attente d'écriture. Si le cache d'écriture reste actif, une coupure de courant peut les perdre."
+          description: "Le module de protection du cache ne protège plus les données en attente d'écriture. Régler le cache d'écriture des volumes en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) pour qu'il reste coupé jusqu'au remplacement du module ; HwraidVolumeWriteCacheUnprotected signale un cache resté actif."
 
       - alert: HwraidCacheProtectionNotReady
         expr: |
@@ -126,6 +126,49 @@ groups:
           summary: "État de la protection du cache non déterminé ({{ $labels.controller }})"
           description: "Le module répond avec une combinaison d'état non qualifiée : sa protection n'est pas garantie. Vérifier avec l'outil du constructeur."
 
+      # Cache d'écriture : volumes de premier niveau seulement (les volumes
+      # assemblés portent le même réglage).
+      - alert: HwraidVolumeWriteCacheUnprotected
+        expr: |
+          (hwraid_volume_write_cache_enabled == 1
+            and on (job, instance, controller, volume) hwraid_volume_info{parent=""})
+          and on (job, instance, controller) (
+            hwraid_cache_protection_state{state!="optimal"} == 1
+            or hwraid_cache_protection_present == 0
+            or (last_over_time(hwraid_cache_protection_state{state!="optimal"}[10m]) == 1
+                unless on (job, instance, controller) hwraid_cache_protection_state)
+          )
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Cache d'écriture actif sans protection, volume {{ $labels.volume }} ({{ $labels.controller }})"
+          description: "Le cache d'écriture du volume est actif alors que son module de protection est absent ou n'est pas opérationnel : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver."
+
+      - alert: HwraidVolumeWriteCacheAlwaysOn
+        expr: |
+          hwraid_volume_write_cache_policy{policy="write_back_always"} == 1
+            and on (job, instance, controller, volume) hwraid_volume_info{parent=""}
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cache d'écriture forcé, volume {{ $labels.volume }} ({{ $labels.controller }})"
+          description: "Le cache d'écriture reste actif même si le module de protection tombe en panne : une panne du module expose alors les écritures en attente. Préférer le mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb)."
+
+      - alert: HwraidVolumeWriteCacheInactive
+        expr: |
+          hwraid_volume_write_cache_enabled == 0
+            and on (job, instance, controller, volume) hwraid_volume_info{parent=""}
+            and on (job, instance, controller, volume) hwraid_volume_write_cache_policy{policy=~"write_back_always|write_back_when_protected"} == 1
+            and on (job, instance, controller) hwraid_cache_protection_state{state="optimal"} == 1
+        for: 2h
+        labels:
+          severity: info
+        annotations:
+          summary: "Cache d'écriture inactif malgré une protection opérationnelle, volume {{ $labels.volume }} ({{ $labels.controller }})"
+          description: "Le réglage demande un cache d'écriture et le module de protection est opérationnel, mais la carte n'a pas réactivé le cache : écritures plus lentes. Vérifier l'état du cache avec l'outil du constructeur."
+
   - name: hwraid-visibilite
     rules:
       - alert: HwraidCollectionStale
@@ -139,7 +182,7 @@ groups:
           severity: warning
         annotations:
           summary: "Lecture {{ $labels.collector }} sans succès depuis plus de 3 cycles ({{ $labels.controller }})"
-          description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter."
+          description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter ; « cannot allocate memory » signale la réserve de commandes du pilote aacraid épuisée : lancer sync avant tout redémarrage (docs/aacraid-defaut-pilote.md)."
 
       - alert: HwraidCollectionNeverSucceeded
         # Lecture en échec qui n'a jamais réussi depuis le démarrage (pas de
@@ -152,7 +195,7 @@ groups:
           severity: warning
         annotations:
           summary: "Lecture {{ $labels.collector }} jamais réussie ({{ $labels.controller }})"
-          description: "Depuis son démarrage, l'exporter n'a jamais réussi cette lecture. Voir le journal de l'exporter."
+          description: "Depuis son démarrage, l'exporter n'a jamais réussi cette lecture. Voir le journal de l'exporter ; « cannot allocate memory » signale la réserve de commandes du pilote aacraid épuisée : lancer sync avant tout redémarrage (docs/aacraid-defaut-pilote.md)."
 
       - alert: HwraidCollectionIntervalTooLong
         # Les règles d'état retiennent la dernière valeur sur 10 min : elles

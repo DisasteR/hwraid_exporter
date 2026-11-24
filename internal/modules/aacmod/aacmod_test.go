@@ -380,6 +380,11 @@ func TestCollectVolumesReference(t *testing.T) {
 			t.Fatalf("miroir : %+v", v)
 		}
 	}
+	for _, v := range r.Volumes {
+		if v.WriteCachePolicy != "write_back_always" || v.VendorWriteCachePolicy != "Enabled" || v.WriteCacheEnabled == nil || !*v.WriteCacheEnabled {
+			t.Fatalf("cache d'écriture : %+v", v)
+		}
+	}
 	for i, dk := range r.Disks {
 		if dk.ID != fmt.Sprintf("d%d", i) || dk.State != "online" {
 			t.Fatalf("disque : %+v", dk)
@@ -399,6 +404,45 @@ func TestCollectVolumesReference(t *testing.T) {
 		WWN: "0x5000c50000000007", CapacityBytes: 15628053168 * 512}
 	if got := r.DiskInventory[7]; got != want {
 		t.Fatalf("d7 :\n got %+v\nwant %+v", got, want)
+	}
+}
+
+// Cache d'écriture : chaque réglage observé avec l'outil de référence
+// (wb, wbb, wt), une valeur non observée publiée unknown ; état effectif
+// publié seulement pour 0 ou 1.
+func TestCollectWriteCache(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	c := card("0000:01:00.0", "0")
+	for _, tc := range []struct {
+		policy, enabled         byte
+		wantPolicy, wantVendor  string
+		wantEnabled, publishSet bool
+	}{
+		{2, 1, "write_back_always", "Enabled", true, true},
+		{1, 0, "write_back_when_protected", "On when protected by battery/ZMM", false, true},
+		{1, 1, "write_back_when_protected", "On when protected by battery/ZMM", true, true},
+		{0, 0, "write_through", "Disabled", false, true},
+		{3, 2, "unknown", "value 3", false, false},
+	} {
+		d := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}, sup: arcIo, paged: func(rd aacraid.PagedRead, p, size uint32) ([]byte, error) {
+			b, err := referencePaged(rd, p, size)
+			if err == nil && rd == aacraid.ReadContainerInfo && p == 0 {
+				b[148], b[156] = tc.policy, tc.enabled
+			}
+			return b, err
+		}}
+		r := withDev(d, nil).Collect(c, ref, time.Time{})
+		v := r.Volumes[0]
+		if !r.Collected["volumes"] || v.WriteCachePolicy != tc.wantPolicy || v.VendorWriteCachePolicy != tc.wantVendor {
+			t.Fatalf("réglage %d : %+v", tc.policy, v)
+		}
+		if (v.WriteCacheEnabled != nil) != tc.publishSet || (v.WriteCacheEnabled != nil && *v.WriteCacheEnabled != tc.wantEnabled) {
+			t.Fatalf("état %d : %v", tc.enabled, v.WriteCacheEnabled)
+		}
+		// Les miroirs gardent la valeur capturée.
+		if m := r.Volumes[1]; m.WriteCachePolicy != "write_back_always" || m.WriteCacheEnabled == nil || !*m.WriteCacheEnabled {
+			t.Fatalf("miroir : %+v", m)
+		}
 	}
 }
 
