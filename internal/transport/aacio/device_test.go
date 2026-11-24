@@ -96,7 +96,7 @@ func TestCloseIsFinal(t *testing.T) {
 	if err := d.Close(); err != nil {
 		t.Fatalf("second Close : %v", err)
 	}
-	if _, err := d.HBAInfo(); !errors.Is(err, ErrClosed) {
+	if _, err := d.HBAInfo(context.Background()); !errors.Is(err, ErrClosed) {
 		t.Fatalf("Do après Close : ErrClosed attendu, obtenu %v", err)
 	}
 	if *calls != 0 {
@@ -168,7 +168,7 @@ func TestHBAInfoDecodesKernelResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	info, err := d.HBAInfo()
+	info, err := d.HBAInfo(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestInterruptedCallIsNotRetried(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	if _, err := d.HBAInfo(); !errors.Is(err, syscall.EINTR) {
+	if _, err := d.HBAInfo(context.Background()); !errors.Is(err, syscall.EINTR) {
 		t.Fatalf("EINTR attendu, obtenu %v", err)
 	}
 	if *calls != 1 {
@@ -201,7 +201,7 @@ func TestRealIoctlPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	if _, err := d.HBAInfo(); !errors.Is(err, syscall.ENOTTY) {
+	if _, err := d.HBAInfo(context.Background()); !errors.Is(err, syscall.ENOTTY) {
 		t.Fatalf("ENOTTY attendu de /dev/null, obtenu %v", err)
 	}
 }

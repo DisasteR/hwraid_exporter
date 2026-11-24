@@ -12,7 +12,7 @@ Cette page décrit le défaut, ses conséquences, ce que fait l'exporter pour ne
 
 Le pilote rend aussi `ENOMEM` quand il ne peut pas allouer le tampon d'une commande plus grande qu'un bloc (`ioctl_send_fib`, `commctrl.c`). Cet échec dépend de la mémoire du noyau disponible à cet instant, ne touche que les grandes commandes, par exemple la carte des connecteurs (2 048 octets), et ne consomme pas la réserve. Le pilote prend d'abord un bloc dans la réserve, puis alloue ce tampon : un `ENOMEM` sur une grande commande peut donc venir de l'un ou de l'autre. Tant que les petites lectures de la même carte réussissent, même si une grande commande échoue à chaque cycle, la réserve n'est pas épuisée. Des `ENOMEM` sur les petites lectures, et ARCCONF qui ne trouve plus la carte, désignent très probablement une réserve vide.
 
-Seul un redémarrage de la machine reconstitue la réserve. Lisez la section « Conséquence à l'arrêt » avant de redémarrer.
+Le seul moyen éprouvé de reconstituer la réserve est le redémarrage de la machine (le pilote a aussi un chemin de réinitialisation de la carte, ni étudié ni essayé ici sur la 6805). Lisez la section « Conséquence à l'arrêt » avant de redémarrer.
 
 ## Mécanisme
 
@@ -91,7 +91,7 @@ Depuis la v0.1.2 :
 - le gel du conteneur ou du service (`docker pause`, `systemctl freeze`, freezer cgroup v2) : le noyau réveille alors le thread pour le geler, sans signal que le masque puisse bloquer, et l'attente de la carte peut s'achever sur `-ERESTARTSYS` [Probable : déduit du code du noyau, non essayé]. Arrêter l'exporter avant tout gel ;
 - les blocs perdus par les autres outils.
 
-**Décision : le délai d'arrêt du superviseur reste borné (30 s dans les profils livrés).** Une commande qui ne rend jamais la main serait tuée à 30 s, et son bloc perdu. Un arrêt sans limite (`TimeoutStopSec=infinity`) l'éviterait, mais une carte figée bloquerait alors `systemctl stop` et le redémarrage de toute la machine. Perdre un bloc est préféré à une machine qui ne redémarre plus. Allonger ce délai reste possible, pour qui accepte ce risque.
+**Décision : le délai d'arrêt du superviseur reste borné (30 s dans les profils livrés).** C'est un compromis de disponibilité : une commande qui ne rend pas la main en 30 s est interrompue par le `SIGKILL` du superviseur. Son bloc est perdu et, pour une commande plus grande qu'un bloc, la réponse tardive peut viser un tampon déjà libéré [Probable, voir « Grandes commandes interrompues »]. Un arrêt sans limite (`TimeoutStopSec=infinity`) l'éviterait, mais une carte figée bloquerait alors `systemctl stop` et le redémarrage de toute la machine. Ces risques sont préférés à une machine qui ne redémarre plus. Allonger ce délai reste possible, pour qui accepte ce risque.
 
 **Limite connue :** le test de bout en bout de l'arrêt assemble la boucle, l'ordonnanceur, le module et le transport comme `serve`, mais ne lance pas `serve` lui-même ; l'arrêt de `serve` a été vérifié sur l'hôte de référence.
 
@@ -125,7 +125,7 @@ Avec `0`, et avec `7` tant que le pilote ne croit pas le cache protégé, les pr
 ## Validation
 
 - **Tests unitaires** :
-  - `internal/transport/aacio/thread_test.go` : un appel système bloquant, émis depuis le thread dédié, n'est pas interrompu par `SIGURG`, `SIGTERM` ni `SIGUSR1`. Sans le masque, le même test échoue avec `EINTR`. Le thread système est détruit à la fermeture du nœud ;
+  - `internal/transport/aacio/thread_test.go` : un appel système bloquant, émis depuis le thread dédié, n'est pas interrompu par `SIGURG`, `SIGTERM` ni `SIGUSR1`. Sans le masque, le même test échoue avec `EINTR`. À la fermeture du nœud, la goroutine du thread se termine ; le thread système est alors détruit, sauf s'il s'agit du thread initial du processus, que le runtime Go garde ;
   - `internal/transport/aacio/device_test.go` : une fois l'arrêt demandé, aucune requête n'atteint le noyau, ni relecture après `0xc5`, ni seconde lecture du module de protection ;
   - `internal/transport/aacio/shutdown_e2e_test.go`, avec la boucle, l'ordonnanceur, le module et le transport réels et un ioctl simulé : un vrai `SIGTERM`, reçu pendant qu'une commande firmware attend la carte, au cours du cycle ou après son échéance, laisse cette commande aller au bout, n'en laisse passer aucune autre, et l'attente d'arrêt dure jusqu'à sa fin ; un test témoin montre que, sans l'arrêt, d'autres commandes auraient suivi ;
   - `internal/lifecycle/loop_test.go` : aucun cycle ne démarre après l'arrêt, et l'attente d'arrêt n'a pas de limite propre.

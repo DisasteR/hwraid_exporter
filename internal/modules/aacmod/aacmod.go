@@ -28,7 +28,7 @@ import (
 // celui-ci terminé (échéance du cycle ou arrêt du service), le transport
 // n'en envoie plus de nouvelle (aacio.ErrStopped).
 type device interface {
-	HBAInfo() (aacraid.HBAInfo, error)
+	HBAInfo(ctx context.Context) (aacraid.HBAInfo, error)
 	SupplementInfo(ctx context.Context) (aacraid.SupplementInfo, error)
 	CacheProtection(ctx context.Context) (bool, aacraid.ZMMStatus, error)
 	ReadPaged(ctx context.Context, r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error)
@@ -138,7 +138,7 @@ type bound struct {
 	ctx context.Context
 }
 
-func (b bound) HBAInfo() (aacraid.HBAInfo, error) { return b.dev.HBAInfo() }
+func (b bound) HBAInfo() (aacraid.HBAInfo, error) { return b.dev.HBAInfo(b.ctx) }
 func (b bound) SupplementInfo() (aacraid.SupplementInfo, error) {
 	return b.dev.SupplementInfo(b.ctx)
 }
@@ -201,15 +201,26 @@ func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeR
 	r.Collected = map[string]bool{CapabilitiesCollector: err == nil}
 	// Réponse 706 gardée en mémoire : pas de date de dernier succès.
 	r.Cached = []string{CapabilitiesCollector}
-	if err != nil {
-		r.CollectErr = fmt.Errorf("RequestSupplementAdapterInfo: %w; no other card read attempted this cycle", err)
-		return r
-	}
 	// Lectures firmware au-delà de 706 : seulement vers un couple modèle et
 	// firmware qualifié (exigence S4) ; toute autre carte est publiée avec
-	// ces collecteurs non pris en charge.
+	// ces collecteurs non pris en charge. Ce classement ne dépend que de
+	// sysfs : il est publié même si la 706 échoue.
+	after := append(append([]string(nil), StateCollectors...), DiskInventoryCollector, DiskLocationCollector, CacheProtectionCollector)
 	if !Qualified(c) {
-		r.Unsupported = append(append([]string(nil), StateCollectors...), DiskInventoryCollector, DiskLocationCollector, CacheProtectionCollector)
+		r.Unsupported = after
+	}
+	if err != nil {
+		r.CollectErr = fmt.Errorf("RequestSupplementAdapterInfo: %w; no other card read attempted this cycle", err)
+		// Carte qualifiée : les lectures que la 706 conditionne n'ont pas
+		// pu être tentées ; elles sont publiées en échec.
+		if r.Unsupported == nil {
+			for _, col := range after {
+				r.Collected[col] = false
+			}
+		}
+		return r
+	}
+	if r.Unsupported != nil {
 		return r
 	}
 	if !sup.ArcIoReads() {

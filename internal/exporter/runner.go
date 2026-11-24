@@ -38,6 +38,11 @@ type Runner struct {
 	lateErr map[string]error
 }
 
+// afterDeadline, nil hors des tests, est appelé quand Run voit la fin du
+// contexte avant le résultat d'une collecte, juste avant de le chercher une
+// dernière fois ; delivered indique si ce résultat est déjà disponible.
+var afterDeadline func(delivered func() bool)
+
 // done est le résultat d'une collecte et l'heure à laquelle elle a fini.
 type done struct {
 	res module.Result
@@ -83,9 +88,13 @@ func (r *Runner) Run(ctx context.Context, jobs map[string]func() module.Result, 
 	waiting := map[string]chan done{}
 	r.mu.Lock()
 	r.harvest()
+	// Contexte déjà terminé (arrêt, ou échéance passée) : aucune collecte
+	// lancée, donc aucune commande engagée ; les cartes sont publiées hors
+	// délai, ou rien n'est publié à l'arrêt.
+	stopped := ctx.Err() != nil
 	for addr, job := range jobs {
-		if _, busy := r.inflight[addr]; busy {
-			continue // toujours bloquée : pas de nouvelle collecte
+		if _, busy := r.inflight[addr]; busy || stopped {
+			continue // toujours bloquée, ou arrêt : pas de nouvelle collecte
 		}
 		ch := make(chan done, 1)
 		r.inflight[addr] = ch
@@ -104,11 +113,19 @@ func (r *Runner) Run(ctx context.Context, jobs map[string]func() module.Result, 
 		return finishedInTime(d.at, dl, errors.Is(ctx.Err(), context.Canceled))
 	}
 	out := make(map[string]module.Result, len(jobs))
+	// own : rejets d'une collecte lancée dans cet appel, finie après
+	// l'échéance mais récoltée ici. Ils appartiennent à la carte de ce
+	// cycle : comptés dans son résultat hors délai, pas parmi les rejets
+	// tardifs d'un cycle antérieur.
+	own := map[string]int{}
 	for addr, ch := range waiting {
 		var d done
 		select {
 		case d = <-ch:
 		case <-ctx.Done():
+			if afterDeadline != nil {
+				afterDeadline(func() bool { return len(ch) > 0 })
+			}
 			select {
 			case d = <-ch:
 			default:
@@ -117,10 +134,15 @@ func (r *Runner) Run(ctx context.Context, jobs map[string]func() module.Result, 
 		}
 		r.mu.Lock()
 		delete(r.inflight, addr)
-		if inTime(d) {
+		switch {
+		case inTime(d):
 			out[addr] = d.res
-		} else {
-			r.keepLate(addr, d.res)
+		case errors.Is(ctx.Err(), context.Canceled):
+			r.keepLate(addr, d.res) // arrêt : rien n'est publié
+		default:
+			own[addr] += d.res.CloseUnconfirmed
+			d.res.CloseUnconfirmed = 0
+			r.keepLate(addr, d.res) // erreurs seules
 		}
 		r.mu.Unlock()
 	}
@@ -132,7 +154,7 @@ func (r *Runner) Run(ctx context.Context, jobs map[string]func() module.Result, 
 			for _, n := range collectors[addr] {
 				failed[n] = false
 			}
-			out[addr] = module.Result{TimedOut: true, Collected: failed}
+			out[addr] = module.Result{TimedOut: true, Collected: failed, CloseUnconfirmed: own[addr]}
 		}
 		// À l'arrêt (contexte annulé), les erreurs restent dans l'ordonnanceur :
 		// le cycle ne sera pas publié, LateErrors les rendra pour le journal.

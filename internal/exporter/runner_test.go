@@ -186,7 +186,7 @@ func TestRunnerSingleDeadline(t *testing.T) {
 		}
 		r.Drain(time.Second)
 		out = r.Run(within(t, time.Second), map[string]func() module.Result{addr: func() module.Result { return module.Result{} }}, cols)
-		if n := res.LateCloseUnconfirmed + out[addr].LateCloseUnconfirmed; n != 1 {
+		if n := res.CloseUnconfirmed + res.LateCloseUnconfirmed + out[addr].LateCloseUnconfirmed; n != 1 {
 			t.Fatalf("%s : rejet tardif compté %d fois", name, n)
 		}
 	}
@@ -423,16 +423,29 @@ func TestTimedOutHeldAfterUnreadableSerial(t *testing.T) {
 			if tc.middle == nil {
 				serial = ""
 			}
-			tr.Update(timedOut, []string{addr}, at)
-			s := Build(plan(aacHost("host0", addr, serial)), true, timedOut, tr, time.Minute)
-			out := Render(s)
-			if !strings.Contains(out, want+"\n") {
-				t.Fatalf("succès 706 d'une autre clé publié : %s\n%s", want, out)
+			// Deux cycles hors délai : la relecture 706 reste bloquée, le
+			// succès de l'ancienne clé n'est publié à aucun des deux.
+			for i := 0; i < 2; i++ {
+				tr.Update(timedOut, []string{addr}, at)
+				s := Build(plan(aacHost("host0", addr, serial)), true, timedOut, tr, time.Minute)
+				out := Render(s)
+				if !strings.Contains(out, want+"\n") {
+					t.Fatalf("cycle hors délai %d : succès 706 d'une autre clé publié : %s\n%s", i, want, out)
+				}
+				if s.Controllers[0].LastSuccess["volumes"].IsZero() {
+					t.Fatal("date du dernier succès oubliée sans preuve d'un changement de carte")
+				}
+				tr.Remember(s)
+				at = at.Add(time.Minute)
 			}
-			if s.Controllers[0].LastSuccess["volumes"].IsZero() {
-				t.Fatal("date du dernier succès oubliée sans preuve d'un changement de carte")
+			// Une collecte effective sous S1 relit la 706 : la réponse
+			// gardée sert de nouveau au cycle hors délai suivant.
+			tr.Update(ok, []string{addr}, at)
+			tr.Remember(Build(plan(aacHost("host0", addr, "S1")), true, ok, tr, time.Minute))
+			tr.Update(timedOut, []string{addr}, at.Add(time.Minute))
+			if out := Render(Build(plan(aacHost("host0", addr, "S1")), true, timedOut, tr, time.Minute)); !strings.Contains(out, strings.Replace(capFail, "} 0", "} 1", 1)+"\n") {
+				t.Fatalf("réponse gardée non servie après une collecte effective\n%s", out)
 			}
-			tr.Remember(s)
 		})
 	}
 	// Témoin : sans passage par un numéro illisible, la réponse gardée sert.
@@ -652,5 +665,115 @@ func TestLateCloseNotLeftToReplacementCard(t *testing.T) {
 	tr.Update(ok, []string{addr}, t0.Add(2*time.Minute))
 	if got := Build(plan(aacHost("host0", addr, "S2")), true, ok, tr, time.Minute).Controllers[0].CloseUnconfirmed; got != 1 {
 		t.Fatalf("rejets conservés pour la nouvelle carte : %d, attendu 1", got)
+	}
+}
+
+// Contexte déjà terminé au lancement : aucune collecte n'est démarrée, donc
+// aucune commande ne part après l'arrêt ; rien ne reste à attendre.
+func TestRunnerNoJobAfterStop(t *testing.T) {
+	const a = "0000:01:00.0"
+	r := NewRunner()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	started := false
+	r.Run(ctx, map[string]func() module.Result{a: func() module.Result {
+		started = true
+		return module.Result{}
+	}}, nil)
+	if !r.Drain(time.Second) {
+		t.Fatal("collecte en cours après un lancement sous contexte terminé")
+	}
+	if started {
+		t.Fatal("collecte démarrée après l'arrêt")
+	}
+}
+
+// Numéro de série illisible et firmware changé au même cycle : le champ lu
+// (firmware) établit le changement, l'historique est oublié. Au retour de
+// la carte initiale (autre firmware encore), les apports du cycle
+// intermédiaire ne lui sont pas attribués.
+func TestFirmwareChangeWithUnreadableSerial(t *testing.T) {
+	const addr = "0000:01:00.0"
+	withFw := func(serial, fw string) module.Plan {
+		h := aacHost("host0", addr, serial)
+		h.Firmware = fw
+		return plan(h)
+	}
+	tr := NewTracker()
+	t0 := time.Unix(1_000_000, 0)
+	ok := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"capabilities": true, "volumes": true}, Cached: []string{"capabilities"}, CloseUnconfirmed: 1}}
+	failed := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"capabilities": true, "volumes": false}, Cached: []string{"capabilities"}}}
+	tr.Update(ok, []string{addr}, t0)
+	tr.Remember(Build(withFw("S1", "5.3-0[19204]"), true, ok, tr, time.Minute))
+	tr.Update(ok, []string{addr}, t0.Add(time.Minute))
+	s := Build(withFw("", "5.3-0[19205]"), true, ok, tr, time.Minute)
+	if got := s.Controllers[0].LastSuccess["volumes"]; !got.Equal(t0.Add(time.Minute)) || s.Controllers[0].CloseUnconfirmed != 1 {
+		t.Fatalf("historique de l'ancien firmware repris : dernier succès %v, rejets %d", got, s.Controllers[0].CloseUnconfirmed)
+	}
+	tr.Remember(s)
+	// Second cycle sous le firmware intermédiaire, toujours sans numéro :
+	// seuls ses apports et ceux du cycle précédent comptent.
+	tr.Update(failed, []string{addr}, t0.Add(2*time.Minute))
+	s = Build(withFw("", "5.3-0[19205]"), true, failed, tr, time.Minute)
+	if got := s.Controllers[0].LastSuccess["volumes"]; !got.Equal(t0.Add(time.Minute)) || s.Controllers[0].CloseUnconfirmed != 1 {
+		t.Fatalf("historique de l'ancien firmware réapparu : dernier succès %v, rejets %d", got, s.Controllers[0].CloseUnconfirmed)
+	}
+	tr.Remember(s)
+	tr.Update(failed, []string{addr}, t0.Add(3*time.Minute))
+	s = Build(withFw("S1", "5.3-0[19204]"), true, failed, tr, time.Minute)
+	if got := s.Controllers[0].LastSuccess["volumes"]; !got.IsZero() || s.Controllers[0].CloseUnconfirmed != 0 {
+		t.Fatalf("apports du firmware intermédiaire attribués à la carte revenue : dernier succès %v, rejets %d", got, s.Controllers[0].CloseUnconfirmed)
+	}
+}
+
+// Numéro illisible un cycle, puis un autre numéro : le champ lu avant le
+// trou (S1) reste dans l'identité gardée, et S2 établit le remplacement.
+func TestReplacementAcrossUnreadableSerial(t *testing.T) {
+	const addr = "0000:01:00.0"
+	tr := NewTracker()
+	t0 := time.Unix(1_000_000, 0)
+	ok := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"capabilities": true, "volumes": true}, Cached: []string{"capabilities"}}}
+	failed := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"capabilities": true, "volumes": false}, Cached: []string{"capabilities"}}}
+	tr.Update(ok, []string{addr}, t0)
+	tr.Remember(Build(plan(aacHost("host0", addr, "S1")), true, ok, tr, time.Minute))
+	tr.Update(failed, []string{addr}, t0.Add(time.Minute))
+	s := Build(plan(aacHost("host0", addr, "")), true, failed, tr, time.Minute)
+	if s.Controllers[0].LastSuccess["volumes"].IsZero() {
+		t.Fatal("historique oublié sur un simple numéro illisible")
+	}
+	tr.Remember(s)
+	tr.Update(failed, []string{addr}, t0.Add(2*time.Minute))
+	if got := Build(plan(aacHost("host0", addr, "S2")), true, failed, tr, time.Minute).Controllers[0].LastSuccess["volumes"]; !got.IsZero() {
+		t.Fatalf("historique de S1 transmis à S2 après un numéro illisible : %v", got)
+	}
+}
+
+// Collecte lancée dans le cycle, finie après l'échéance mais récoltée par le
+// même appel : son rejet 0xc5 appartient à la carte de ce cycle. Il est
+// compté dans le résultat hors délai (CloseUnconfirmed), jamais parmi les
+// rejets tardifs d'un cycle antérieur (LateCloseUnconfirmed), que le suivi
+// écarte au changement de carte.
+func TestRunnerOwnLateCloseStaysWithCycle(t *testing.T) {
+	const addr = "0000:01:00.0"
+	cols := map[string][]string{addr: {"volumes"}}
+	// La collecte rend son résultat avant la récolte.
+	afterDeadline = func(delivered func() bool) {
+		for !delivered() {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	t.Cleanup(func() { afterDeadline = nil })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	r := NewRunner()
+	res := r.Run(ctx, map[string]func() module.Result{addr: func() module.Result {
+		<-ctx.Done()
+		return module.Result{NodeValid: true, CloseUnconfirmed: 1}
+	}}, cols)[addr]
+	if !res.TimedOut || res.CloseUnconfirmed != 1 || res.LateCloseUnconfirmed != 0 {
+		t.Fatalf("rejet du cycle mal attribué : %+v", res)
+	}
+	if next := r.Run(within(t, time.Second), map[string]func() module.Result{addr: func() module.Result { return module.Result{} }}, cols)[addr]; next.LateCloseUnconfirmed != 0 {
+		t.Fatalf("rejet compté deux fois : %+v", next)
 	}
 }

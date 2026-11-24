@@ -103,23 +103,23 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 		// module : numéro de série lu (pas le label, qui peut être conservé),
 		// identifiants PCI, modèle, firmware et nœuds déclarés (nom et minor ;
 		// le major est fixe tant que les nœuds préparés sont valides).
-		id := []string{s, pc.Card.PCI.Vendor, pc.Card.PCI.Device, pc.Card.PCI.SubsystemVendor,
-			pc.Card.PCI.SubsystemDevice, c.Model, c.Firmware}
+		// Champs fixes, séparés par « | » ; un champ vide est illisible.
+		nodes := make([]string, 0, len(pc.Requests))
 		for _, rq := range pc.Requests {
-			id = append(id, rq.Name+":"+strconv.FormatUint(uint64(rq.Minor), 10))
+			nodes = append(nodes, rq.Name+":"+strconv.FormatUint(uint64(rq.Minor), 10))
 		}
-		c.Identity = strings.Join(id, "|")
-		c.IdentityKnown = s != "" && len(pc.Requests) > 0
-		// hist : dates et compteur. Repris tant que rien ne prouve un
-		// changement de carte ; identité établie et différente : seuls les
-		// apports de ce cycle.
+		c.Identity = strings.Join([]string{s, pc.Card.PCI.Vendor, pc.Card.PCI.Device, pc.Card.PCI.SubsystemVendor,
+			pc.Card.PCI.SubsystemDevice, c.Model, c.Firmware, strings.Join(nodes, ",")}, "|")
+		c.IdentityKnown = s != "" && len(nodes) > 0
+		// hist : dates et compteur. Repris tant qu'aucun champ lu ne diffère
+		// de l'identité gardée ; sinon, seuls les apports de ce cycle.
 		// capHist : réponses gardées et collecteurs non pris en charge. Repris
-		// seulement pour une identité établie et inchangée : sinon le module
-		// relit ses capacités, et seul ce cycle compte.
-		same := tracker.Same(addr, c.Identity)
+		// seulement pour une identité complète, inchangée, et confirmée par
+		// une collecte effective depuis le dernier cycle incomplet : sinon le
+		// module relit ses capacités, et seul ce cycle compte.
 		hist, capHist := tracker, tracker
 		switch {
-		case c.IdentityKnown && !same:
+		case !tracker.Same(addr, c.Identity):
 			hist = tracker.CycleOnly(addr)
 			capHist = hist
 		case !c.IdentityKnown || !tracker.Established(addr, c.Identity):

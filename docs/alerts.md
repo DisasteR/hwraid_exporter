@@ -35,7 +35,7 @@ Ces règles sont un point de départ : seuils, durées et gravités sont à adap
 | `HwraidCollectionIntervalTooLong` | intervalle de collecte supérieur à 5 min | immédiat | info | allonger les fenêtres des règles d'état |
 | `HwraidManagementNodeInvalid` | nœud de gestion non préparé, non vérifié ou désignant une autre carte | 5 min | warning | erreur de déploiement, carte changée |
 | `HwraidControllerUnsupported` | carte sans module | 1 h | info | carte non surveillée |
-| `HwraidVolumesNotMonitored` | carte reconnue dont les volumes ne sont pas lus (`hwraid_collector_supported{collector="volumes"}` 0 : modèle ou firmware non qualifié) | 1 h | warning | une panne de volume ne déclenchera aucune alerte : vérifier le firmware, surveiller avec l'outil du constructeur |
+| `HwraidVolumesNotMonitored` | carte reconnue dont les volumes ne sont pas lus (`hwraid_collector_supported{collector="volumes"}` 0 : couple modèle et firmware non qualifié, ou lectures d'état non annoncées par la réponse de capacités 706) | 1 h | warning | une panne de volume ne déclenchera aucune alerte : vérifier le firmware, surveiller avec l'outil du constructeur |
 | `HwraidControllerDisappeared` | contrôleur vu dans les dernières 24 h, absent alors que la découverte réussit | immédiat, pendant 24 h | warning | carte retirée, pilote déchargé ou identité changée |
 | `HwraidDiscoveryFailed` | découverte sysfs en échec (au moins un hôte SCSI illisible) | 15 min | warning | une carte peut ne plus être surveillée |
 | `HwraidSnapshotNotReady` | exporter joignable mais aucune collecte servie (`hwraid_snapshot_ready` 0 : démarrage, arrêt en cours, vue périmée) | 10 min | warning | consulter le journal de l'exporter |

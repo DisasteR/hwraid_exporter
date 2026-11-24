@@ -6,6 +6,7 @@ package aacio_test
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -126,13 +127,15 @@ func TestShutdownDuringBlockedCommand(t *testing.T) {
 			release()
 			// L'ioctl réel n'est rétabli qu'après la fin effective de la boucle
 			// et de la collecte. Au-delà de la borne, le processus de test
-			// s'arrête (panic) plutôt que de rétablir l'ioctl réel sous une
-			// collecte encore active, ou d'attendre le délai global de go test.
+			// sort aussitôt (os.Exit, sans exécuter les autres nettoyages,
+			// dont celui qui rétablit l'ioctl réel), plutôt que de rétablir
+			// l'ioctl réel sous une collecte encore active ou d'attendre le
+			// délai global de go test.
 			if !waitBounded(loopDone, 10*time.Second) {
-				panic(fmt.Sprintf("late=%v : boucle de collecte toujours active au nettoyage", late))
+				abort(fmt.Sprintf("late=%v : boucle de collecte toujours active au nettoyage", late))
 			}
 			if !runner.Drain(10 * time.Second) {
-				panic(fmt.Sprintf("late=%v : collecte toujours en cours au nettoyage", late))
+				abort(fmt.Sprintf("late=%v : collecte toujours en cours au nettoyage", late))
 			}
 		})
 		select {
@@ -178,8 +181,9 @@ func TestShutdownDuringBlockedCommand(t *testing.T) {
 	}
 }
 
-// Arrêt demandé avant le premier cycle : seul GET_HBA_INFO, servi par le
-// pilote sans commande à la carte, atteint le noyau.
+// Arrêt demandé avant le premier cycle : aucun ioctl n'atteint le noyau,
+// pas même GET_HBA_INFO, que le pilote sert sous le verrou des commandes de
+// gestion (il pourrait attendre derrière un autre outil).
 func TestShutdownBeforeFirstCycle(t *testing.T) {
 	list, err := aacraid.NewAllowlist()
 	if err != nil {
@@ -193,11 +197,11 @@ func TestShutdownBeforeFirstCycle(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	r := m.Collect(ctx, c, refs)
-	if !r.NodeValid || r.CollectErr == nil {
+	if r.NodeValid || !errors.Is(r.Err, context.Canceled) {
 		t.Fatalf("%+v", r)
 	}
-	if got := rec.sent(); len(got) != 1 || got[0] != aacraid.IoctlGetHBAInfo {
-		t.Fatalf("commandes firmware après l'arrêt : %#x", got)
+	if got := rec.sent(); len(got) != 0 {
+		t.Fatalf("ioctl après l'arrêt : %#x", got)
 	}
 }
 
@@ -227,4 +231,11 @@ func waitBounded(done <-chan struct{}, d time.Duration) bool {
 	case <-time.After(d):
 		return false
 	}
+}
+
+// abort arrête le processus de test sur-le-champ, sans exécuter aucune
+// fonction de nettoyage.
+func abort(msg string) {
+	fmt.Fprintln(os.Stderr, "FATAL:", msg)
+	os.Exit(2)
 }

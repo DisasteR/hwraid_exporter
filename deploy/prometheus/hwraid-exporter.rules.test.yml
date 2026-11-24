@@ -427,7 +427,7 @@ tests:
           - exp_labels: {severity: warning, controller: "serial:A", collector: volumes}
             exp_annotations:
               summary: "État des volumes non surveillé (serial:A)"
-              description: "Le module reconnaît la carte, mais ne lit pas ses volumes (modèle ou firmware non qualifié) : une panne de volume ne déclenchera aucune alerte. Vérifier le firmware de la carte et la liste des couples qualifiés (docs/aacraid-interface.md) ; surveiller la carte avec l'outil du constructeur en attendant."
+              description: "Le module reconnaît la carte, mais ne lit pas ses volumes : couple modèle et firmware non qualifié, ou carte qui n'annonce pas les lectures d'état dans sa réponse de capacités (706). Une panne de volume ne déclenchera aucune alerte. Vérifier le firmware de la carte et la liste des couples qualifiés (docs/aacraid-interface.md) ; surveiller la carte avec l'outil du constructeur en attendant."
       - eval_time: 61m
         alertname: HwraidControllerUnsupported
         exp_alerts: []
@@ -479,7 +479,23 @@ tests:
         values: '1 1 1 0 1 1 1 0 1 1 1 0 1 1 1 0 1 1 1 0 1 1 1 0 1 1 1 0 1 1 1 0 1 1 1 0 1 1 1 0'
       - series: 'hwraid_collection_success{controller="serial:B",collector="volumes"}'
         values: '1x20 0 1x19'
+      # Instable 20 min, puis la série disparaît (collecteur devenu non pris
+      # en charge) : plus d'alerte une fois le maintien de 10 min écoulé,
+      # bien que l'heure écoulée compte encore six passages.
+      - series: 'hwraid_collection_success{controller="serial:C",collector="volumes"}'
+        values: '1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 stale'
     alert_rule_test:
+      - eval_time: 15m
+        alertname: HwraidCollectionIntermittent
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: "serial:A", collector: volumes}
+            exp_annotations:
+              summary: "Lecture volumes en échec intermittent (serial:A)"
+              description: "La lecture échoue régulièrement, entre des succès : les alertes d'état qui demandent plusieurs minutes de condition continue (for) peuvent ne jamais se déclencher. Vérifier l'état de la carte avec l'outil du constructeur et consulter le journal de l'exporter (délais dépassés, autre outil interrogeant la carte en même temps)."
+          - exp_labels: {severity: warning, controller: "serial:C", collector: volumes}
+            exp_annotations:
+              summary: "Lecture volumes en échec intermittent (serial:C)"
+              description: "La lecture échoue régulièrement, entre des succès : les alertes d'état qui demandent plusieurs minutes de condition continue (for) peuvent ne jamais se déclencher. Vérifier l'état de la carte avec l'outil du constructeur et consulter le journal de l'exporter (délais dépassés, autre outil interrogeant la carte en même temps)."
       - eval_time: 39m
         alertname: HwraidCollectionIntermittent
         exp_alerts:

@@ -121,7 +121,12 @@ func referenceConnectorMap() (aacraid.ConnectorMap, error) {
 	return aacraid.DecodeConnectorMap(b)
 }
 
-func (f *fakeDev) HBAInfo() (aacraid.HBAInfo, error) { return f.info, f.err }
+func (f *fakeDev) HBAInfo(ctx context.Context) (aacraid.HBAInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return aacraid.HBAInfo{}, errors.Join(aacio.ErrStopped, err) // comme l'admission du transport
+	}
+	return f.info, f.err
+}
 func (f *fakeDev) SupplementInfo(ctx context.Context) (aacraid.SupplementInfo, error) {
 	if f.stopped(ctx) {
 		return aacraid.SupplementInfo{}, aacio.ErrStopped
@@ -303,15 +308,32 @@ func TestCollectSupplementGate(t *testing.T) {
 // hwraid_collection_success : la lecture des capacités est rapportée à
 // chaque cycle (1 si la valeur est connue, 0 si la lecture vient d'échouer),
 // et n'est pas rapportée si elle n'a pas été tentée (nœud d'une autre carte).
+// Quand elle échoue, une carte qualifiée publie en échec les lectures
+// qu'elle conditionne ; une carte non qualifiée publie quand même ses
+// collecteurs non pris en charge (classement tiré de sysfs seul).
 func TestCollectReportsCapabilitiesCollection(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
 	c := card("0000:01:00.0", "0")
 	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
+	after := []string{"volumes", "disks", DiskInventoryCollector, DiskLocationCollector, CacheProtectionCollector}
+
+	unq := card("0000:01:00.0", "0")
+	unq.Hosts[0].Firmware = "5.2-0[19109]"
+	if r := withDev(&fakeDev{info: hba, supErr: errors.New("EIO")}, nil).Collect(context.Background(), unq, ref); len(r.Collected) != 1 ||
+		r.Collected[CapabilitiesCollector] || len(r.Unsupported) != len(after) {
+		t.Fatalf("non qualifiée, 706 en échec : %+v / non pris en charge %v", r.Collected, r.Unsupported)
+	}
 
 	f := &fakeDev{info: hba, supErr: errors.New("EIO")}
 	m := withDev(f, nil)
-	if r := m.Collect(context.Background(), c, ref); len(r.Collected) != 1 || r.Collected[CapabilitiesCollector] {
-		t.Fatalf("échec : %+v", r.Collected)
+	r := m.Collect(context.Background(), c, ref)
+	if len(r.Collected) != 1+len(after) || r.Collected[CapabilitiesCollector] || r.Unsupported != nil {
+		t.Fatalf("échec : %+v / non pris en charge %v", r.Collected, r.Unsupported)
+	}
+	for _, col := range after {
+		if ok, seen := r.Collected[col]; !seen || ok {
+			t.Fatalf("lecture %s empêchée par la 706 non publiée en échec : %+v", col, r.Collected)
+		}
 	}
 	f.supErr, f.sup = nil, arcIo
 	for i := 0; i < 2; i++ { // lecture réelle, puis valeur gardée
@@ -912,13 +934,14 @@ func TestCollectStopsWithContext(t *testing.T) {
 		t.Fatalf("lectures faites avant la fin perdues : %+v", r)
 	}
 
-	// Contexte déjà terminé : aucune commande firmware, pas même 706.
+	// Contexte déjà terminé : aucune commande firmware, pas même 706, et le
+	// nœud n'est pas vérifié (GET_HBA_INFO refusée elle aussi).
 	d = &fakeDev{info: hba, sup: arcIo}
 	r = withDev(d, nil).Collect(ctx, card("0000:01:00.0", "0"), ref)
 	if d.supCall != 0 || d.cpCall != 0 || len(d.reads) != 0 || d.cmCall != 0 {
 		t.Fatalf("commandes après la fin (706 %d, ZMM %d, paginées %v)", d.supCall, d.cpCall, d.reads)
 	}
-	if !r.NodeValid || !errors.Is(r.CollectErr, aacio.ErrStopped) || r.Collected[CapabilitiesCollector] {
+	if r.NodeValid || !errors.Is(r.Err, aacio.ErrStopped) || r.Collected[CapabilitiesCollector] {
 		t.Fatalf("%+v", r)
 	}
 }

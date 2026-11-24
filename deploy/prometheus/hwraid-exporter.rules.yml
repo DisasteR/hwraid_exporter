@@ -208,7 +208,12 @@ groups:
         # échecs entre des succès (un échec encadré compte deux passages). Ces trous remettent
         # à zéro le délai « for » des autres alertes, qui peuvent alors ne
         # jamais se déclencher, sans que HwraidCollectionStale ne le voie.
-        expr: changes(hwraid_collection_success[1h]) >= 6
+        # La série doit exister à l'instant : un collecteur devenu non pris
+        # en charge, ou un exporter arrêté, ne garde pas l'alerte sur ses
+        # seuls échantillons passés.
+        expr: |
+          changes(hwraid_collection_success[1h]) >= 6
+            and on (job, instance, controller, collector) hwraid_collection_success
         keep_firing_for: 10m
         labels:
           severity: warning
@@ -259,9 +264,9 @@ groups:
           description: "Aucun module ne sait lire cette carte : son état n'est pas surveillé."
 
       - alert: HwraidVolumesNotMonitored
-        # Carte reconnue par un module (backend pris en charge), mais dont le
-        # couple modèle et firmware n'est pas qualifié : les volumes ne sont
-        # pas lus. Ni HwraidControllerUnsupported ni HwraidCollectionStale
+        # Carte reconnue par un module (backend pris en charge), mais dont les
+        # volumes ne sont pas lus : couple modèle et firmware non qualifié, ou
+        # lectures d'état non annoncées par la 706. Ni HwraidControllerUnsupported ni HwraidCollectionStale
         # ne le signalent.
         expr: hwraid_collector_supported{collector="volumes"} == 0
         for: 1h
@@ -270,7 +275,7 @@ groups:
           severity: warning
         annotations:
           summary: "État des volumes non surveillé ({{ $labels.controller }})"
-          description: "Le module reconnaît la carte, mais ne lit pas ses volumes (modèle ou firmware non qualifié) : une panne de volume ne déclenchera aucune alerte. Vérifier le firmware de la carte et la liste des couples qualifiés (docs/aacraid-interface.md) ; surveiller la carte avec l'outil du constructeur en attendant."
+          description: "Le module reconnaît la carte, mais ne lit pas ses volumes : couple modèle et firmware non qualifié, ou carte qui n'annonce pas les lectures d'état dans sa réponse de capacités (706). Une panne de volume ne déclenchera aucune alerte. Vérifier le firmware de la carte et la liste des couples qualifiés (docs/aacraid-interface.md) ; surveiller la carte avec l'outil du constructeur en attendant."
 
       - alert: HwraidControllerDisappeared
         # Contrôleur vu dans les dernières 24 h, absent alors que la

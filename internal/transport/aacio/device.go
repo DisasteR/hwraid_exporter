@@ -139,7 +139,7 @@ func (d *Device) Do(req allowlist.Request) error { return d.do(nil, req) }
 // sur le thread dédié, juste avant l'appel système : c'est le point
 // d'engagement de la commande. Une commande refusée là n'atteint jamais le
 // noyau. ctx nil : commande déjà engagée (premier morceau et clôture d'un
-// transfert ouvert) ou servie par le pilote seul (GET_HBA_INFO).
+// transfert ouvert).
 func (d *Device) do(ctx context.Context, req allowlist.Request) error {
 	if d.fd < 0 {
 		return ErrClosed
@@ -173,10 +173,14 @@ func (d *Device) do(ctx context.Context, req allowlist.Request) error {
 	return nil
 }
 
-// HBAInfo lit FSACTL_GET_HBA_INFO (réponse du pilote, sans commande firmware).
-func (d *Device) HBAInfo() (aacraid.HBAInfo, error) {
+// HBAInfo lit FSACTL_GET_HBA_INFO (réponse du pilote, sans commande
+// firmware). Le pilote la sert sous le même verrou que les commandes de
+// gestion : elle peut attendre derrière un autre outil. Elle est donc
+// soumise à ctx, comme une commande firmware, pour qu'un arrêt n'en
+// engage pas une nouvelle.
+func (d *Device) HBAInfo(ctx context.Context) (aacraid.HBAInfo, error) {
 	buf := make([]byte, aacraid.HBAInfoSize)
-	if err := d.Do(allowlist.Request{Ioctl: aacraid.IoctlGetHBAInfo, Buf: buf}); err != nil {
+	if err := d.do(ctx, allowlist.Request{Ioctl: aacraid.IoctlGetHBAInfo, Buf: buf}); err != nil {
 		return aacraid.HBAInfo{}, err
 	}
 	return aacraid.DecodeHBAInfo(buf)

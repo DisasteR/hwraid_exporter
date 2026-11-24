@@ -27,7 +27,10 @@
 # l'instance et la sonde affichées au démarrage (« sonde … active, instance
 # … »), sous la racine de trace qu'il a utilisée (<racine> :
 # /sys/kernel/tracing, ou /sys/kernel/debug/tracing si
-# /sys/kernel/tracing/events n'existe pas) :
+# /sys/kernel/tracing/events n'existe pas). Le lecteur (cat) peut avoir
+# survécu au script et garder la trace ouverte, ce qui fait échouer rmdir :
+# l'arrêter d'abord.
+#   pkill -KILL -f '/instances/aacfib_<pid>_<suffixe>/trace_pipe'
 #   rmdir <racine>/instances/aacfib_<pid>_<suffixe>
 #   echo '-:aacfib/ret_<pid>_<suffixe>' >> <racine>/kprobe_events
 #
@@ -36,6 +39,11 @@
 #   le chemin est affiché ; elle n'est lisible que par root. La capture
 #   s'arrête à AACFIB_MAX_MB Mio (entier de 1 à 100000, 100 par défaut).
 set -eu
+# Sortie standard fermée (tube sans lecteur) : une écriture échoue au lieu de
+# tuer le shell par SIGPIPE, qui sauterait le nettoyage et laisserait la
+# sonde active. L'échec arrête le script (set -e), puis le nettoyage, dont
+# les écritures peuvent échouer sans l'interrompre (appelé dans un ||).
+trap '' PIPE
 
 if [ $# -ne 0 ]; then
 	echo "usage : $0 (sans argument)" >&2

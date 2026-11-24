@@ -4,6 +4,7 @@
 package exporter
 
 import (
+	"strings"
 	"time"
 
 	"github.com/DisasteR/hwraid_exporter/internal/module"
@@ -27,14 +28,15 @@ type Tracker struct {
 	// unsupported : collecteurs déclarés non pris en charge par la dernière
 	// collecte effective ; conservés pendant un dépassement de délai.
 	unsupported map[string][]string
-	// ident : identité matérielle établie de la carte (Controller.Identity,
-	// seulement si IdentityKnown) vue au dernier instantané. Quand elle change à la même adresse, tout l'historique
-	// de l'adresse (dates, compteur, held, unsupported) est oublié : il
-	// appartenait à une autre carte, ou à un autre firmware.
+	// ident : identité matérielle de la carte (Controller.Identity), champs
+	// lus cumulés depuis le dernier changement. Quand un champ lu en diffère
+	// à la même adresse, tout l'historique de l'adresse (dates, compteur,
+	// held, unsupported) est oublié : il appartenait à une autre carte, ou à
+	// un autre firmware.
 	ident map[string]string
-	// uncertain : adresses dont le dernier instantané avait une identité
-	// incomplète. Le module a alors changé la clé de ses réponses gardées :
-	// elles ne sont réutilisées qu'après un cycle sous identité établie.
+	// uncertain : adresses vues avec une identité incomplète depuis leur
+	// dernière collecte effective sous identité complète. Le module a pu
+	// changer la clé de ses réponses gardées : elles ne sont pas réutilisées.
 	uncertain map[string]bool
 	// cycle : apports du dernier Update seul, par adresse (succès,
 	// clôtures 0xc5, réponses gardées). Au premier cycle d'une nouvelle
@@ -146,14 +148,41 @@ func (t *Tracker) Update(results map[string]module.Result, present []string, now
 	}
 }
 
-// Same indique si l'historique gardé pour addr appartient à la carte
-// d'identité id (ou s'il n'y a pas encore d'identité connue).
+// Same indique si l'historique gardé pour addr peut appartenir à la carte
+// d'identité id : aucun champ lu des deux côtés ne diffère (ou il n'y a pas
+// encore d'identité connue).
 func (t *Tracker) Same(addr, id string) bool {
 	if t == nil {
 		return false
 	}
 	old, ok := t.ident[addr]
-	return !ok || old == id
+	return !ok || !conflicts(old, id)
+}
+
+// conflicts indique si deux identités (champs séparés par « | », vide :
+// illisible) diffèrent sur un champ lu des deux côtés.
+func conflicts(a, b string) bool {
+	pa, pb := strings.Split(a, "|"), strings.Split(b, "|")
+	if len(pa) != len(pb) {
+		return true
+	}
+	for i := range pa {
+		if pa[i] != "" && pb[i] != "" && pa[i] != pb[i] {
+			return true
+		}
+	}
+	return false
+}
+
+// merge complète old avec les champs lus de cur (sans conflit entre eux).
+func merge(old, cur string) string {
+	po, pc := strings.Split(old, "|"), strings.Split(cur, "|")
+	for i := range po {
+		if pc[i] != "" {
+			po[i] = pc[i]
+		}
+	}
+	return strings.Join(po, "|")
 }
 
 // Established indique si l'identité établie id était déjà celle de la carte
@@ -232,18 +261,29 @@ func (t *Tracker) Remember(s Snapshot) {
 		return
 	}
 	for _, c := range s.Controllers {
-		// Changement d'identité établie observé, même pendant un dépassement
-		// de délai ou sans collecte effective : l'historique est oublié. Une
-		// identité incomplète (numéro de série ou nœud illisible) ne prouve
-		// ni continuité ni changement : rien n'est oublié ni enregistré.
-		if c.IdentityKnown {
-			if old, ok := t.ident[c.PCIAddress]; ok && old != c.Identity {
-				t.forget(c.PCIAddress)
-			}
+		// Un champ lu différent de l'identité gardée, même pendant un
+		// dépassement de délai, sans collecte effective ou avec d'autres
+		// champs illisibles, montre une autre carte ou un autre firmware :
+		// l'historique est oublié et l'identité observée remplace l'ancienne.
+		// Sinon, les champs lus complètent l'identité gardée.
+		switch old, ok := t.ident[c.PCIAddress]; {
+		case ok && conflicts(old, c.Identity):
+			t.forget(c.PCIAddress)
 			t.ident[c.PCIAddress] = c.Identity
-			delete(t.uncertain, c.PCIAddress)
-		} else {
+		case ok:
+			t.ident[c.PCIAddress] = merge(old, c.Identity)
+		default:
+			t.ident[c.PCIAddress] = c.Identity
+		}
+		// Identité incomplète : le module a pu changer la clé de ses réponses
+		// gardées. Elles ne sont réutilisées qu'après une collecte effective
+		// (ni hors délai ni nœud invalide) sous identité complète, qui les a
+		// relues sous la bonne clé.
+		switch {
+		case !c.IdentityKnown:
 			t.uncertain[c.PCIAddress] = true
+		case !c.TimedOut && c.NodeValid:
+			delete(t.uncertain, c.PCIAddress)
 		}
 		if !c.TimedOut && c.NodeValid {
 			t.unsupported[c.PCIAddress] = append([]string(nil), c.Unsupported...)
