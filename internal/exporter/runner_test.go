@@ -4,6 +4,7 @@
 package exporter
 
 import (
+	"context"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -35,7 +36,7 @@ func TestRunnerDeadlineAndSingleFlight(t *testing.T) {
 	r := NewRunner()
 
 	start := time.Now()
-	out := r.Run(jobs, cols, 50*time.Millisecond)
+	out := r.Run(within(t, 50*time.Millisecond), jobs, cols)
 	if d := time.Since(start); d > 2*time.Second {
 		t.Fatalf("Run a attendu %v", d)
 	}
@@ -47,7 +48,7 @@ func TestRunnerDeadlineAndSingleFlight(t *testing.T) {
 	}
 
 	// Cycle suivant, toujours bloquée : pas de deuxième appel.
-	out = r.Run(jobs, cols, 10*time.Millisecond)
+	out = r.Run(within(t, 10*time.Millisecond), jobs, cols)
 	if !out[slow].TimedOut || slowCalls.Load() != 1 {
 		t.Fatalf("relance d'une collecte bloquée (%d appels) : %+v", slowCalls.Load(), out[slow])
 	}
@@ -64,7 +65,7 @@ func TestRunnerDeadlineAndSingleFlight(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	out = r.Run(jobs, cols, time.Second)
+	out = r.Run(within(t, time.Second), jobs, cols)
 	if s := out[slow]; s.TimedOut || len(s.Volumes) != 0 || slowCalls.Load() != 2 {
 		t.Fatalf("résultat tardif repris ou pas de relance (%d appels) : %+v", slowCalls.Load(), s)
 	}
@@ -72,7 +73,7 @@ func TestRunnerDeadlineAndSingleFlight(t *testing.T) {
 	if out[slow].CloseUnconfirmed != 2 {
 		t.Fatalf("rejets 0xc5 du résultat tardif perdus : %+v", out[slow])
 	}
-	if out = r.Run(jobs, cols, time.Second); out[slow].CloseUnconfirmed != 0 {
+	if out = r.Run(within(t, time.Second), jobs, cols); out[slow].CloseUnconfirmed != 0 {
 		t.Fatalf("rejets tardifs comptés deux fois : %+v", out[slow])
 	}
 }
@@ -119,7 +120,7 @@ func TestRunnerDrain(t *testing.T) {
 		finished.Store(true)
 		return module.Result{}
 	}}
-	out := r.Run(jobs, map[string][]string{"0000:01:00.0": {"volumes"}}, 10*time.Millisecond)
+	out := r.Run(within(t, 10*time.Millisecond), jobs, map[string][]string{"0000:01:00.0": {"volumes"}})
 	if !out["0000:01:00.0"].TimedOut {
 		t.Fatal("la collecte aurait dû dépasser l'échéance")
 	}
@@ -139,5 +140,95 @@ func TestRunnerDrain(t *testing.T) {
 	}
 	if !finished.Load() {
 		t.Fatal("Drain a rendu la main avant la fin de la collecte")
+	}
+}
+
+// within rend un contexte qui se termine après d.
+func within(t *testing.T, d time.Duration) context.Context {
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	t.Cleanup(cancel)
+	return ctx
+}
+
+// Une collecte qui finit juste après l'échéance (ici, dès qu'elle la voit)
+// n'est pas publiée, même reçue en même temps qu'elle ; ses lectures
+// rejetées sont comptées. Même règle à l'arrêt du service (contexte annulé,
+// sans échéance).
+func TestRunnerSingleDeadline(t *testing.T) {
+	const addr = "0000:01:00.0"
+	cols := map[string][]string{addr: {"volumes"}}
+	for _, name := range []string{"échéance", "arrêt"} {
+		var ctx context.Context
+		if name == "échéance" {
+			ctx = within(t, 20*time.Millisecond)
+		} else {
+			c, cancel := context.WithCancel(context.Background())
+			time.AfterFunc(20*time.Millisecond, cancel)
+			ctx = c
+		}
+		jobs := map[string]func() module.Result{addr: func() module.Result {
+			<-ctx.Done()
+			return module.Result{NodeValid: true, Collected: map[string]bool{"volumes": true}, CloseUnconfirmed: 1}
+		}}
+		r := NewRunner()
+		out := r.Run(ctx, jobs, cols)
+		res := out[addr]
+		if res.Collected["volumes"] || res.NodeValid {
+			t.Fatalf("%s : résultat tardif publié : %+v", name, res)
+		}
+		r.Drain(time.Second)
+		out = r.Run(within(t, time.Second), map[string]func() module.Result{addr: func() module.Result { return module.Result{} }}, cols)
+		if res.CloseUnconfirmed+out[addr].CloseUnconfirmed != 1 {
+			t.Fatalf("%s : rejet tardif compté %d fois", name, res.CloseUnconfirmed+out[addr].CloseUnconfirmed)
+		}
+	}
+}
+
+// Le rejet porté par un résultat tardif est récolté même si la carte ne
+// figure pas au cycle suivant, puis reporté quand elle revient.
+func TestRunnerHarvestsAbsentCard(t *testing.T) {
+	const a, b = "0000:01:00.0", "0000:02:00.0"
+	release := make(chan struct{})
+	r := NewRunner()
+	r.Run(within(t, 10*time.Millisecond), map[string]func() module.Result{a: func() module.Result {
+		<-release
+		return module.Result{CloseUnconfirmed: 3}
+	}}, nil)
+	close(release)
+	r.Drain(time.Second)
+	r.Run(within(t, time.Second), map[string]func() module.Result{b: func() module.Result { return module.Result{} }}, nil)
+	r.mu.Lock()
+	_, still := r.inflight[a]
+	r.mu.Unlock()
+	if still {
+		t.Fatal("collecte tardive d'une carte absente non récoltée")
+	}
+	out := r.Run(within(t, time.Second), map[string]func() module.Result{a: func() module.Result { return module.Result{} }}, nil)
+	if out[a].CloseUnconfirmed != 3 {
+		t.Fatalf("rejets perdus : %+v", out[a])
+	}
+}
+
+// Décision de publication : fin avant l'échéance, bornes comprises, et
+// jamais après une annulation (arrêt du service).
+func TestFinishedInTime(t *testing.T) {
+	t0 := time.Unix(1_000_000, 0)
+	at := func(d time.Duration) time.Time { return t0.Add(d) }
+	for _, c := range []struct {
+		name     string
+		at, dl   time.Time
+		canceled bool
+		want     bool
+	}{
+		{"sans échéance", at(0), time.Time{}, false, true},
+		{"avant l'échéance", at(5 * time.Second), at(10 * time.Second), false, true},
+		{"à l'échéance", at(10 * time.Second), at(10 * time.Second), false, true},
+		{"après l'échéance", at(11 * time.Second), at(10 * time.Second), false, false},
+		{"arrêt", at(5 * time.Second), at(10 * time.Second), true, false},
+		{"arrêt sans échéance", at(0), time.Time{}, true, false},
+	} {
+		if got := finishedInTime(c.at, c.dl, c.canceled); got != c.want {
+			t.Errorf("%s : %v, attendu %v", c.name, got, c.want)
+		}
 	}
 }

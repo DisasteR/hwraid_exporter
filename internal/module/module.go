@@ -48,7 +48,8 @@ type Result struct {
 	// Unsupported liste les collecteurs que la carte ne permet pas
 	// (hwraid_collector_supported = 0).
 	Unsupported []string
-	// CollectErr : échec d'une lecture firmware, sans effet sur NodeValid.
+	// CollectErr : échecs des lectures firmware du cycle, un par collecteur
+	// (errors.Join), sans effet sur NodeValid.
 	CollectErr error
 	// CacheProtection est l'état du module de protection du cache lu
 	// pendant le cycle ; nil si la lecture n'a pas abouti ou n'a pas eu lieu.

@@ -49,7 +49,7 @@ Valeurs réservées pour les modules à venir, non publiées aujourd'hui : `redu
 
 | Métrique | Labels | Valeur |
 |---|---|---|
-| `hwraid_collection_success` | `controller`, `collector` | 1 si la dernière lecture du collecteur a abouti, 0 sinon ; absente si elle n'a pas été tentée |
+| `hwraid_collection_success` | `controller`, `collector` | 1 si la dernière lecture du collecteur a abouti ; 0 si elle a échoué, ou n'a pas pu être tentée parce qu'une lecture dont elle dépend a échoué dans le même cycle ; absente si la collecte de la carte n'a pas été tentée |
 | `hwraid_collector_supported` | `controller`, `collector` | 0 si la carte ne permet pas ce collecteur ; absente sinon |
 | `hwraid_collection_last_success_timestamp_seconds` | `controller`, `collector` | date Unix du dernier cycle où la lecture a abouti ; absente tant qu'elle n'a jamais abouti depuis le démarrage de l'exporter, et pour un collecteur servi par une réponse gardée en mémoire (`capabilities`) |
 | `hwraid_transfer_close_unconfirmed_total` | `controller` | compteur des lectures paginées rejetées parce que leur clôture a été confirmée par un statut non nominal (aacraid : `0xc5`, observé quand un autre outil, comme maxView, interroge la carte en même temps). Une lecture rejetée est refaite une fois dans le même cycle ; ses données ne sont jamais publiées. Les rejets d'une collecte rendue après son délai sont comptés au cycle suivant |
@@ -90,12 +90,14 @@ L'inventaire est relu à chaque cycle : un disque remplacé au même emplacement
 
 Le lien avec Linux est lu dans sysfs à chaque cycle, sans commande à la carte. Il n'est publié que si le numéro de série gardé par le noyau (page VPD 0x80) est celui de la carte : un nœud `sgX` peut changer de numéro d'un démarrage à l'autre, la métrique suit. Pour interroger un disque avec `smartctl`, c'est le nœud à utiliser.
 
-L'emplacement reprend la numérotation de l'outil du constructeur (« Connector n, Device m » d'ARCCONF et de maxView), fournie par la carte. Avec un câble éclaté mini-SAS vers 4 SATA, `device` m correspond à la fiche P(m+1) (vérifié sur l'hôte de référence). Un disque relié par un expandeur ou un fond de panier n'a pas d'emplacement publié. Le numéro de série, imprimé sur l'étiquette du disque, reste la confirmation avant de retirer un disque. Pour relier un disque à sa santé SMART, joindre sur le numéro de série, par exemple avec smartctl_exporter (label `serial_number` de `smartctl_device`) :
+L'emplacement reprend la numérotation de l'outil du constructeur (« Connector n, Device m » d'ARCCONF et de maxView), fournie par la carte. Avec un câble éclaté mini-SAS vers 4 SATA, `device` m correspond à la fiche P(m+1) (vérifié sur l'hôte de référence). Un disque relié par un expandeur ou un fond de panier n'a pas d'emplacement publié. Le numéro de série, imprimé sur l'étiquette du disque, reste la confirmation avant de retirer un disque. Pour relier un disque à sa santé SMART, joindre sur le numéro de série, par exemple avec smartctl_exporter (label `serial_number` de `smartctl_device`). Le numéro de série n'est unique que sur un même hôte, et les deux exporters sont deux cibles distinctes (`instance` différentes) : la jointure porte donc aussi sur un label d'hôte commun, ici `host`, à poser par réétiquetage dans la configuration de Prometheus pour les deux cibles. Les numéros vides sont écartés :
 
 ```promql
-hwraid_disk_info * on (serial) group_left (device)
-  label_replace(smartctl_device, "serial", "$1", "serial_number", "(.+)")
+hwraid_disk_info{serial!=""} * on (host, serial) group_left (device)
+  label_replace(smartctl_device{serial_number!=""}, "serial", "$1", "serial_number", "(.+)")
 ```
+
+La jointure échoue si smartctl_exporter publie deux séries pour le même numéro sur un hôte (disque vu par deux nœuds) : il faut alors en choisir une, par exemple avec `max by (host, serial, device)`.
 
 Un disque présent qui n'est membre d'aucun volume (secours, disponible) figure dans `hwraid_disk_info`, mais n'a pas de `hwraid_disk_state` tant que son état n'est pas établi. La santé SMART des disques est hors périmètre : elle relève d'outils dédiés.
 

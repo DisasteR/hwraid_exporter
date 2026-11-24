@@ -356,6 +356,7 @@ type fakeFirmware struct {
 	payloads  [][]byte // contenus des transferts successifs, prioritaires sur payload
 	onStop    func()   // appelé à chaque clôture reçue
 	onChunk   func()   // appelé à chaque demande de morceau reçue
+	onOpen    func()   // appelé à chaque ouverture reçue
 }
 
 func (f *fakeFirmware) ioctl(t *testing.T) {
@@ -415,6 +416,9 @@ func (f *fakeFirmware) ioctl(t *testing.T) {
 				le.PutUint32(d[20:], f.stopXfer)
 			}
 		default: // ouverture
+			if f.onOpen != nil {
+				f.onOpen()
+			}
 			if len(f.payloads) > 0 {
 				f.payload = f.payloads[0]
 				f.payloads = f.payloads[1:]
@@ -703,5 +707,27 @@ func TestReadPagedStopsMidTransfer(t *testing.T) {
 	}
 	if got := f.subs(); len(got) != 3 || got[1] != 83 || got[2] != 84 {
 		t.Fatalf("requêtes : %v (ouverture, un morceau, clôture attendus)", got)
+	}
+}
+
+// Arrêt pendant l'ouverture d'une lecture qui tient dans un morceau : la
+// séquence qualifiée la plus courte (morceau 0, clôture) part, mais la
+// lecture n'est pas rendue comme réussie.
+func TestReadPagedStopDuringOpen(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: -1, onOpen: cancel}
+	f.ioctl(t)
+	d, err := Open("/dev/null", devNull, list(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	data, err := d.ReadPaged(ctx, aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return aacraid.ContainerInfoNeed })
+	if !errors.Is(err, ErrStopped) || data != nil {
+		t.Fatalf("err=%v, données=%v", err, data != nil)
+	}
+	if got := f.subs(); len(got) != 3 || got[1] != 83 || got[2] != 84 {
+		t.Fatalf("requêtes : %v (ouverture, morceau 0, clôture attendus)", got)
 	}
 }

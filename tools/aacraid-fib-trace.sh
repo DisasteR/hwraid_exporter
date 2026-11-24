@@ -13,49 +13,56 @@
 # La sonde s'exécute à chaque retour de aac_fib_send, entrées-sorties disque
 # comprises ; le filtre écarte ensuite celles-ci (-115, -EINPROGRESS).
 # Arrêt par Ctrl+C ou SIGTERM : la sonde est retirée, le retrait vérifié, et
-# un bilan par programme affiché. Un redémarrage retire aussi la sonde.
+# un bilan par programme affiché, avec le nombre de retours que la sonde n'a
+# pas pu saisir. Un redémarrage retire aussi la sonde.
 #
-# Usage : sudo tools/aacraid-fib-trace.sh [fichier]
-#   Sans argument, la trace va dans un répertoire privé créé par mktemp sous
-#   /var/tmp. Un fichier donné ne doit pas exister : il est créé en 0600, sans
-#   jamais écraser ni suivre un fichier existant.
+# Usage : sudo tools/aacraid-fib-trace.sh
+#   La trace va dans un répertoire privé créé par mktemp sous /var/tmp, dont
+#   le chemin est affiché ; elle n'est lisible que par root.
 set -eu
 
-T=/sys/kernel/tracing
-[ -d "$T/events" ] || T=/sys/kernel/debug/tracing
-I=$T/instances/aacfib
-
+if [ $# -ne 0 ]; then
+	echo "usage : $0 (sans argument)" >&2
+	exit 2
+fi
 if [ "$(id -u)" -ne 0 ]; then
 	echo "root requis" >&2
 	exit 1
 fi
-if [ -e "$I" ]; then
-	echo "une sonde aacfib est déjà en place ($I)" >&2
-	exit 1
-fi
 
-# Sortie créée avant la sonde, de façon exclusive (noclobber : échec si le
-# chemin existe, lien compris) et privée ; le descripteur 3 reste ouvert.
+T=/sys/kernel/tracing
+[ -d "$T/events" ] || T=/sys/kernel/debug/tracing
+# Noms propres à cette exécution : une autre sonde n'est jamais touchée.
+EV=ret_$$
+I=$T/instances/aacfib_$$
+
+# Sortie dans un répertoire neuf, privé, que seul root peut modifier : ni
+# fichier existant à écraser, ni chemin remplaçable entre écriture et bilan.
 umask 077
-if [ $# -gt 0 ]; then
-	OUT=$1
-else
-	OUT=$(mktemp -d /var/tmp/aacfib.XXXXXX)/trace.txt
-fi
-set -C
-if ! exec 3>"$OUT"; then
-	echo "impossible de créer $OUT (existe déjà ?)" >&2
-	exit 1
-fi
-set +C
+DIR=$(mktemp -d /var/tmp/aacfib.XXXXXX)
+OUT=$DIR/trace.txt
 
 summary() {
 	awk '{for (i = 1; i <= NF; i++) if ($i ~ /^ret=/) print $1, $i}' "$OUT" |
 		sed -E 's/-[0-9]+ ret/ ret/' | sort | uniq -c
 }
 
+# probe_state : 0 sonde définie, 1 absente, 2 état illisible.
+probe_state() {
+	if ! [ -r "$T/kprobe_events" ]; then
+		return 2
+	fi
+	if grep -q "^r[0-9]*:aacfib/$EV " "$T/kprobe_events"; then
+		return 0
+	else
+		case $? in
+		1) return 1 ;;
+		*) return 2 ;;
+		esac
+	fi
+}
+
 READER=
-probe=0
 cleanup() {
 	trap - EXIT INT TERM
 	failed=0
@@ -63,22 +70,36 @@ cleanup() {
 		kill "$READER" 2>/dev/null || true
 		wait "$READER" 2>/dev/null || true
 	fi
+	# Retours non saisis par la sonde, lus avant son retrait : une trace
+	# sans interruption n'en est une que si ce nombre est nul.
+	missed=$(awk -v e="$EV" '$1 == e || $1 == "aacfib/" e {print $3}' "$T/kprobe_profile" 2>/dev/null || true)
 	if [ -d "$I" ]; then
-		if [ -e "$I/events/aacfib/ret/enable" ]; then
-			echo 0 > "$I/events/aacfib/ret/enable" || failed=1
+		if [ -e "$I/events/aacfib/$EV/enable" ]; then
+			echo 0 > "$I/events/aacfib/$EV/enable" || failed=1
 		fi
 		rmdir "$I" || failed=1
 	fi
-	if [ "$probe" -eq 1 ]; then
-		echo '-:aacfib/ret' >> "$T/kprobe_events" || failed=1
+	# La sonde peut être définie même si le script s'est arrêté juste après
+	# l'avoir demandée : son état est lu, jamais supposé.
+	st=0
+	probe_state || st=$?
+	if [ "$st" -eq 0 ]; then
+		echo "-:aacfib/$EV" >> "$T/kprobe_events" || failed=1
+		st=0
+		probe_state || st=$?
 	fi
-	if [ -e "$I" ] || grep -q '^r[0-9]*:aacfib/ret ' "$T/kprobe_events" 2>/dev/null; then
+	if [ -e "$I" ] || [ "$st" -ne 1 ]; then
 		failed=1
 	fi
 	if [ "$failed" -ne 0 ]; then
-		echo "ÉCHEC du retrait : vérifier $I et $T/kprobe_events" >&2
+		echo "ÉCHEC du retrait : vérifier $I et la sonde aacfib/$EV dans $T/kprobe_events" >&2
 	else
 		echo "sonde retirée"
+	fi
+	if [ -n "$missed" ]; then
+		echo "retours non saisis par la sonde : $missed"
+	else
+		echo "retours non saisis par la sonde : inconnu" >&2
 	fi
 	echo "résultats dans $OUT"
 	summary
@@ -95,13 +116,12 @@ on_exit() {
 trap on_exit EXIT
 trap 'exit 0' INT TERM
 
+exec 3>"$OUT"
 # $retval est lu par le noyau, pas par le shell.
-# shellcheck disable=SC2016
-echo 'r:aacfib/ret aac_fib_send ret=$retval:s32' >> "$T/kprobe_events"
-probe=1
+echo "r:aacfib/$EV aac_fib_send ret=\$retval:s32" >> "$T/kprobe_events"
 mkdir "$I"
-echo 'ret != -115' > "$I/events/aacfib/ret/filter"
-echo 1 > "$I/events/aacfib/ret/enable"
+echo 'ret != -115' > "$I/events/aacfib/$EV/filter"
+echo 1 > "$I/events/aacfib/$EV/enable"
 echo "sonde active, écriture dans $OUT (Ctrl+C pour arrêter)"
 # Lecteur en arrière-plan : le shell attend dans wait, qu'un signal
 # interrompt aussitôt.

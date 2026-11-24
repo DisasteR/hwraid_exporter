@@ -269,8 +269,9 @@ const maxPagedTotal = 0x1004
 // need(données lues) octets, ou tout le transfert. Le transfert est clôturé
 // dès que les données suffisent, et dans tous les cas après son ouverture,
 // même en cas d'erreur : le firmware ne garde pas de transfert ouvert. Si
-// ctx se termine pendant le transfert, aucun autre morceau n'est demandé :
-// le transfert est clos aussitôt et la lecture est en échec.
+// ctx se termine pendant le transfert, la séquence qualifiée la plus courte
+// est menée à son terme (morceau 0, puis clôture), aucun autre morceau n'est
+// demandé, et la lecture est en échec.
 func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, bool, error) {
 	open, err := aacraid.OpenRequest(r, param, size)
 	if err != nil {
@@ -335,6 +336,11 @@ func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size 
 	rejected, stopErr := d.stop(r, head, last)
 	if err := errors.Join(readErr, stopErr); err != nil {
 		return nil, false, err
+	}
+	// Arrêt pendant le transfert : la séquence engagée (morceau 0 puis
+	// clôture) est allée au bout, mais la lecture n'est pas rendue.
+	if err := admit(ctx); err != nil {
+		return nil, false, fmt.Errorf("read %d: %w", r, err)
 	}
 	if rejected {
 		return nil, true, nil

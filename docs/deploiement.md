@@ -62,10 +62,10 @@ L'image est publique : aucune authentification n'est nécessaire pour la téléc
 
 ## Installation native (systemd)
 
-Chaque publication GitHub fournit le binaire statique (`hwraid-exporter-<version>-linux-amd64`, mêmes octets que dans l'image) et `SHA256SUMS`. Vérifier la somme avant l'installation :
+Chaque publication GitHub fournit le binaire statique (`hwraid-exporter-<version>-linux-amd64`, mêmes octets que dans l'image), les licences (`hwraid-exporter-<version>-licenses.tar.gz`), l'unité systemd (`hwraid-exporter.service`) et `SHA256SUMS`, qui couvre ces trois fichiers. Vérifier la somme des fichiers téléchargés avant l'installation (`--ignore-missing` : seuls les fichiers présents sont vérifiés, et au moins un doit l'être) :
 
 ```bash
-sha256sum -c SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
 ```
 
 Ou construire le binaire (statique, sans cgo) :
@@ -107,7 +107,7 @@ Le pilote `aacraid` perd un bloc de commande de gestion, jusqu'au redémarrage d
 - arrêter le conteneur par `docker stop` ou `docker compose down`, jamais `docker rm -f` ni `docker kill` ; garder `stop_grace_period: 30s` (le délai par défaut de Docker est de 10 s) ;
 - ne pas tuer un autre outil de gestion pendant qu'il travaille : pas de `timeout` court ni de `SIGKILL` autour d'ARCCONF. Dans un conteneur qui lance ARCCONF, le processus principal doit, à réception de `SIGTERM`, attendre la fin de la commande en cours avant de sortir : quand il sort, le noyau tue tous les processus du conteneur, ARCCONF compris, quel que soit `stop_grace_period` (un init comme `--init` n'y change rien) ;
 - protection du cache en panne (`HwraidCacheProtectionFailed`) : régler aussitôt le cache d'écriture des volumes en mode « seulement si protégé » (`wbb`), tant qu'ARCCONF fonctionne. C'est la seule protection fiable contre une perte au redémarrage ;
-- réserve épuisée (`cannot allocate memory` sur toutes les lectures) : seul un redémarrage la reconstitue, et le pilote ne pourra pas demander à la carte de vider son cache à l'arrêt. Si le cache d'écriture est actif sans protection, aucun moyen ne permet de vérifier qu'il est vide : arrêter les applications qui écrivent, lancer `sync` et laisser du temps à la carte **réduit le risque sans l'éliminer** ([détails](aacraid-defaut-pilote.md#conséquence-à-larrêt--cache-non-vidé)).
+- réserve épuisée (`cannot allocate memory` sur toutes les lectures) : seul un redémarrage la reconstitue. La commande d'arrêt qui vide le cache de la carte ne partira pas, et avec le réglage par défaut du pilote (`cache=2`, à lire dans `/sys/module/aacraid/parameters/cache`) aucun autre vidage n'a lieu. Si le cache d'écriture est actif sans protection, aucun moyen ne permet de vérifier qu'il est vide : arrêter les applications qui écrivent, lancer `sync` et laisser du temps à la carte **réduit le risque sans l'éliminer** ([les deux chemins de vidage](aacraid-defaut-pilote.md#conséquence-à-larrêt--cache-non-vidé)).
 
 ## Prometheus
 

@@ -259,7 +259,7 @@ func serve(args []string) int {
 			jobs[addr] = func() module.Result { return pc.Module.Collect(cycle, pc.Card, module.Refs(nodesDir, pc, specs)) }
 			collectors[addr] = pc.Module.Collectors()
 		}
-		results := runner.Run(jobs, collectors, *timeout)
+		results := runner.Run(cycle, jobs, collectors)
 		if stopping.Err() != nil {
 			return // arrêt pendant le cycle : lectures incomplètes, non publiées
 		}
@@ -339,7 +339,11 @@ func serve(args []string) int {
 	stopLoop()
 	log.Info("stopping: waiting for the collection in progress", "max", shutdownWait)
 	if !waitIdle(loopDone, runner.Drain, shutdownWait) {
-		log.Warn("stopping while a card command is still pending: the aacraid driver may lose a management command until the next reboot")
+		// Arrêt en échec : le superviseur et l'exploitant doivent le voir.
+		log.Error("stopping while a card command is still pending: the aacraid driver may lose a management command until the next reboot")
+		if code == 0 {
+			code = 1
+		}
 	}
 	shut, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

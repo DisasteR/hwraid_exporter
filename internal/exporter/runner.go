@@ -4,6 +4,8 @@
 package exporter
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -11,8 +13,9 @@ import (
 )
 
 // Runner collecte les cartes en parallèle, chacune dans sa goroutine, et
-// n'attend aucune au-delà de l'échéance du cycle : une carte qui ne répond
-// pas ne retarde pas la publication des autres.
+// n'attend aucune au-delà de la fin du contexte du cycle (son échéance ou
+// l'arrêt du service) : une carte qui ne répond pas ne retarde pas la
+// publication des autres.
 //
 // Un appel au firmware bloqué ne peut pas être interrompu. Tant que la
 // collecte d'une carte n'a pas rendu la main, aucune autre n'est lancée pour
@@ -20,74 +23,93 @@ import (
 // requêtes sur un firmware en difficulté.
 type Runner struct {
 	mu       sync.Mutex
-	inflight map[string]chan module.Result // adresse PCI → collecte en cours
-	running  sync.WaitGroup                // collectes non terminées
+	inflight map[string]chan done // adresse PCI → collecte en cours
+	running  sync.WaitGroup       // collectes non terminées
 	// late garde, par carte, les lectures rejetées (clôture 0xc5) portées
 	// par un résultat tardif écarté : elles ont bien eu lieu et sont
-	// reportées dans le résultat suivant de la carte.
+	// reportées dans le prochain résultat de la carte.
 	late map[string]int
+}
+
+// done est le résultat d'une collecte et l'heure à laquelle elle a fini.
+type done struct {
+	res module.Result
+	at  time.Time
 }
 
 // NewRunner crée un ordonnanceur sans collecte en cours.
 func NewRunner() *Runner {
-	return &Runner{inflight: map[string]chan module.Result{}, late: map[string]int{}}
+	return &Runner{inflight: map[string]chan done{}, late: map[string]int{}}
+}
+
+// harvest récupère, sans attendre, les collectes tardives terminées, pour
+// toutes les cartes : leurs données sont périmées, seules leurs lectures
+// rejetées sont gardées. Appelé verrou tenu.
+func (r *Runner) harvest() {
+	for addr, ch := range r.inflight {
+		select {
+		case d := <-ch:
+			r.late[addr] += d.res.CloseUnconfirmed
+			delete(r.inflight, addr)
+		default:
+		}
+	}
 }
 
 // Run collecte les cartes données (adresse PCI → fonction de collecte) et
-// renvoie un résultat pour chacune : celui de la collecte si elle a abouti
-// avant timeout, sinon un résultat TimedOut dont tous les collecteurs
-// (collectors[adresse]) sont en échec.
-func (r *Runner) Run(jobs map[string]func() module.Result, collectors map[string][]string, timeout time.Duration) map[string]module.Result {
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
-	waiting := map[string]chan module.Result{}
+// renvoie un résultat pour chacune : celui de la collecte si elle a fini
+// avant l'échéance de ctx, sinon un résultat TimedOut dont tous les
+// collecteurs (collectors[adresse]) sont en échec. Si ctx est annulé (arrêt
+// du service), aucun résultat n'est retenu. ctx est le contexte transmis aux
+// collectes : une seule échéance décide de l'arrêt des commandes et de la
+// publication.
+func (r *Runner) Run(ctx context.Context, jobs map[string]func() module.Result, collectors map[string][]string) map[string]module.Result {
+	waiting := map[string]chan done{}
 	r.mu.Lock()
+	r.harvest()
 	for addr, job := range jobs {
-		if ch, busy := r.inflight[addr]; busy {
-			select {
-			case res := <-ch:
-				// Résultat tardif d'un cycle passé : périmé, ignoré, sauf
-				// ses lectures rejetées.
-				r.late[addr] += res.CloseUnconfirmed
-			default:
-				continue // toujours bloquée : pas de nouvelle collecte
-			}
+		if _, busy := r.inflight[addr]; busy {
+			continue // toujours bloquée : pas de nouvelle collecte
 		}
-		ch := make(chan module.Result, 1)
+		ch := make(chan done, 1)
 		r.inflight[addr] = ch
 		waiting[addr] = ch
 		r.running.Add(1)
 		go func() {
 			defer r.running.Done()
-			ch <- job()
+			res := job()
+			ch <- done{res: res, at: time.Now()}
 		}()
 	}
 	r.mu.Unlock()
 
+	dl, _ := ctx.Deadline()
+	inTime := func(d done) bool {
+		return finishedInTime(d.at, dl, errors.Is(ctx.Err(), context.Canceled))
+	}
 	out := make(map[string]module.Result, len(jobs))
-	expired := false
 	for addr, ch := range waiting {
-		if !expired {
+		var d done
+		select {
+		case d = <-ch:
+		case <-ctx.Done():
 			select {
-			case res := <-ch:
-				out[addr] = res
-				continue
-			case <-deadline.C:
-				expired = true
+			case d = <-ch:
+			default:
+				continue // toujours en cours : récoltée plus tard
 			}
 		}
-		// Échéance passée : ne prendre que ce qui est déjà arrivé.
-		select {
-		case res := <-ch:
-			out[addr] = res
-		default:
+		r.mu.Lock()
+		delete(r.inflight, addr)
+		if inTime(d) {
+			out[addr] = d.res
+		} else {
+			r.late[addr] += d.res.CloseUnconfirmed
 		}
+		r.mu.Unlock()
 	}
 	r.mu.Lock()
-	for addr := range out {
-		delete(r.inflight, addr)
-	}
-	r.mu.Unlock()
+	defer r.mu.Unlock()
 	for addr := range jobs {
 		if _, ok := out[addr]; !ok {
 			failed := map[string]bool{}
@@ -96,17 +118,25 @@ func (r *Runner) Run(jobs map[string]func() module.Result, collectors map[string
 			}
 			out[addr] = module.Result{TimedOut: true, Collected: failed}
 		}
-	}
-	r.mu.Lock()
-	for addr, n := range r.late {
-		if res, ok := out[addr]; ok {
+		if n := r.late[addr]; n > 0 {
+			res := out[addr]
 			res.CloseUnconfirmed += n
 			out[addr] = res
 			delete(r.late, addr)
 		}
 	}
-	r.mu.Unlock()
 	return out
+}
+
+// finishedInTime : une collecte finie à at n'est publiée que si elle a fini
+// avant l'échéance dl (zéro : aucune), bornes comprises, et si le contexte
+// n'a pas été annulé (arrêt du service : rien n'est publié). Un résultat
+// reçu en même temps que l'échéance n'est donc retenu que s'il l'a précédée.
+func finishedInTime(at, dl time.Time, canceled bool) bool {
+	if canceled {
+		return false
+	}
+	return dl.IsZero() || !at.After(dl)
 }
 
 // Drain attend, au plus timeout, la fin des collectes encore en cours,

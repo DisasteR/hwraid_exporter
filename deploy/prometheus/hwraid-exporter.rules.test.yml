@@ -96,7 +96,7 @@ tests:
           - exp_labels: {severity: warning, controller: "serial:B", collector: cache_protection}
             exp_annotations:
               summary: "Lecture cache_protection jamais réussie (serial:B)"
-              description: "Depuis son démarrage, l'exporter n'a jamais réussi cette lecture. Voir le journal de l'exporter ; « cannot allocate memory » sur toutes les lectures signale probablement la réserve de commandes du pilote aacraid épuisée : le prochain redémarrage ne videra pas le cache de la carte, suivre docs/aacraid-defaut-pilote.md avant de redémarrer."
+              description: "Depuis son démarrage, l'exporter n'a jamais réussi cette lecture. Voir le journal de l'exporter ; « cannot allocate memory » sur toutes les lectures signale probablement la réserve de commandes du pilote aacraid épuisée : avec le réglage par défaut du pilote, un redémarrage ne videra alors pas le cache de la carte ; lire docs/aacraid-defaut-pilote.md avant de redémarrer."
 
   # Volume disparu alors que la lecture réussit.
   - interval: 1m
@@ -165,18 +165,18 @@ tests:
           - exp_labels: {severity: warning, controller: "serial:A", collector: volumes}
             exp_annotations:
               summary: "Lecture volumes sans succès depuis plus de 3 cycles (serial:A)"
-              description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter ; « cannot allocate memory » sur toutes les lectures signale probablement la réserve de commandes du pilote aacraid épuisée : le prochain redémarrage ne videra pas le cache de la carte, suivre docs/aacraid-defaut-pilote.md avant de redémarrer."
+              description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter ; « cannot allocate memory » sur toutes les lectures signale probablement la réserve de commandes du pilote aacraid épuisée : avec le réglage par défaut du pilote, un redémarrage ne videra alors pas le cache de la carte ; lire docs/aacraid-defaut-pilote.md avant de redémarrer."
       - eval_time: 32m
         alertname: HwraidCollectionStale
         exp_alerts:
           - exp_labels: {severity: warning, controller: "serial:A", collector: volumes}
             exp_annotations:
               summary: "Lecture volumes sans succès depuis plus de 3 cycles (serial:A)"
-              description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter ; « cannot allocate memory » sur toutes les lectures signale probablement la réserve de commandes du pilote aacraid épuisée : le prochain redémarrage ne videra pas le cache de la carte, suivre docs/aacraid-defaut-pilote.md avant de redémarrer."
+              description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter ; « cannot allocate memory » sur toutes les lectures signale probablement la réserve de commandes du pilote aacraid épuisée : avec le réglage par défaut du pilote, un redémarrage ne videra alors pas le cache de la carte ; lire docs/aacraid-defaut-pilote.md avant de redémarrer."
           - exp_labels: {severity: warning, controller: "serial:B", collector: volumes}
             exp_annotations:
               summary: "Lecture volumes sans succès depuis plus de 3 cycles (serial:B)"
-              description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter ; « cannot allocate memory » sur toutes les lectures signale probablement la réserve de commandes du pilote aacraid épuisée : le prochain redémarrage ne videra pas le cache de la carte, suivre docs/aacraid-defaut-pilote.md avant de redémarrer."
+              description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter ; « cannot allocate memory » sur toutes les lectures signale probablement la réserve de commandes du pilote aacraid épuisée : avec le réglage par défaut du pilote, un redémarrage ne videra alors pas le cache de la carte ; lire docs/aacraid-defaut-pilote.md avant de redémarrer."
       - eval_time: 1m
         alertname: HwraidCollectionIntervalTooLong
         exp_alerts:
@@ -228,7 +228,7 @@ tests:
           - exp_labels: {severity: warning, job: hwraid, instance: "a:9799", controller: "pci:0000:01:00.0", collector: volumes}
             exp_annotations:
               summary: "Lecture volumes sans succès depuis plus de 3 cycles (pci:0000:01:00.0)"
-              description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter ; « cannot allocate memory » sur toutes les lectures signale probablement la réserve de commandes du pilote aacraid épuisée : le prochain redémarrage ne videra pas le cache de la carte, suivre docs/aacraid-defaut-pilote.md avant de redémarrer."
+              description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter ; « cannot allocate memory » sur toutes les lectures signale probablement la réserve de commandes du pilote aacraid épuisée : avec le réglage par défaut du pilote, un redémarrage ne videra alors pas le cache de la carte ; lire docs/aacraid-defaut-pilote.md avant de redémarrer."
       # Trou de lecture sur a : la panne de a reste visible malgré le volume
       # optimal de même identifiant sur b.
       - eval_time: 6m
@@ -714,8 +714,8 @@ tests:
         exp_alerts:
           - exp_labels: {severity: warning, controller: "serial:A", volume: v0}
             exp_annotations:
-              summary: "Cache d'écriture actif, protection d'état indéterminé, volume v0 (serial:A)"
-              description: "Le cache d'écriture du volume est actif et l'état du module de protection n'est pas qualifié : rien ne garantit que les écritures en attente survivent à une coupure. Vérifier le module avec l'outil du constructeur."
+              summary: "Cache d'écriture actif, protection d'état inconnu, volume v0 (serial:A)"
+              description: "Le cache d'écriture du volume est actif et l'état du module de protection n'est pas qualifié ou ne peut pas être lu sur cette carte : rien ne garantit que les écritures en attente survivent à une coupure. Vérifier le module avec l'outil du constructeur."
       - eval_time: 31m
         alertname: HwraidVolumeWriteCacheUnprotected
         exp_alerts: []
@@ -753,11 +753,139 @@ tests:
       - eval_time: 31m
         alertname: HwraidVolumeWriteCacheUnknown
         exp_alerts:
-          - exp_labels: {severity: warning, controller: "serial:A", volume: v0, policy: write_back_when_protected, vendor_policy: "On when protected by battery/ZMM"}
+          - exp_labels: {severity: warning, controller: "serial:A", volume: v0}
             exp_annotations:
               summary: "Réglage ou état du cache d'écriture non reconnu, volume v0 (serial:A)"
               description: "La carte décrit le cache d'écriture du volume avec une valeur non qualifiée : les alertes de cache d'écriture ne couvrent plus ce volume. Vérifier le cache avec l'outil du constructeur."
-          - exp_labels: {severity: warning, controller: "serial:B", volume: v0, policy: unknown, vendor_policy: "value 7"}
+          - exp_labels: {severity: warning, controller: "serial:B", volume: v0}
+            exp_annotations:
+              summary: "Réglage ou état du cache d'écriture non reconnu, volume v0 (serial:B)"
+              description: "La carte décrit le cache d'écriture du volume avec une valeur non qualifiée : les alertes de cache d'écriture ne couvrent plus ce volume. Vérifier le cache avec l'outil du constructeur."
+
+  # Protection en panne, puis optimale, puis lecture en échec : l'ancienne
+  # panne n'est pas reprise (elle n'était pas dans la dernière lecture réussie).
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_volume_info{controller="serial:A",volume="v0",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""}'
+        values: '1x30'
+      - series: 'hwraid_volume_write_cache_enabled{controller="serial:A",volume="v0"}'
+        values: '1x30'
+      - series: 'hwraid_collection_success{controller="serial:A",collector="volumes"}'
+        values: '1x30'
+      - series: 'hwraid_collection_last_success_timestamp_seconds{controller="serial:A",collector="volumes"}'
+        values: '0+60x30'
+      - series: 'hwraid_collection_success{controller="serial:A",collector="cache_protection"}'
+        values: '1x14 0x16'
+      - series: 'hwraid_collection_last_success_timestamp_seconds{controller="serial:A",collector="cache_protection"}'
+        values: '0 60 120 180 240 300 360 420 480 540 600 660 720 780 840 840 840 840 840 840 840 840 840 840 840 840 840 840 840 840 840'
+      - series: 'hwraid_cache_protection_present{controller="serial:A",type="flash_supercap",vendor_type="zmm"}'
+        values: '1x14 stale _x15'
+      - series: 'hwraid_cache_protection_state{controller="serial:A",state="failed"}'
+        values: '1x12 stale _x17'
+      - series: 'hwraid_cache_protection_state{controller="serial:A",state="optimal"}'
+        values: '_x13 1x1 stale _x15'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HwraidVolumeWriteCacheUnprotected
+        exp_alerts:
+          - exp_labels: {severity: critical, controller: "serial:A", volume: v0}
+            exp_annotations:
+              summary: "Cache d'écriture actif sans protection, volume v0 (serial:A)"
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver."
+      - eval_time: 21m
+        alertname: HwraidVolumeWriteCacheUnprotected
+        exp_alerts: []
+
+  # Volume supprimé lors d'une lecture réussie, puis lecture en échec : le
+  # volume n'est pas repris.
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_volume_info{controller="serial:A",volume="v0",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""}'
+        values: '1x12 stale _x17'
+      - series: 'hwraid_volume_write_cache_enabled{controller="serial:A",volume="v0"}'
+        values: '1x12 stale _x17'
+      - series: 'hwraid_collection_success{controller="serial:A",collector="volumes"}'
+        values: '1x14 0x16'
+      - series: 'hwraid_collection_last_success_timestamp_seconds{controller="serial:A",collector="volumes"}'
+        values: '0 60 120 180 240 300 360 420 480 540 600 660 720 780 840 840 840 840 840 840 840 840 840 840 840 840 840 840 840 840 840'
+      - series: 'hwraid_collection_success{controller="serial:A",collector="cache_protection"}'
+        values: '1x30'
+      - series: 'hwraid_collection_last_success_timestamp_seconds{controller="serial:A",collector="cache_protection"}'
+        values: '0+60x30'
+      - series: 'hwraid_cache_protection_present{controller="serial:A",type="flash_supercap",vendor_type="zmm"}'
+        values: '1x30'
+      - series: 'hwraid_cache_protection_state{controller="serial:A",state="failed"}'
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HwraidVolumeWriteCacheUnprotected
+        exp_alerts:
+          - exp_labels: {severity: critical, controller: "serial:A", volume: v0}
+            exp_annotations:
+              summary: "Cache d'écriture actif sans protection, volume v0 (serial:A)"
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver."
+      - eval_time: 21m
+        alertname: HwraidVolumeWriteCacheUnprotected
+        exp_alerts: []
+
+  # Cache actif, collecteur de protection non pris en charge par la carte :
+  # avertissement de protection inconnue.
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_volume_info{controller="serial:A",volume="v0",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""}'
+        values: '1x40'
+      - series: 'hwraid_volume_write_cache_enabled{controller="serial:A",volume="v0"}'
+        values: '1x40'
+      - series: 'hwraid_volume_write_cache_policy{controller="serial:A",volume="v0",policy="write_back_always",vendor_policy="Enabled"}'
+        values: '1x40'
+      - series: 'hwraid_collection_success{controller="serial:A",collector="volumes"}'
+        values: '1x40'
+      - series: 'hwraid_collector_supported{controller="serial:A",collector="cache_protection"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: HwraidVolumeWriteCacheProtectionUnknown
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: "serial:A", volume: v0}
+            exp_annotations:
+              summary: "Cache d'écriture actif, protection d'état inconnu, volume v0 (serial:A)"
+              description: "Le cache d'écriture du volume est actif et l'état du module de protection n'est pas qualifié ou ne peut pas être lu sur cette carte : rien ne garantit que les écritures en attente survivent à une coupure. Vérifier le module avec l'outil du constructeur."
+      - eval_time: 31m
+        alertname: HwraidVolumeWriteCacheUnprotected
+        exp_alerts: []
+
+  # État du cache non reconnu, lecture des volumes en échec de 10 à 12 min
+  # (A), et réglage non reconnu dont la valeur brute change (B) : le délai
+  # de l'alerte n'est pas remis à zéro.
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_volume_info{controller="serial:A",volume="v0",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""}'
+        values: '1x9 stale _x2 1x27'
+      - series: 'hwraid_volume_write_cache_policy{controller="serial:A",volume="v0",policy="write_back_when_protected",vendor_policy="On when protected by battery/ZMM"}'
+        values: '1x9 stale _x2 1x27'
+      - series: 'hwraid_collection_success{controller="serial:A",collector="volumes"}'
+        values: '1x9 0x2 1x27'
+      - series: 'hwraid_collection_last_success_timestamp_seconds{controller="serial:A",collector="volumes"}'
+        values: '0 60 120 180 240 300 360 420 480 540 540 540 540 780 840 900 960 1020 1080 1140 1200 1260 1320 1380 1440 1500 1560 1620 1680 1740 1800 1860 1920 1980 2040 2100 2160 2220 2280 2340 2400'
+      - series: 'hwraid_volume_info{controller="serial:B",volume="v0",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""}'
+        values: '1x40'
+      - series: 'hwraid_volume_write_cache_enabled{controller="serial:B",volume="v0"}'
+        values: '0x40'
+      - series: 'hwraid_volume_write_cache_policy{controller="serial:B",volume="v0",policy="unknown",vendor_policy="value 7"}'
+        values: '1x15 stale _x23'
+      - series: 'hwraid_volume_write_cache_policy{controller="serial:B",volume="v0",policy="unknown",vendor_policy="value 8"}'
+        values: '_x16 1x23'
+      - series: 'hwraid_collection_success{controller="serial:B",collector="volumes"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: HwraidVolumeWriteCacheUnknown
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: "serial:A", volume: v0}
+            exp_annotations:
+              summary: "Réglage ou état du cache d'écriture non reconnu, volume v0 (serial:A)"
+              description: "La carte décrit le cache d'écriture du volume avec une valeur non qualifiée : les alertes de cache d'écriture ne couvrent plus ce volume. Vérifier le cache avec l'outil du constructeur."
+          - exp_labels: {severity: warning, controller: "serial:B", volume: v0}
             exp_annotations:
               summary: "Réglage ou état du cache d'écriture non reconnu, volume v0 (serial:B)"
               description: "La carte décrit le cache d'écriture du volume avec une valeur non qualifiée : les alertes de cache d'écriture ne couvrent plus ce volume. Vérifier le cache avec l'outil du constructeur."

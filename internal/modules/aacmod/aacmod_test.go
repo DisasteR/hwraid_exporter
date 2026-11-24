@@ -954,3 +954,21 @@ func TestCollectReportsCloseUnconfirmed(t *testing.T) {
 		t.Fatalf("retour anticipé : %+v", r)
 	}
 }
+
+// Chaque collecteur en échec garde sa propre erreur : un ENOMEM sur la
+// protection du cache ne masque pas une autre cause sur la configuration.
+func TestCollectKeepsEveryError(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
+	nomem := fmt.Errorf("ioctl: %w", aacio.ErrDriverNoMemory)
+	eio := errors.New("EIO sur la lecture 229")
+	d := &fakeDev{info: hba, sup: arcIo, cp: &cpAnswer{err: nomem},
+		paged: func(aacraid.PagedRead, uint32, uint32) ([]byte, error) { return nil, eio }}
+	r := withDev(d, nil).Collect(context.Background(), card("0000:01:00.0", "0"), ref)
+	if !errors.Is(r.CollectErr, aacio.ErrDriverNoMemory) || !errors.Is(r.CollectErr, eio) {
+		t.Fatalf("erreurs perdues : %v", r.CollectErr)
+	}
+	if !strings.Contains(r.CollectErr.Error(), "cache protection") || !strings.Contains(r.CollectErr.Error(), "configuration") {
+		t.Fatalf("collecteurs non nommés : %v", r.CollectErr)
+	}
+}

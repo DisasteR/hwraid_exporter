@@ -263,9 +263,7 @@ func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.
 	if err != nil {
 		r.Collected[DiskInventoryCollector] = false
 		r.Collected[DiskLocationCollector] = false
-		if r.CollectErr == nil {
-			r.CollectErr = fmt.Errorf("configuration: %w", err)
-		}
+		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("configuration: %w", err))
 		return
 	}
 	r.Volumes, r.Disks = vols, disks
@@ -273,9 +271,7 @@ func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.
 	r.Collected[DiskInventoryCollector] = err == nil
 	if err != nil {
 		r.Collected[DiskLocationCollector] = false
-		if r.CollectErr == nil {
-			r.CollectErr = fmt.Errorf("disk inventory: %w", err)
-		}
+		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("disk inventory: %w", err))
 		return
 	}
 	for _, i := range inv {
@@ -286,9 +282,7 @@ func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.
 	locs, err := m.locations(key, d, inv)
 	r.Collected[DiskLocationCollector] = err == nil
 	if err != nil {
-		if r.CollectErr == nil {
-			r.CollectErr = fmt.Errorf("disk location: %w", err)
-		}
+		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("disk location: %w", err))
 		return
 	}
 	r.DiskLocations = locs
@@ -562,9 +556,7 @@ func collectCacheProtection(r *module.Result, d reader) {
 	switch {
 	case err != nil:
 		r.Collected[CacheProtectionCollector] = false
-		if r.CollectErr == nil {
-			r.CollectErr = fmt.Errorf("cache protection: %w", err)
-		}
+		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("cache protection: %w", err))
 	case !described || st.State == aacraid.CacheProtectionOtherType:
 		// Format non décrit ou autre type de module : non décodé.
 		r.Unsupported = append(r.Unsupported, CacheProtectionCollector)

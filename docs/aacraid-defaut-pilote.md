@@ -34,19 +34,26 @@ Tout signal reçu par un programme pendant qu'une de ses commandes de gestion at
 
 ## Conséquence à l'arrêt : cache non vidé
 
-À l'arrêt de la machine, le pilote envoie à la carte une commande qui vide son cache d'écriture et ferme les volumes (`VM_CloseAll`, `aac_send_shutdown` dans `comminit.c`). Cette commande prend son bloc **dans la même réserve**. Quand la réserve est vide, elle n'est pas envoyée, et aucun message ne le signale.
+Linux dispose de deux chemins pour demander à la carte de vider son cache d'écriture. Ils ne dépendent pas des mêmes ressources :
 
-Avec le réglage par défaut du pilote (`cache=2`, `aachba.c`), Linux ne demande jamais non plus ce vidage. Le pilote annonce un volume sans cache d'écriture (WCE à 0) et ignore les demandes de vidage SCSI. Ni `fsync()` ni l'arrêt ne vident donc le cache de la carte.
+| Chemin | Quand | Bloc utilisé | Avec la réserve vide |
+|---|---|---|---|
+| Commande de gestion `VM_CloseAll` (`aac_send_shutdown`, `comminit.c`) | à l'arrêt de la machine, quel que soit le réglage `cache` | réserve de gestion | n'est pas envoyée, sans message |
+| Vidage SCSI `SYNCHRONIZE CACHE` (`aachba.c`) | à chaque `fsync` et à l'arrêt, **seulement si le volume annonce un cache d'écriture** | bloc propre à chaque entrée-sortie | fonctionne |
 
-Si le cache d'écriture de la carte est actif sans protection (module ZMM ou batterie en panne, ou cache forcé en écriture différée), un redémarrage avec la réserve vide peut perdre les dernières écritures. C'est arrivé sur l'hôte de référence le 2026-11-23 : des fichiers écrits dans les secondes qui ont précédé le redémarrage ont été retrouvés corrompus. L'alerte `HwraidVolumeWriteCacheUnprotected` ([alerts.md](alerts.md)) signale un cache d'écriture actif sans protection opérationnelle.
+Avec le réglage par défaut du pilote (`cache=2`), le volume annonce n'avoir aucun cache d'écriture (WCE à 0) et le pilote ignore les demandes de vidage SCSI : le second chemin est fermé. **Avec `cache=2` et la réserve vide, aucun des deux chemins ne vide le cache à l'arrêt.** Le réglage effectif se lit dans `/sys/module/aacraid/parameters/cache`, et ce que le volume annonce dans `/sys/block/sdX/device/scsi_disk/*/cache_type` (`write back` : vidage SCSI actif ; `write through` : fermé).
 
-**Le seul moyen sûr est d'agir avant que la réserve soit vide** : dès qu'une protection tombe en panne, régler le cache d'écriture des volumes en mode « seulement si protégé » (`wbb`) ou le désactiver, tant qu'ARCCONF peut encore parler à la carte. La carte coupe alors le cache, et un redémarrage ne laisse rien en attente.
+Si le cache d'écriture de la carte est actif sans protection (module ZMM ou batterie en panne, ou cache forcé en écriture différée), un redémarrage avec la réserve vide peut perdre les dernières écritures. C'est arrivé sur l'hôte de référence le 2026-11-23 (`cache=2`) : des fichiers écrits dans les secondes qui ont précédé le redémarrage ont été retrouvés corrompus. L'alerte `HwraidVolumeWriteCacheUnprotected` ([alerts.md](alerts.md)) signale un cache d'écriture actif sans protection opérationnelle.
 
-Une fois la réserve vide, plus aucun outil ne peut changer ce réglage ni vérifier que le cache est vide. Les mesures suivantes **réduisent le risque sans l'éliminer** :
+**Le seul moyen éprouvé est d'agir avant que la réserve soit vide** : dès qu'une protection tombe en panne, régler le cache d'écriture des volumes en mode « seulement si protégé » (`wbb`) ou le désactiver, tant qu'ARCCONF peut encore parler à la carte. La carte coupe alors le cache, et un redémarrage ne laisse rien en attente.
+
+Une fois la réserve vide, plus aucun outil de gestion ne peut changer ce réglage ni vérifier que le cache est vide. Les mesures suivantes **réduisent le risque sans l'éliminer** :
 
 1. arrêter les applications qui écrivent ;
-2. lancer `sync`, pour que Linux remette à la carte tout ce qu'il garde en mémoire ;
+2. lancer `sync`, pour que Linux remette à la carte tout ce qu'il garde en mémoire (avec `cache=2`, cela ne vide pas le cache de la carte) ;
 3. laisser du temps à la carte avant de redémarrer. Elle vide son cache d'elle-même au fil de l'eau, mais aucun délai n'est garanti et rien ne permet de constater la fin du vidage.
+
+Ouvrir le chemin SCSI (`cache=0`, section « Réglage `cache` du pilote ») ferait demander un vidage à l'arrêt sans passer par la réserve. Cette piste découle du code du pilote ; elle n'a pas été essayée sur une carte dont la réserve est vide.
 
 ## Protections de l'exporter
 
@@ -55,7 +62,7 @@ Depuis la v0.1.2 :
 | Protection | Effet |
 |---|---|
 | Thread dédié aux commandes | Les commandes partent d'un thread système réservé qui bloque tous les signaux asynchrones. Le noyau livre à un autre thread les signaux adressés au processus (`SIGTERM`, `SIGINT`). Ceux qui visent ce thread (`SIGURG` du runtime Go) attendent la fin de la commande. Seuls les signaux de faute (`SIGSEGV`, `SIGBUS`, etc.) restent débloqués. Si le masquage échoue, aucune commande n'est envoyée. |
-| Arrêt sans interruption | Sur `SIGTERM`, l'exporter ne lance plus de cycle, et le cycle en cours n'envoie plus aucune nouvelle commande, y compris une relecture. Seule la commande déjà envoyée se termine (une lecture paginée ouverte est close), en général en quelques millisecondes. Si une commande ne répond pas en 20 s, l'exporter sort quand même, en le journalisant, plutôt que d'être tué par le superviseur. L'unité systemd donne 30 s (`TimeoutStopSec`) ; avec Docker, réglez `stop_grace_period: 30s`. |
+| Arrêt sans interruption | Sur `SIGTERM`, l'exporter ne lance plus de cycle, et le cycle en cours n'envoie plus aucune nouvelle commande, y compris une relecture. Seule la commande déjà envoyée se termine ; une lecture paginée ouverte va au bout de sa séquence la plus courte (premier morceau, puis clôture) et n'est pas publiée. En général, l'arrêt prend quelques millisecondes. Si une commande ne répond pas en 20 s, l'exporter sort quand même avec le code 1 et le journalise, plutôt que d'être tué par le superviseur : cette commande est alors interrompue et son bloc perdu. L'unité systemd donne 30 s (`TimeoutStopSec`) ; avec Docker, réglez `stop_grace_period: 30s`. |
 | Délai de cycle | Le délai d'un cycle n'interrompt jamais une commande en cours : il empêche seulement d'en lancer de nouvelles. |
 | Diagnostic | Un `ENOMEM` sur une commande de gestion est journalisé avec ses deux causes possibles : réserve probablement épuisée, ou tampon d'une grande commande non alloué. |
 
@@ -71,7 +78,7 @@ Depuis la v0.1.2 :
 sudo tools/aacraid-fib-trace.sh            # Ctrl+C pour arrêter ; bilan par programme
 ```
 
-La trace va dans un répertoire privé créé sous `/var/tmp` (chemin affiché au démarrage, lisible par root seul). Un fichier donné en argument ne doit pas exister : le script refuse d'écraser un fichier. À l'arrêt, il retire la sonde, vérifie le retrait et le signale s'il a échoué.
+La trace va dans un répertoire neuf et privé créé sous `/var/tmp` (chemin affiché au démarrage, lisible par root seul) ; le script ne prend aucun argument. La sonde porte un nom propre à l'exécution. À l'arrêt, le script retire la sonde, vérifie le retrait (un état illisible compte comme un échec) et affiche le nombre de retours que la sonde n'a pas pu saisir : une trace sans `ret=-512` ne prouve l'absence de perte que si ce nombre est nul.
 
 - `ret=0` : la commande s'est terminée normalement.
 - `ret=-512` : la commande a été interrompue, et un bloc est perdu. La ligne donne le nom et le PID du programme.
@@ -80,7 +87,7 @@ La sonde s'exécute à chaque retour de `aac_fib_send`, y compris pour chaque en
 
 ## Réglage `cache` du pilote
 
-Le paramètre `cache` du module est un champ de bits. Il décide si Linux demande à la carte de vider son cache. Le vidage SCSI utilise le bloc propre à chaque entrée-sortie, **pas la réserve de gestion** : il fonctionne même quand la réserve est vide.
+Le paramètre `cache` du module est un champ de bits. Il décide si le volume annonce un cache d'écriture, et donc si Linux demande à la carte de le vider par le chemin SCSI. Ce vidage utilise le bloc propre à chaque entrée-sortie, **pas la réserve de gestion** : il fonctionne même quand la réserve est vide. La commande de gestion `VM_CloseAll` de l'arrêt ne dépend pas de ce réglage.
 
 | Valeur | Effet |
 |---|---|
@@ -95,7 +102,8 @@ Avec `0` ou `7`, les programmes qui appellent souvent `fsync` (bases de données
 - **Tests unitaires** :
   - `internal/transport/aacio/thread_test.go` : un appel système bloquant, émis depuis le thread dédié, n'est pas interrompu par `SIGURG`, `SIGTERM` ni `SIGUSR1`. Sans le masque, le même test échoue avec `EINTR`. Le thread système est détruit à la fermeture du nœud ;
   - `internal/transport/aacio/device_test.go` : une fois l'arrêt demandé, aucune requête n'atteint le noyau, ni relecture après `0xc5`, ni seconde lecture du module de protection ;
-  - `internal/modules/aacmod/aacmod_test.go` et `cmd/hwraid-exporter/main_test.go` : un arrêt pendant une commande bloquée attend cette commande, n'en envoie aucune autre et ne lance plus de cycle ; l'attente des collectes en cours est bornée (`TestRunnerDrain`, `TestWaitIdle`).
+  - `internal/transport/aacio/shutdown_e2e_test.go`, avec le module, l'ordonnanceur et le transport réels et un ioctl simulé : un arrêt pendant une commande bloquée, au cours du cycle ou après son échéance, attend cette commande et n'en laisse passer aucune autre ; un arrêt avant le premier cycle n'envoie aucune commande à la carte ;
+  - `cmd/hwraid-exporter/main_test.go` : aucun cycle ne démarre après l'arrêt, et l'attente des collectes en cours est bornée (`TestRunnerDrain`, `TestWaitIdle`).
 - **Hôte de référence**, Adaptec 6805, Linux 5.10, le 2026-11-24, avec la sonde active :
   - pendant 30 minutes d'exporter, 1 924 commandes, toutes rendues normalement, sans aucune perte, y compris pour ARCCONF et maxView ;
   - arrêt par `docker stop` en 0,6 s avec le code 0.
