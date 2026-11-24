@@ -499,6 +499,23 @@ tests:
               summary: "Lecture volumes sans succès depuis plus de 3 cycles (serial:A)"
               description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter ; « cannot allocate memory » sur toutes les lectures signale probablement la réserve de commandes du pilote aacraid épuisée : avec le réglage par défaut du pilote, un redémarrage ne videra alors pas le cache de la carte ; lire docs/aacraid-defaut-pilote.md avant de redémarrer."
 
+  # Volume disparu, alerte déclenchée, puis lecture des volumes en échec de
+  # 10 à 13 min : l'alerte reste active (keep_firing_for).
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_volume_info{controller="serial:A",volume="b3",name="x",raid_level="raid1",vendor_level="1",parent=""}'
+        values: '1x5 stale _x29'
+      - series: 'hwraid_collection_success{controller="serial:A",collector="volumes"}'
+        values: '1x9 0x3 1x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: HwraidVolumeDisappeared
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: "serial:A", volume: b3}
+            exp_annotations:
+              summary: "Volume b3 disparu (serial:A)"
+              description: "Le volume a été vu dans les dernières 24 heures et n'apparaît plus alors que la lecture des volumes réussit : suppression ou perte du volume."
+
   # Cache d'écriture actif avec une protection en panne : alerte critique
   # sur chaque volume, membre compris ; le cache coupé à 21 min, l'alerte
   # s'éteint 10 min plus tard (keep_firing_for). Réglage forcé (wb) signalé,

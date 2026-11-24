@@ -360,6 +360,8 @@ type fakeFirmware struct {
 	onChunk   func()   // appelé à chaque demande de morceau reçue
 	onOpen    func()   // appelé à chaque ouverture reçue
 	openCode  uint32   // mot 4 de la réponse d'ouverture (0 : 0xda)
+	openSize  uint16   // champ Size de la réponse d'ouverture (0 : 496)
+	stopSize  uint16   // champ Size de la réponse de clôture (0 : 496)
 }
 
 func (f *fakeFirmware) ioctl(t *testing.T) {
@@ -407,6 +409,10 @@ func (f *fakeFirmware) ioctl(t *testing.T) {
 			if f.onStop != nil {
 				f.onStop()
 			}
+			le.PutUint16(buf[8:], 496)
+			if f.stopSize != 0 {
+				le.PutUint16(buf[8:], f.stopSize)
+			}
 			le.PutUint32(d[8:], 0xc6)
 			if f.stopMark != 0 {
 				le.PutUint32(d[8:], f.stopMark)
@@ -433,6 +439,10 @@ func (f *fakeFirmware) ioctl(t *testing.T) {
 			}
 			le.PutUint32(d[8:], mark)
 			le.PutUint32(d[12:], total)
+			le.PutUint16(buf[8:], 496)
+			if f.openSize != 0 {
+				le.PutUint16(buf[8:], f.openSize)
+			}
 			code := uint32(0xda)
 			if f.openCode != 0 {
 				code = f.openCode
@@ -848,5 +858,64 @@ func TestAdmitChecksDeadlineClock(t *testing.T) {
 	}
 	if *calls != 0 {
 		t.Fatalf("%d appel(s) système après l'échéance", *calls)
+	}
+}
+
+// Réponse d'ouverture ou de clôture plus courte que celle de la carte (champ
+// Size) : ses champs pourraient venir de la requête. Ouverture tronquée :
+// ni morceau ni clôture ; clôture tronquée : lecture en échec, aucune donnée.
+func TestReadPagedTruncatedResponses(t *testing.T) {
+	need := func([]byte) int { return aacraid.ContainerInfoNeed }
+	f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: -1, openSize: aacraid.FIBHeaderSize + 16}
+	f.ioctl(t)
+	d, err := Open("/dev/null", devNull, list(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, need); err == nil {
+		t.Fatal("ouverture tronquée acceptée")
+	}
+	if got := f.subs(); len(got) != 1 {
+		t.Fatalf("requêtes après une ouverture tronquée : %v", got)
+	}
+	d.Close()
+	f = &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: -1, stopSize: aacraid.FIBHeaderSize + 16}
+	f.ioctl(t)
+	d, err = Open("/dev/null", devNull, list(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if data, err := d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, need); err == nil || data != nil {
+		t.Fatalf("clôture tronquée acceptée (err=%v)", err)
+	}
+}
+
+// Morceau en échec puis clôture confirmée par 0xc5 : la lecture est en
+// échec, sans nouvel essai. Seule une lecture dont les morceaux sont
+// conformes est refaite après 0xc5 ; l'outil de référence ne refait aucune
+// lecture, et rien ne justifie d'envoyer davantage de commandes à une carte
+// qui vient de refuser un morceau. Le rejet 0xc5 est compté.
+func TestReadPagedNoRetryAfterChunkError(t *testing.T) {
+	need := func([]byte) int { return 0x1000 }
+	f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: 1, stopMarks: []uint32{0xc5, 0xc5}}
+	f.ioctl(t)
+	d, err := Open("/dev/null", devNull, list(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	_, err = d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, need)
+	if err == nil || !errors.Is(err, syscall.EIO) {
+		t.Fatalf("erreur du morceau attendue : %v", err)
+	}
+	opens := 0
+	for _, s := range f.subs() {
+		if s != 83 && s != 84 {
+			opens++
+		}
+	}
+	if opens != 1 || d.CloseUnconfirmed() != 1 {
+		t.Fatalf("%d ouverture(s), %d rejet(s) : une seule ouverture et un rejet compté attendus", opens, d.CloseUnconfirmed())
 	}
 }

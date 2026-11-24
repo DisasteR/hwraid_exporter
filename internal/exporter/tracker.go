@@ -32,6 +32,17 @@ type Tracker struct {
 	// de l'adresse (dates, compteur, held, unsupported) est oublié : il
 	// appartenait à une autre carte, ou à un autre firmware.
 	ident map[string]string
+	// cycle : apports du dernier Update seul, par adresse (succès,
+	// clôtures 0xc5, réponses gardées). Au premier cycle d'une nouvelle
+	// identité, ils sont publiés et conservés, sans l'historique de l'ancienne.
+	cycle map[string]contrib
+}
+
+// contrib est l'apport d'un cycle pour une carte.
+type contrib struct {
+	last   map[string]time.Time
+	closes uint64
+	held   map[string]bool
 }
 
 // NewTracker crée un suivi vide.
@@ -66,9 +77,34 @@ func (t *Tracker) Update(results map[string]module.Result, present []string, now
 	for addr := range t.held {
 		if !keep[addr] {
 			delete(t.held, addr)
+		}
+	}
+	for addr := range t.unsupported {
+		if !keep[addr] {
 			delete(t.unsupported, addr)
+		}
+	}
+	for addr := range t.ident {
+		if !keep[addr] {
 			delete(t.ident, addr)
 		}
+	}
+	t.cycle = map[string]contrib{}
+	for addr, r := range results {
+		c := contrib{last: map[string]time.Time{}, held: map[string]bool{}, closes: uint64(r.CloseUnconfirmed)}
+		cached := map[string]bool{}
+		for _, col := range r.Cached {
+			cached[col] = true
+			if r.Collected[col] {
+				c.held[col] = true
+			}
+		}
+		for col, ok := range r.Collected {
+			if ok && !cached[col] {
+				c.last[col] = now
+			}
+		}
+		t.cycle[addr] = c
 	}
 	for addr, r := range results {
 		if r.CloseUnconfirmed > 0 {
@@ -130,12 +166,45 @@ func (t *Tracker) Unsupported(addr string) []string {
 	return t.unsupported[addr]
 }
 
-// forget oublie l'historique d'une adresse.
+// forget oublie l'historique d'une adresse, puis y reporte les apports du
+// dernier cycle, qui appartiennent à la carte présente.
 func (t *Tracker) forget(addr string) {
 	delete(t.last, addr)
 	delete(t.closes, addr)
 	delete(t.held, addr)
 	delete(t.unsupported, addr)
+	c, ok := t.cycle[addr]
+	if !ok {
+		return
+	}
+	if len(c.last) > 0 {
+		t.last[addr] = c.last
+	}
+	if c.closes > 0 {
+		t.closes[addr] = c.closes
+	}
+	if len(c.held) > 0 {
+		t.held[addr] = c.held
+	}
+}
+
+// CycleOnly rend, pour une carte dont l'identité vient de changer, une vue
+// limitée aux apports du dernier cycle.
+func (t *Tracker) CycleOnly(addr string) *Tracker {
+	v := NewTracker()
+	if t == nil {
+		return v
+	}
+	if c, ok := t.cycle[addr]; ok {
+		if len(c.last) > 0 {
+			v.last[addr] = c.last
+		}
+		v.closes[addr] = c.closes
+		if len(c.held) > 0 {
+			v.held[addr] = c.held
+		}
+	}
+	return v
 }
 
 // Remember enregistre les identités serial: établies dans un instantané.

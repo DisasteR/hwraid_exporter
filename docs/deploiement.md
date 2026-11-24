@@ -62,10 +62,10 @@ L'image est publique : aucune authentification n'est nécessaire pour la téléc
 
 ## Installation native (systemd)
 
-Chaque publication GitHub fournit le binaire statique (`hwraid-exporter-<version>-linux-amd64`, mêmes octets que dans l'image), les licences (`hwraid-exporter-<version>-licenses.tar.gz`), l'unité systemd (`hwraid-exporter.service`) et `SHA256SUMS`, qui couvre ces trois fichiers. Avant l'installation, vérifier le binaire de la version choisie et l'unité. La commande compare les noms littéralement, exige exactement une entrée pour chacun des deux, puis vérifie leurs deux sommes ; elle échoue au premier écart (remplacer `v0.1.2` par la version installée) :
+Chaque publication GitHub fournit le binaire statique (`hwraid-exporter-<version>-linux-amd64`, mêmes octets que dans l'image), les licences (`hwraid-exporter-<version>-licenses.tar.gz`), l'unité systemd (`hwraid-exporter.service`) et `SHA256SUMS`, qui couvre ces trois fichiers. Avant l'installation, vérifier le binaire de la version choisie et l'unité. La commande compare les noms entiers littéralement (tout ce qui suit la somme et les deux espaces), exige exactement une entrée pour chacun des deux, puis vérifie leurs deux sommes ; elle échoue au premier écart (remplacer `v0.1.2` par la version installée) :
 
 ```bash
-V=v0.1.2; awk -v a="hwraid-exporter-$V-linux-amd64" -v b=hwraid-exporter.service '$2 == a {na++; print} $2 == b {nb++; print} END {if (na != 1 || nb != 1) {print "entrée absente ou en double dans SHA256SUMS" > "/dev/stderr"; exit 1}}' SHA256SUMS > SHA256SUMS.install && sha256sum -c --strict SHA256SUMS.install
+V=v0.1.2; awk -v a="hwraid-exporter-$V-linux-amd64" -v b=hwraid-exporter.service '{n = substr($0, 67)} length($1) == 64 && substr($0, 65, 2) == "  " && n == a {na++; print} length($1) == 64 && substr($0, 65, 2) == "  " && n == b {nb++; print} END {if (na != 1 || nb != 1) {print "entrée absente ou en double dans SHA256SUMS" > "/dev/stderr"; exit 1}}' SHA256SUMS > SHA256SUMS.install && sha256sum -c --strict SHA256SUMS.install
 ```
 
 N'installer que si cette commande réussit.
@@ -135,7 +135,7 @@ Les arrêts suivants, par la v0.1.2, attendent la commande en cours.
 
 ### Remplacer une carte ou mettre à jour son firmware
 
-Arrêter l'exporter avant l'intervention et le redémarrer après. L'exporter vérifie à chaque cycle que le nœud ouvert désigne la carte attendue et que son couple modèle et firmware est qualifié, d'après sysfs. Mais `GET_HBA_INFO` ne donne ni le firmware ni le numéro de série : une carte changée entre la lecture de sysfs et l'ouverture du nœud, dans le même cycle, ne serait pas détectée avant l'envoi des commandes.
+Arrêter l'exporter avant l'intervention et le redémarrer après. L'exporter vérifie à chaque cycle, d'après sysfs, que son couple modèle et firmware est qualifié, puis, à l'ouverture du nœud, que `GET_HBA_INFO` désigne bien la carte attendue (numéro, adresse et identifiants PCI). `GET_HBA_INFO` ne donne ni le firmware ni le numéro de série : une carte changée entre la lecture de sysfs et l'ouverture du nœud, dans le même cycle, avec les mêmes numéro, adresse et identifiants PCI (même modèle, autre firmware ou autre exemplaire), ne serait pas détectée avant l'envoi des commandes.
 
 ## Prometheus
 
@@ -162,7 +162,7 @@ rule_files:
 curl -s http://127.0.0.1:9799/metrics | grep -E '^hwraid_(exporter_build_info|snapshot_ready|discovery_success|management_node_valid|collection_success)'
 ```
 
-Attendu : `hwraid_snapshot_ready 1`, `hwraid_discovery_success 1`, et, **pour chaque carte attendue** (label `controller`), une ligne `hwraid_management_node_valid … 1` et une ligne `hwraid_collection_success{…,collector="…"} 1` par collecteur (aacraid : `capabilities`, `cache_protection`, `disk_inventory`, `disk_location`, `disks`, `volumes`). Les seules métriques globales ne suffisent pas : elles sont publiées même sans aucune carte collectée. Le journal du démarrage indique les nœuds préparés (`nodes prepared`), l'identité et les capacités conservées (`privileges dropped`), puis l'adresse d'écoute et la version (`listening`). Les messages du journal et les textes d'aide des métriques sont en anglais.
+Attendu : `hwraid_snapshot_ready 1`, `hwraid_discovery_success 1`, et, **pour chaque carte attendue** (label `controller`), une ligne `hwraid_management_node_valid … 1` et une ligne `hwraid_collection_success{…,collector="…"} 1` pour chaque collecteur pris en charge (aacraid : jusqu'à `capabilities`, `cache_protection`, `disk_inventory`, `disk_location`, `disks`, `volumes`). Un collecteur que la carte ne permet pas apparaît à la place dans `hwraid_collector_supported{…} 0` : vérifier qu'il est attendu pour ce modèle et ce firmware (sur la 6805 de référence, les six sont pris en charge). Les seules métriques globales ne suffisent pas : elles sont publiées même sans aucune carte collectée. Le journal du démarrage indique les nœuds préparés (`nodes prepared`), l'identité et les capacités conservées (`privileges dropped`), puis l'adresse d'écoute et la version (`listening`). Les messages du journal et les textes d'aide des métriques sont en anglais.
 
 | Symptôme | Cause probable |
 |---|---|

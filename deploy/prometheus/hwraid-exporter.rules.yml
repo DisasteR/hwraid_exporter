@@ -72,6 +72,7 @@ groups:
           (max by (job, instance, controller, volume) (last_over_time(hwraid_volume_info[1d]))
               unless on (job, instance, controller, volume) hwraid_volume_info)
           and on (job, instance, controller) hwraid_collection_success{collector="volumes"} == 1
+        keep_firing_for: 10m
         labels:
           severity: warning
         annotations:
@@ -266,6 +267,7 @@ groups:
           (max by (job, instance, controller) (last_over_time(hwraid_controller_info[1d]))
               unless on (job, instance, controller) hwraid_controller_info)
           and on (job, instance) hwraid_discovery_success == 1
+        keep_firing_for: 10m
         labels:
           severity: warning
         annotations:

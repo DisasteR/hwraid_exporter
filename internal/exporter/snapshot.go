@@ -98,10 +98,11 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 		c.Identity = strings.Join([]string{c.Label, pc.Card.PCI.Vendor, pc.Card.PCI.Device, pc.Card.PCI.SubsystemVendor,
 			pc.Card.PCI.SubsystemDevice, c.Model, c.Firmware}, "|")
 		// Historique d'une autre carte (ou d'un autre firmware) à la même
-		// adresse : rien n'en est repris.
+		// adresse : rien n'en est repris ; seuls les apports de ce cycle sont
+		// publiés.
 		hist := tracker
 		if !tracker.Same(addr, c.Identity) {
-			hist = nil
+			hist = tracker.CycleOnly(addr)
 		}
 		if pc.Module != nil {
 			c.Backend = pc.Module.Name()

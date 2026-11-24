@@ -125,6 +125,12 @@ buffer_stats() {
 
 READER=
 READER_FAILED=0
+
+# ours : le lecteur noté est toujours notre processus fils (son PID n'a pas
+# été réattribué à un autre programme).
+ours() {
+	[ -n "$READER" ] && [ "$(awk '{print $4}' "/proc/$READER/stat" 2>/dev/null)" = "$$" ]
+}
 LIMIT=0
 cleanup() {
 	trap - EXIT
@@ -139,14 +145,16 @@ cleanup() {
 	#    (cat écrit chaque lecture aussitôt), puis il est arrêté.
 	if [ -n "$READER" ]; then
 		i=0
-		while [ "$i" -lt 10 ] && kill -0 "$READER" 2>/dev/null; do
+		while [ "$i" -lt 10 ] && ours; do
 			stats=$(buffer_stats)
 			[ -n "$stats" ] && [ "$(echo "$stats" | cut -d' ' -f2)" -eq 0 ] && break
 			sleep 1
 			i=$((i + 1))
 		done
 		sleep 1
-		kill -KILL "$READER" 2>/dev/null || true
+		if ours; then
+			kill -KILL "$READER" 2>/dev/null || true
+		fi
 		wait "$READER" 2>/dev/null || true
 	fi
 	# 3. Bilan des pertes, lu avant le retrait.
@@ -223,11 +231,11 @@ echo "écriture dans $OUT (Ctrl+C pour arrêter, limite $MAX_MB Mio)"
 # limite est imposée par le noyau (taille de fichier, en blocs de
 # 512 octets) : au-delà, cat reçoit SIGXFSZ (statut 153). Une erreur
 # d'écriture l'arrête avec un autre statut.
-# Signaux ignorés le temps de lancer le lecteur et de noter son PID : un
-# arrêt dans cette fenêtre laisserait sinon un lecteur inconnu du nettoyage.
-# Le lecteur hérite de ces signaux ignorés ; le nettoyage l'arrête donc par
-# SIGKILL (cat sur trace_pipe, aucune commande de la carte en jeu).
-trap '' HUP INT TERM
+# Un arrêt demandé pendant le lancement du lecteur est mémorisé, puis traité
+# dès que son PID est noté : sinon, le nettoyage ne connaîtrait pas le
+# lecteur.
+PENDING=0
+trap 'PENDING=1' HUP INT TERM
 (
 	# Pas de fichier core sur SIGXFSZ (option hors POSIX, gérée par dash).
 	# shellcheck disable=SC3045
@@ -237,6 +245,7 @@ trap '' HUP INT TERM
 ) >&3 &
 READER=$!
 trap 'exit 0' HUP INT TERM
+[ "$PENDING" -eq 0 ] || exit 0
 # Le shell attend dans wait, qu'un signal interrompt aussitôt.
 rc=0
 wait "$READER" || rc=$?

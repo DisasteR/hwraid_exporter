@@ -210,11 +210,16 @@ func DecodePagedResponse(req, rsp []byte) (PagedResponse, error) {
 	if le.Uint32(d[4:]) != le.Uint32(q[4:]) {
 		return PagedResponse{}, fmt.Errorf("paged response: subcommand %d, expected %d", le.Uint32(d[4:]), le.Uint32(q[4:]))
 	}
+	// Taille annoncée par la carte : 496 octets, en-tête compris, pour toute
+	// réponse paginée (ouverture, morceau, clôture ; 732 ouvertures et
+	// clôtures et 325 morceaux capturés). Une réponse plus courte laisserait
+	// dans le tampon des octets de la requête (identifiant du transfert)
+	// pris pour une réponse de la carte.
+	if sz := le.Uint16(rsp[fibSize:]); sz != ChunkRspSize {
+		return PagedResponse{}, fmt.Errorf("paged response: size field %d, expected %d", sz, ChunkRspSize)
+	}
 	r := PagedResponse{Mark: le.Uint32(d[8:]), Total: le.Uint32(d[12:]), Code: le.Uint32(d[16:]), Xfer: le.Uint32(d[20:]), Chunk: le.Uint32(d[24:])}
 	if le.Uint32(q[4:]) == ctContinueData {
-		if sz := le.Uint16(rsp[fibSize:]); sz != ChunkRspSize {
-			return PagedResponse{}, fmt.Errorf("paged response: chunk size field %d, expected %d", sz, ChunkRspSize)
-		}
 		// Données du morceau : jusqu'à la fin annoncée par Size, jamais
 		// au-delà (octets non écrits par la carte).
 		r.Data = d[32 : 32+ChunkData]

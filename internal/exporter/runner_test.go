@@ -368,6 +368,7 @@ func TestTimedOutHeldIdentityChange(t *testing.T) {
 	tr.Update(ok, []string{addr}, t0)
 	tr.Remember(Build(plan(aacHost("host0", addr, "")), true, ok, tr, time.Minute))
 	timedOut := map[string]module.Result{addr: {TimedOut: true, Collected: map[string]bool{"capabilities": false}}}
+	tr.Update(timedOut, []string{addr}, t0.Add(time.Minute)) // comme serve : Update avant Build
 	out := Render(Build(plan(aacHost("host0", addr, "S1")), true, timedOut, tr, time.Minute))
 	if want := `hwraid_collection_success{controller="serial:S1",collector="capabilities"} 0`; !strings.Contains(out, want+"\n") {
 		t.Fatalf("succès transmis à une identité nouvelle : %s\n%s", want, out)
@@ -379,7 +380,9 @@ func TestTimedOutHeldIdentityChange(t *testing.T) {
 	tr2.Update(ok, []string{addr}, t0)
 	tr2.Remember(Build(plan(aacHost("host0", addr, "S1")), true, ok, tr2, time.Minute))
 	noNode := map[string]module.Result{addr: {NodeValid: false}}
+	tr2.Update(noNode, []string{addr}, t0.Add(time.Minute))
 	tr2.Remember(Build(plan(aacHost("host0", addr, "S2")), true, noNode, tr2, time.Minute))
+	tr2.Update(timedOut, []string{addr}, t0.Add(2*time.Minute))
 	out = Render(Build(plan(aacHost("host0", addr, "S1")), true, timedOut, tr2, time.Minute))
 	if want := `hwraid_collection_success{controller="serial:S1",collector="capabilities"} 0`; !strings.Contains(out, want+"\n") {
 		t.Fatalf("historique réactivé après un passage par une autre carte : %s\n%s", want, out)
@@ -426,6 +429,7 @@ func TestTimedOutHeldNotAfterFirmwareUpdate(t *testing.T) {
 	h := aacHost("host0", addr, "S1")
 	h.Firmware = "5.3-0[19205]"
 	timedOut := map[string]module.Result{addr: {TimedOut: true, Collected: map[string]bool{"capabilities": false}}}
+	tr.Update(timedOut, []string{addr}, t0.Add(time.Minute))
 	out := Render(Build(plan(h), true, timedOut, tr, time.Minute))
 	if want := `hwraid_collection_success{controller="serial:S1",collector="capabilities"} 0`; !strings.Contains(out, want+"\n") {
 		t.Fatalf("succès reporté malgré le nouveau firmware : %s\n%s", want, out)
@@ -485,5 +489,42 @@ func TestNoHistoryInheritedByReplacementCard(t *testing.T) {
 	}
 	if want := `hwraid_transfer_close_unconfirmed_total{controller="serial:S2"} 0`; !strings.Contains(out, want+"\n") {
 		t.Fatalf("compteur de S1 réapparu pour S2 : %s\n%s", want, out)
+	}
+}
+
+// Nouvelle carte à la même adresse dont le premier cycle réussit : sa date
+// de succès et ses rejets 0xc5 sont publiés et conservés ; un échec au cycle
+// suivant ne la fait pas passer pour jamais réussie.
+func TestReplacementCardFirstCycleKept(t *testing.T) {
+	const addr = "0000:01:00.0"
+	tr := NewTracker()
+	t0 := time.Unix(1_000_000, 0)
+	s1 := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"volumes": true}, CloseUnconfirmed: 5}}
+	tr.Update(s1, []string{addr}, t0)
+	tr.Remember(Build(plan(aacHost("host0", addr, "S1")), true, s1, tr, time.Minute))
+	p2 := plan(aacHost("host0", addr, "S2"))
+	s2 := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"volumes": true}, CloseUnconfirmed: 1}}
+	tr.Update(s2, []string{addr}, t0.Add(time.Minute))
+	first := Build(p2, true, s2, tr, time.Minute)
+	tr.Remember(first)
+	out := Render(first)
+	for _, want := range []string{
+		`hwraid_collection_last_success_timestamp_seconds{controller="serial:S2",collector="volumes"} 1000060`,
+		`hwraid_transfer_close_unconfirmed_total{controller="serial:S2"} 1`,
+	} {
+		if !strings.Contains(out, want+"\n") {
+			t.Fatalf("premier cycle de S2 : %s absent\n%s", want, out)
+		}
+	}
+	failed := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"volumes": false}}}
+	tr.Update(failed, []string{addr}, t0.Add(2*time.Minute))
+	out = Render(Build(p2, true, failed, tr, time.Minute))
+	for _, want := range []string{
+		`hwraid_collection_last_success_timestamp_seconds{controller="serial:S2",collector="volumes"} 1000060`,
+		`hwraid_transfer_close_unconfirmed_total{controller="serial:S2"} 1`,
+	} {
+		if !strings.Contains(out, want+"\n") {
+			t.Fatalf("cycle suivant de S2 : %s absent\n%s", want, out)
+		}
 	}
 }
