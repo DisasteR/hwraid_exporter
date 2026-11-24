@@ -188,6 +188,7 @@ func serve(args []string) int {
 	empty := exporter.Render(exporter.Snapshot{})
 	pub := exporter.NewPublisher(empty, empty, 3**interval+*timeout)
 
+	lifecycle.IgnoreBrokenPipe()
 	ctx, stop := signal.NotifyContext(context.Background(), lifecycle.TerminationSignals()...)
 	defer stop()
 	exitCode := make(chan int, 2)
@@ -261,7 +262,15 @@ func serve(args []string) int {
 		}
 		results := runner.Run(cycle, jobs, collectors)
 		if stopping.Err() != nil {
-			return // arrêt pendant le cycle : lectures incomplètes, non publiées
+			// Arrêt pendant le cycle : lectures incomplètes, non publiées. Les
+			// erreurs tardives déjà rendues dans ce cycle sont journalisées
+			// ici, puisque le cycle n'est pas publié.
+			for addr, r := range results {
+				if r.LateErr != nil {
+					log.Warn("a collection finished after its timeout, not published", "pci", addr, "err", r.LateErr)
+				}
+			}
+			return
 		}
 		if err == nil {
 			present := map[string]bool{}

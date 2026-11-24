@@ -115,7 +115,11 @@ func TestShutdownDuringBlockedCommand(t *testing.T) {
 			defer close(loopDone)
 			lifecycle.RunLoop(sig, 5*time.Millisecond, collect)
 		}()
-		<-rec.blocked
+		select {
+		case <-rec.blocked:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("late=%v : la commande firmware attendue n'est jamais partie (ioctl : %#x)", late, rec.sent())
+		}
 		if late {
 			if out := <-cycles; !out[c.PCI.Address].TimedOut {
 				t.Fatalf("hors délai attendu : %+v", out)

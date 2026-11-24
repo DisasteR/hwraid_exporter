@@ -7,6 +7,7 @@ package lifecycle
 
 import (
 	"os"
+	"os/signal"
 	"syscall"
 )
 
@@ -19,3 +20,10 @@ import (
 func TerminationSignals() []os.Signal {
 	return []os.Signal{syscall.SIGTERM, os.Interrupt, syscall.SIGHUP}
 }
+
+// IgnoreBrokenPipe ignore SIGPIPE. Sans cela, Go fait sortir le processus à
+// la première écriture sur une sortie standard ou d'erreur dont le lecteur a
+// disparu (collecteur de journaux arrêté), y compris pendant une commande de
+// gestion, que le pilote aacraid perdrait. L'écriture échoue alors avec
+// EPIPE, sans autre effet.
+func IgnoreBrokenPipe() { signal.Ignore(syscall.SIGPIPE) }

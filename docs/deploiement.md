@@ -120,8 +120,20 @@ Le pilote `aacraid` perd un bloc de commande de gestion, jusqu'au redémarrage d
 
 - arrêter le conteneur par `docker stop` ou `docker compose down`, jamais `docker rm -f` ni `docker kill`. L'exporter attend sans limite la fin d'une commande déjà envoyée, en le journalisant toutes les 10 s : `stop_grace_period` (ou `TimeoutStopSec` pour systemd) est le seul délai, à régler sur le temps maximal que vous acceptez d'attendre une carte qui ne répond plus. 30 s convient : une commande rend la main en quelques millisecondes (le délai par défaut de Docker est de 10 s). Un délai sans limite éviterait de tuer une commande figée, mais bloquerait l'arrêt de la machine ([décision](aacraid-defaut-pilote.md#protections-de-lexporter)) ;
 - ne pas tuer un autre outil de gestion pendant qu'il travaille : pas de `timeout` court ni de `SIGKILL` autour d'ARCCONF. Dans un conteneur qui lance ARCCONF, le processus principal doit, à réception de `SIGTERM`, attendre la fin de la commande en cours avant de sortir : quand il sort, le noyau tue tous les processus du conteneur, ARCCONF compris, quel que soit `stop_grace_period` (un init comme `--init` n'y change rien) ;
-- protection du cache en panne (`HwraidCacheProtectionFailed`) : régler aussitôt le cache d'écriture des volumes en mode « seulement si protégé » (`wbb`), tant qu'ARCCONF fonctionne, **puis vérifier que la carte l'a coupé** sur chaque volume, après le changement (« Write-cache status: Off » dans ARCCONF, ou `hwraid_volume_write_cache_enabled` à 0 sur une collecte postérieure) avant de compter sur ce réglage pour redémarrer. C'est la seule protection fiable contre une perte au redémarrage ;
+- protection du cache en panne (`HwraidCacheProtectionFailed`) : régler aussitôt le cache d'écriture des volumes en mode « seulement si protégé » (`wbb`), tant qu'ARCCONF fonctionne, **puis vérifier que la carte l'a coupé** sur chaque volume, après le changement (« Write-cache status: Off » dans ARCCONF, ou `hwraid_volume_write_cache_enabled` à 0 sur une collecte commencée après le changement, soit deux intervalles plus tard). Ce relevé confirme que les nouvelles écritures ne sont plus mises en attente ; laisser ensuite un peu de temps à la carte avant de redémarrer. C'est la mesure la plus fiable contre une perte au redémarrage ;
 - réserve épuisée (`cannot allocate memory` sur toutes les lectures) : seul un redémarrage la reconstitue. La commande d'arrêt qui vide le cache de la carte ne partira pas, et avec le réglage par défaut du pilote (`cache=2`, à lire dans `/sys/module/aacraid/parameters/cache`) aucun autre vidage n'a lieu. Si le cache d'écriture est actif sans protection, aucun moyen ne permet de vérifier qu'il est vide : arrêter les applications qui écrivent, lancer `sync` et laisser du temps à la carte **réduit le risque sans l'éliminer** ([les deux chemins de vidage](aacraid-defaut-pilote.md#conséquence-à-larrêt--cache-non-vidé)).
+
+### Mise à jour depuis la v0.1.1
+
+Lors de la mise à jour, c'est **l'ancien processus** qui reçoit l'arrêt : remplacer le binaire, l'unité ou l'image ne change rien à son comportement. La v0.1.1 ne protège pas ses commandes : à l'arrêt, elle ferme son serveur et sort sans attendre la carte, et elle pouvait déjà perdre des blocs en fonctionnement (signaux internes du runtime Go). Un arrêt qui tombe pendant un de ses cycles de collecte, environ 1 s par intervalle, peut donc coûter un bloc de la réserve.
+
+Pour limiter ce risque :
+
+- arrêter l'ancienne version une seule fois, par `docker stop` ou `systemctl stop`, et démarrer directement la nouvelle ;
+- si la réserve doit être vérifiée, lancer la sonde (`tools/aacraid-fib-trace.sh`, section « Détecter une fuite » de [aacraid-defaut-pilote.md](aacraid-defaut-pilote.md)) avant l'arrêt : une ligne `hwraid-exporter ret=-512` signale le bloc perdu ;
+- un bloc perdu ne revient qu'au redémarrage de la machine ; la réserve en compte 8.
+
+Les arrêts suivants, par la v0.1.2, attendent la commande en cours.
 
 ## Prometheus
 

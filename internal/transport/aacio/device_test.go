@@ -789,14 +789,19 @@ func TestReadPagedOpenWithoutCTOK(t *testing.T) {
 	}
 }
 
-// pastDeadline : échéance dépassée, mais annulation pas encore livrée par
-// le minuteur du contexte (Err nil).
-type pastDeadline struct{ context.Context }
+// clockOnly : contexte dont l'échéance est fixée mais dont le minuteur ne
+// s'est pas encore exécuté (Err reste nil), comme juste après l'échéance.
+type clockOnly struct {
+	context.Context
+	deadline time.Time
+}
 
-func (pastDeadline) Deadline() (time.Time, bool) { return time.Now().Add(-time.Millisecond), true }
-func (pastDeadline) Err() error                  { return nil }
+func (c clockOnly) Deadline() (time.Time, bool) { return c.deadline, true }
+func (clockOnly) Err() error                    { return nil }
 
-// Échéance dépassée avant que le contexte ne le signale : aucune commande.
+// L'échéance passe pendant que la commande attend son tour sur le thread
+// dédié, après le contrôle de l'appelant : le contrôle fait sur le thread la
+// compare à l'horloge et refuse la commande ; rien n'atteint le noyau.
 func TestAdmitChecksDeadlineClock(t *testing.T) {
 	calls := fakeIoctl(t, func(uint32, []byte) error { return nil })
 	d, err := Open("/dev/null", devNull, list(t))
@@ -804,7 +809,22 @@ func TestAdmitChecksDeadlineClock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	if _, err := d.SupplementInfo(pastDeadline{context.Background()}); !errors.Is(err, ErrStopped) {
+	busy, release := make(chan struct{}), make(chan struct{})
+	go d.thread.run(func() { close(busy); <-release })
+	<-busy
+	ctx := clockOnly{context.Background(), time.Now().Add(50 * time.Millisecond)}
+	inQueue := make(chan struct{})
+	queued = func() { close(inQueue) }
+	defer func() { queued = nil }()
+	errc := make(chan error, 1)
+	go func() {
+		_, err := d.SupplementInfo(ctx) // échéance pas encore atteinte : admise par l'appelant
+		errc <- err
+	}()
+	<-inQueue
+	time.Sleep(time.Until(ctx.deadline) + 10*time.Millisecond) // échéance passée, Err toujours nil
+	close(release)
+	if err := <-errc; !errors.Is(err, ErrStopped) {
 		t.Fatalf("ErrStopped attendu, obtenu %v", err)
 	}
 	if *calls != 0 {

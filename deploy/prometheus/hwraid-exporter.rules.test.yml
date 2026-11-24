@@ -477,6 +477,28 @@ tests:
               summary: "Contrôleur serial:G disparu"
               description: "La carte a été vue dans les dernières 24 heures et n'est plus découverte : carte retirée, pilote déchargé ou identité changée."
 
+  # Collecteur réussi, puis non pris en charge (format de protection non
+  # décodé) : pas d'alerte de retard malgré l'ancienne date de succès ; un
+  # collecteur encore pris en charge et en échec la déclenche.
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_collection_last_success_timestamp_seconds{controller="serial:A",collector="cache_protection"}'
+        values: '0x20'
+      - series: 'hwraid_collector_supported{controller="serial:A",collector="cache_protection"}'
+        values: '_x2 0x18'
+      - series: 'hwraid_collection_last_success_timestamp_seconds{controller="serial:A",collector="volumes"}'
+        values: '0x20'
+      - series: 'hwraid_collection_interval_seconds{controller="serial:A"}'
+        values: '60x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HwraidCollectionStale
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: "serial:A", collector: volumes}
+            exp_annotations:
+              summary: "Lecture volumes sans succès depuis plus de 3 cycles (serial:A)"
+              description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter ; « cannot allocate memory » sur toutes les lectures signale probablement la réserve de commandes du pilote aacraid épuisée : avec le réglage par défaut du pilote, un redémarrage ne videra alors pas le cache de la carte ; lire docs/aacraid-defaut-pilote.md avant de redémarrer."
+
   # Cache d'écriture actif avec une protection en panne : alerte critique
   # sur chaque volume, membre compris ; le cache coupé à 21 min, l'alerte
   # s'éteint 10 min plus tard (keep_firing_for). Réglage forcé (wb) signalé,

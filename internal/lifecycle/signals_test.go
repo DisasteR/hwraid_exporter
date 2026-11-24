@@ -18,6 +18,15 @@ import (
 // Rôle de sous-processus : attend un signal d'arrêt, puis sort normalement
 // en l'annonçant (arrêt propre). Un signal non capté le tue à la place.
 func TestMain(m *testing.M) {
+	if f := os.Getenv("HWRAID_PIPE_CHILD"); f != "" {
+		// stderr est un tube dont le lecteur est déjà fermé.
+		if os.Getenv("HWRAID_PIPE_IGNORE") == "1" {
+			IgnoreBrokenPipe()
+		}
+		os.Stderr.WriteString("journal\n")
+		_ = os.WriteFile(f, []byte("vivant"), 0o600)
+		os.Exit(0)
+	}
 	if os.Getenv("HWRAID_SIGNAL_CHILD") == "1" {
 		ctx, stop := signal.NotifyContext(context.Background(), TerminationSignals()...)
 		defer stop()
@@ -68,6 +77,32 @@ func TestTerminationSignalsStopGracefully(t *testing.T) {
 		}
 		if last != "arrêt propre" {
 			t.Fatalf("%v : sortie sans arrêt propre (%q)", sig, last)
+		}
+	}
+}
+
+// Lecteur de stderr disparu : sans IgnoreBrokenPipe, l'écriture du journal
+// tue le processus (témoin) ; avec, il continue.
+func TestIgnoreBrokenPipe(t *testing.T) {
+	for _, ignore := range []bool{false, true} {
+		mark := t.TempDir() + "/vivant"
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Close() // lecteur disparu
+		cmd := exec.Command(os.Args[0], "-test.run=^$")
+		cmd.Env = append(os.Environ(), "HWRAID_PIPE_CHILD="+mark)
+		if ignore {
+			cmd.Env = append(cmd.Env, "HWRAID_PIPE_IGNORE=1")
+		}
+		cmd.Stderr = w
+		err = cmd.Run()
+		w.Close()
+		_, statErr := os.Stat(mark)
+		alive := err == nil && statErr == nil
+		if alive != ignore {
+			t.Fatalf("SIGPIPE ignoré=%v : processus vivant=%v (%v)", ignore, alive, err)
 		}
 	}
 }

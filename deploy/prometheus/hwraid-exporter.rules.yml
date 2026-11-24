@@ -189,10 +189,12 @@ groups:
     rules:
       - alert: HwraidCollectionStale
         # S'adapte à l'intervalle configuré : aucun succès depuis plus de
-        # trois cycles de collecte (lecture en échec ou hors délai).
+        # trois cycles de collecte (lecture en échec ou hors délai). Un
+        # collecteur devenu non pris en charge n'est pas en retard.
         expr: |
-          time() - hwraid_collection_last_success_timestamp_seconds
-            > on (job, instance, controller) group_left 3 * hwraid_collection_interval_seconds
+          (time() - hwraid_collection_last_success_timestamp_seconds
+            > on (job, instance, controller) group_left 3 * hwraid_collection_interval_seconds)
+            unless on (job, instance, controller, collector) hwraid_collector_supported == 0
         for: 1m
         labels:
           severity: warning

@@ -63,7 +63,7 @@ Ce que l'on sait, et ce que l'on ne sait pas :
 
 Si le cache d'écriture de la carte est actif sans protection (module ZMM ou batterie en panne, ou cache forcé en écriture différée), un redémarrage avec la réserve vide peut perdre les dernières écritures. C'est arrivé sur l'hôte de référence le 2026-11-23 (`cache=2`) : des fichiers écrits dans les secondes qui ont précédé le redémarrage ont été retrouvés corrompus. L'alerte `HwraidVolumeWriteCacheUnprotected` ([alerts.md](alerts.md)) signale un cache d'écriture actif sans protection opérationnelle.
 
-**La seule mesure fiable est préventive** : dès qu'une protection tombe en panne, et tant qu'ARCCONF peut encore parler à la carte, régler le cache d'écriture des volumes en mode « seulement si protégé » (`wbb`) ou le désactiver (`wt`), **puis vérifier que la carte l'a coupé** : « Write-cache status: Off » dans ARCCONF, ou `hwraid_volume_write_cache_enabled` à 0. Un cache coupé ne laisse rien en attente au redémarrage. Cette séquence a été observée sur l'hôte de référence le 2026-11-24.
+**La seule mesure fiable est préventive** : dès qu'une protection tombe en panne, et tant qu'ARCCONF peut encore parler à la carte, régler le cache d'écriture des volumes en mode « seulement si protégé » (`wbb`) ou le désactiver (`wt`), **puis vérifier que la carte l'a coupé** : « Write-cache status: Off » dans ARCCONF, ou `hwraid_volume_write_cache_enabled` à 0 sur une collecte commencée après le changement (attendre deux intervalles). Ce relevé confirme le mode d'écriture effectif : les nouvelles écritures ne sont plus mises en attente. Il ne prouve pas à lui seul que les écritures acceptées avant le changement sont sur les disques ; laisser un peu de temps à la carte avant de redémarrer. Cette séquence a été observée sur l'hôte de référence le 2026-11-24.
 
 Une fois la réserve vide, plus aucun outil de gestion ne peut changer ce réglage. Les mesures suivantes **réduisent le risque sans l'éliminer** :
 
@@ -94,7 +94,7 @@ Depuis la v0.1.2 :
 
 ## Détecter une fuite et son auteur
 
-[`tools/aacraid-fib-trace.sh`](../tools/aacraid-fib-trace.sh) pose une sonde du noyau sur le retour de `aac_fib_send`. Il n'y a rien à installer ; il faut être root. Pour chaque commande de gestion, la sonde note le programme qui l'a envoyée et le code rendu.
+[`tools/aacraid-fib-trace.sh`](../tools/aacraid-fib-trace.sh) pose une sonde du noyau sur le retour de `aac_fib_send`. Il n'y a rien à installer ; il faut être root, et le noyau doit offrir tracefs et les sondes de retour (kretprobes), présents sur Debian 11. Pour chaque retour capté, la sonde note le programme qui s'exécutait et le code rendu. Le filtre écarte les entrées-sorties disque soumises normalement (`-115`) ; il garde les commandes de gestion, mais aussi les rares retours en erreur des entrées-sorties et les appels internes du pilote. Une perte n'est donc attribuée à un programme de gestion que sur une ligne `ret=-512` portant son nom. La trace grossit d'une ligne par retour capté (quelques dizaines d'octets).
 
 ```sh
 sudo tools/aacraid-fib-trace.sh            # Ctrl+C pour arrêter ; bilan par programme

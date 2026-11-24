@@ -184,7 +184,13 @@ func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeR
 			info.AdapterNumber, info.Bus, info.Device, info.Function, info.VendorID, info.DeviceID, info.SubVendorID, info.SubSystemID)}
 	}
 	r := module.Result{NodeValid: true}
-	key := c.PCI.Address + "|" + strconv.FormatUint(refs[0].Dev, 10)
+	// Réponses gardées (706, 708) : rattachées à la carte telle que sysfs la
+	// décrit (adresse, nœud, identifiants PCI, numéro de série, firmware).
+	// Une carte remplacée ou un firmware mis à jour change la clé : tout est
+	// relu.
+	_, h, _ := hostOf(c)
+	key := strings.Join([]string{c.PCI.Address, strconv.FormatUint(refs[0].Dev, 10),
+		c.PCI.Vendor, c.PCI.Device, c.PCI.SubsystemVendor, c.PCI.SubsystemDevice, h.SerialNumber, h.Firmware}, "|")
 	sup, err := m.supplementInfo(key, d)
 	r.Collected = map[string]bool{CapabilitiesCollector: err == nil}
 	// Réponse 706 gardée en mémoire : pas de date de dernier succès.

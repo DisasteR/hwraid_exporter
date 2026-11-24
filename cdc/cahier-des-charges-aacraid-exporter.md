@@ -120,7 +120,7 @@ Les noms ci-dessous sont proposés pour la première version. La liste exacte de
 | Famille | Labels | Sens |
 |---|---|---|
 | `hwraid_discovery_success` | — | 1 si la dernière découverte a abouti. |
-| `hwraid_snapshot_ready` | — | 0 avant la première découverte publiée, puis 1. |
+| `hwraid_snapshot_ready` | — | 1 quand `/metrics` sert la dernière collecte ; 0, sans valeur matérielle, avant la première, pendant l’arrêt et quand la vue est périmée. |
 | `hwraid_controller_info` | `controller`, `identity_source`, `pci_address`, `driver`, `backend`, `model`, `firmware` | Inventaire, valeur 1. |
 | `hwraid_controller_backend_supported` | `controller` | 1 si un module sait collecter cette carte. |
 | `hwraid_management_node_valid` | `controller` | 0 si le nœud dédié est absent ou ne correspond pas à la carte (erreur de déploiement). |

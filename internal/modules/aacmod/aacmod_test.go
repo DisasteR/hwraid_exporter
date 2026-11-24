@@ -252,6 +252,19 @@ func TestCollectSupplementGate(t *testing.T) {
 	if d.supCall != 1 {
 		t.Fatalf("706 envoyée %d fois en 3 cycles, attendu 1", d.supCall)
 	}
+	// Même adresse et même nœud, firmware mis à jour, puis carte remplacée
+	// (autre numéro de série) : la réponse gardée n'est pas réutilisée.
+	c2 := c
+	c2.Hosts = append([]sysfs.SCSIHost(nil), c.Hosts...)
+	c2.Hosts[0].Firmware = "5.3-0[19205]"
+	m.Collect(context.Background(), c2, ref)
+	c3 := c
+	c3.Hosts = append([]sysfs.SCSIHost(nil), c.Hosts...)
+	c3.Hosts[0].SerialNumber = "AUTRE"
+	m.Collect(context.Background(), c3, ref)
+	if d.supCall != 3 {
+		t.Fatalf("706 relue %d fois après changements de firmware et de carte, attendu 3", d.supCall)
+	}
 
 	for name, sup := range map[string]aacraid.SupplementInfo{
 		"bit absent": {Version: 15, SupportedOptions2: 0x00c86934},

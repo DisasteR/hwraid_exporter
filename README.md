@@ -69,7 +69,7 @@ services:
     stop_grace_period: 30s
 ```
 
-Stop the container with `docker stop` or `docker compose down`, never `docker rm -f` or `docker kill`.
+Stop the container with `docker stop` or `docker compose down`, never `docker rm -f` or `docker kill`. When upgrading from v0.1.1, the old process is the one being stopped, without this protection: see [upgrading from v0.1.1](docs/deploiement.md#mise-à-jour-depuis-la-v011).
 
 The nodes are created in the container's own `/dev`, not on the host. Why each capability is needed: [CDC §6.5](cdc/cahier-des-charges-aacraid-exporter.md). Full deployment guide, including the systemd unit for native installs: [docs/deploiement.md](docs/deploiement.md).
 
