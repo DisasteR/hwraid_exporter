@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -53,9 +54,15 @@ var ErrStopped = errors.New("collection stopped: no new card command sent")
 // admit autorise une nouvelle commande firmware tant que ctx n'est pas
 // terminé. La clôture d'un transfert déjà ouvert ne passe pas par admit :
 // un transfert engagé est toujours clos.
+//
+// L'échéance est aussi comparée à l'horloge : ctx.Err() n'est renseigné que
+// lorsque le minuteur du contexte s'exécute, parfois un peu après l'échéance.
 func admit(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("%w (%w)", ErrStopped, err)
+	}
+	if dl, ok := ctx.Deadline(); ok && !time.Now().Before(dl) {
+		return fmt.Errorf("%w (%w)", ErrStopped, context.DeadlineExceeded)
 	}
 	return nil
 }
@@ -312,12 +319,12 @@ func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size 
 		// Statut d'échec ou écho incorrect : aucun transfert établi.
 		return nil, false, err
 	}
-	if head.Mark != 0xc9 || head.Total == 0 || head.Total > maxPagedTotal {
+	if head.Mark != 0xc9 || head.Code != aacraid.CodeOK || head.Total == 0 || head.Total > maxPagedTotal {
 		// Ouverture non conforme : rien ne prouve qu'un transfert existe
 		// sous cet identifiant. Aucune clôture n'est envoyée, plutôt que de
 		// clore un transfert peut-être étranger ; le firmware garde au plus
 		// un transfert ouvert, que l'erreur signale.
-		return nil, false, fmt.Errorf("read %d: open refused (mark %#x, size %d); transfer %#x not stopped", r, head.Mark, head.Total, head.Xfer)
+		return nil, false, fmt.Errorf("read %d: open refused (mark %#x, code %#x, size %d); transfer %#x not stopped", r, head.Mark, head.Code, head.Total, head.Xfer)
 	}
 	var data []byte
 	last := uint32(0)

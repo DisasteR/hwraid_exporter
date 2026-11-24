@@ -4,6 +4,7 @@
 package exporter
 
 import (
+	"strings"
 	"time"
 
 	"github.com/DisasteR/hwraid_exporter/internal/module"
@@ -99,8 +100,14 @@ func (t *Tracker) Update(results map[string]module.Result, present []string, now
 // mémoire et réussis lors de leur dernière collecte, si la carte porte
 // toujours l'identité label observée alors ; rien sinon (carte changée à la
 // même adresse).
+//
+// Le passage de pci:<adresse> à serial:<numéro> (numéro devenu lisible sur
+// la même carte) conserve held ; tout autre changement d'identité l'annule.
 func (t *Tracker) Held(addr, label string) map[string]bool {
-	if t == nil || t.heldLabel[addr] != label {
+	if t == nil {
+		return nil
+	}
+	if l := t.heldLabel[addr]; l != label && (l != "pci:"+addr || !strings.HasPrefix(label, "serial:")) {
 		return nil
 	}
 	return t.held[addr]
@@ -112,7 +119,14 @@ func (t *Tracker) Remember(s Snapshot) {
 		return
 	}
 	for _, c := range s.Controllers {
-		if !c.TimedOut {
+		// Seule une collecte effective (nœud vérifié, pas hors délai) établit
+		// l'identité de la carte à laquelle se rapporte held.
+		switch {
+		case !c.TimedOut && c.NodeValid:
+			t.heldLabel[c.PCIAddress] = c.Label
+		case t.heldLabel[c.PCIAddress] == "pci:"+c.PCIAddress && strings.HasPrefix(c.Label, "serial:"):
+			// Premier numéro de série lu pour la carte : il devient son
+			// identité ; un autre numéro ensuite ne l'est plus.
 			t.heldLabel[c.PCIAddress] = c.Label
 		}
 		if c.IdentitySource != "serial" {

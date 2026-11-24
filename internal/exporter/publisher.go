@@ -18,19 +18,25 @@ import (
 // exemple dans la découverte) n'est plus servie : empty la remplace.
 type Publisher struct {
 	mu      sync.Mutex
-	cur     atomic.Pointer[string]
-	at      atomic.Int64 // date de la dernière publication (UnixNano), 0 : aucune
+	cur     atomic.Pointer[view]
 	stopped bool
 	empty   string
 	maxAge  time.Duration
 	now     func() time.Time
 }
 
+// view est une vue servie et l'heure de sa publication (horloge monotone ;
+// zéro : vue initiale ou d'arrêt, jamais périmée).
+type view struct {
+	text string
+	at   time.Time
+}
+
 // NewPublisher crée un publieur qui sert initial ; empty est la vue sans
 // valeur matérielle servie à l'arrêt ou quand la vue a plus de maxAge.
 func NewPublisher(initial, empty string, maxAge time.Duration) *Publisher {
 	p := &Publisher{empty: empty, maxAge: maxAge, now: time.Now}
-	p.cur.Store(&initial)
+	p.cur.Store(&view{text: initial})
 	return p
 }
 
@@ -42,8 +48,7 @@ func (p *Publisher) Publish(s string) bool {
 	if p.stopped {
 		return false
 	}
-	p.cur.Store(&s)
-	p.at.Store(p.now().UnixNano())
+	p.cur.Store(&view{text: s, at: p.now()})
 	return true
 }
 
@@ -53,14 +58,15 @@ func (p *Publisher) Stop() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.stopped = true
-	p.cur.Store(&p.empty)
+	p.cur.Store(&view{text: p.empty})
 }
 
 // Load rend la vue servie, ou la vue sans valeur matérielle si la dernière
 // publication a plus de maxAge.
 func (p *Publisher) Load() string {
-	if at := p.at.Load(); at != 0 && p.maxAge > 0 && p.now().Sub(time.Unix(0, at)) > p.maxAge {
+	v := p.cur.Load()
+	if !v.at.IsZero() && p.maxAge > 0 && p.now().Sub(v.at) > p.maxAge {
 		return p.empty
 	}
-	return *p.cur.Load()
+	return v.text
 }

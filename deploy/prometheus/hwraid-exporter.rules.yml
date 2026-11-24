@@ -201,8 +201,8 @@ groups:
           description: "L'exporter ne parvient plus à lire cette information : les alertes d'état correspondantes ne peuvent plus se déclencher. Voir le journal de l'exporter ; « cannot allocate memory » sur toutes les lectures signale probablement la réserve de commandes du pilote aacraid épuisée : avec le réglage par défaut du pilote, un redémarrage ne videra alors pas le cache de la carte ; lire docs/aacraid-defaut-pilote.md avant de redémarrer."
 
       - alert: HwraidCollectionIntermittent
-        # Au moins trois échecs de lecture en une heure, entrecoupés de
-        # succès (chaque échec compte deux changements). Ces trous remettent
+        # Au moins six passages succès/échec en une heure, soit environ trois
+        # échecs entre des succès (un échec encadré compte deux passages). Ces trous remettent
         # à zéro le délai « for » des autres alertes, qui peuvent alors ne
         # jamais se déclencher, sans que HwraidCollectionStale ne le voie.
         expr: changes(hwraid_collection_success[1h]) >= 6

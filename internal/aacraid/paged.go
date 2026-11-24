@@ -181,9 +181,15 @@ func checkPagedRequest(b []byte) bool {
 }
 
 // PagedResponse est l'en-tête de réponse d'une étape de transfert.
+// CodeOK : mot 4 de la réponse d'ouverture d'un transfert (CT_OK, Linux
+// aacraid.h).
+const CodeOK = markDA
+
 type PagedResponse struct {
 	Mark, Total, Xfer, Chunk uint32
-	Data                     []byte // données du morceau (CT_CONTINUE_DATA)
+	// Code : mot 4 de la réponse ; 0xda (CT_OK) à l'ouverture.
+	Code uint32
+	Data []byte // données du morceau (CT_CONTINUE_DATA)
 }
 
 // DecodePagedResponse vérifie la réponse à une requête paginée req et
@@ -204,7 +210,7 @@ func DecodePagedResponse(req, rsp []byte) (PagedResponse, error) {
 	if le.Uint32(d[4:]) != le.Uint32(q[4:]) {
 		return PagedResponse{}, fmt.Errorf("paged response: subcommand %d, expected %d", le.Uint32(d[4:]), le.Uint32(q[4:]))
 	}
-	r := PagedResponse{Mark: le.Uint32(d[8:]), Total: le.Uint32(d[12:]), Xfer: le.Uint32(d[20:]), Chunk: le.Uint32(d[24:])}
+	r := PagedResponse{Mark: le.Uint32(d[8:]), Total: le.Uint32(d[12:]), Code: le.Uint32(d[16:]), Xfer: le.Uint32(d[20:]), Chunk: le.Uint32(d[24:])}
 	if le.Uint32(q[4:]) == ctContinueData {
 		if sz := le.Uint16(rsp[fibSize:]); sz != ChunkRspSize {
 			return PagedResponse{}, fmt.Errorf("paged response: chunk size field %d, expected %d", sz, ChunkRspSize)

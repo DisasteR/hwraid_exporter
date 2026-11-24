@@ -355,3 +355,55 @@ func TestRunnerLateErrorsAtStop(t *testing.T) {
 		t.Fatalf("erreurs rendues deux fois : %v", errs)
 	}
 }
+
+// Numéro de série devenu lisible sur la même carte (pci: puis serial:) :
+// le succès gardé en mémoire est conservé. Un cycle sans collecte effective
+// (nœud non vérifié) ne réattribue pas ce succès à une autre identité.
+func TestTimedOutHeldIdentityContinuity(t *testing.T) {
+	const addr = "0000:01:00.0"
+	tr := NewTracker()
+	t0 := time.Unix(1_000_000, 0)
+	ok := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"capabilities": true}, Cached: []string{"capabilities"}}}
+	tr.Update(ok, []string{addr}, t0)
+	tr.Remember(Build(plan(aacHost("host0", addr, "")), true, ok, tr, time.Minute))
+	timedOut := map[string]module.Result{addr: {TimedOut: true, Collected: map[string]bool{"capabilities": false}}}
+	s1 := Build(plan(aacHost("host0", addr, "S1")), true, timedOut, tr, time.Minute)
+	if want := `hwraid_collection_success{controller="serial:S1",collector="capabilities"} 1`; !strings.Contains(Render(s1), want+"\n") {
+		t.Fatalf("succès perdu quand le numéro devient lisible : %s\n%s", want, Render(s1))
+	}
+	tr.Remember(s1)
+	// Cycle sans collecte effective sous une autre identité, puis hors délai.
+	noNode := map[string]module.Result{addr: {NodeValid: false}}
+	tr.Remember(Build(plan(aacHost("host0", addr, "S2")), true, noNode, tr, time.Minute))
+	out := Render(Build(plan(aacHost("host0", addr, "S2")), true, timedOut, tr, time.Minute))
+	if want := `hwraid_collection_success{controller="serial:S2",collector="capabilities"} 0`; !strings.Contains(out, want+"\n") {
+		t.Fatalf("succès réattribué sans collecte effective : %s\n%s", want, out)
+	}
+}
+
+// Arrêt alors que la collecte finit au même moment : quel que soit l'ordre
+// dans lequel Run voit l'annulation et le résultat, l'erreur n'est pas
+// rendue dans le cycle (qui ne sera pas publié) mais reste dans
+// l'ordonnanceur, et LateErrors la rend. Répété pour rencontrer les deux
+// ordres.
+func TestRunnerLateErrorsBeforeReturn(t *testing.T) {
+	const a = "0000:01:00.0"
+	closeErr := errors.New("read 234: stop: EIO")
+	for i := 0; i < 50; i++ {
+		r := NewRunner()
+		ctx, cancel := context.WithCancel(context.Background())
+		out := r.Run(ctx, map[string]func() module.Result{a: func() module.Result {
+			cancel() // arrêt reçu pendant la clôture
+			return module.Result{CollectErr: closeErr}
+		}}, nil)
+		if out[a].LateErr != nil {
+			t.Fatalf("essai %d : erreur rendue dans un cycle qui ne sera pas publié : %v", i, out[a].LateErr)
+		}
+		if !r.Drain(2 * time.Second) {
+			t.Fatal("collecte non terminée")
+		}
+		if errs := r.LateErrors(); !errors.Is(errs[a], closeErr) {
+			t.Fatalf("essai %d : erreur perdue : %v", i, errs)
+		}
+	}
+}

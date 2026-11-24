@@ -19,11 +19,14 @@
 # complète » que si rien n'a été perdu en route : aucun retour manqué par la
 # sonde, aucun événement perdu ni restant dans le tampon, compteurs de
 # toutes les CPU lus, autant de lignes écrites que d'événements lus, lecteur
-# sans erreur et limite de taille non atteinte. Un redémarrage retire aussi
+# sans erreur et limite de taille non atteinte. Le bilan ne couvre que les
+# retours survenus pendant que la sonde était active. Un redémarrage retire aussi
 # la sonde. Si le script a disparu sans nettoyer (SIGKILL), retirer à la main
-# l'instance et la sonde dont le nom contient son PID :
-#   rmdir /sys/kernel/tracing/instances/aacfib_<pid>_<suffixe>
-#   echo '-:aacfib/ret_<pid>_<suffixe>' >> /sys/kernel/tracing/kprobe_events
+# l'instance et la sonde affichées au démarrage, sous la racine de trace
+# qu'il a utilisée (<racine> : /sys/kernel/tracing, ou
+# /sys/kernel/debug/tracing si la première n'existe pas) :
+#   rmdir <racine>/instances/aacfib_<pid>_<suffixe>
+#   echo '-:aacfib/ret_<pid>_<suffixe>' >> <racine>/kprobe_events
 #
 # Usage : sudo tools/aacraid-fib-trace.sh
 #   La trace va dans un répertoire privé créé par mktemp sous /var/tmp, dont
@@ -121,7 +124,9 @@ READER=
 READER_FAILED=0
 LIMIT=0
 cleanup() {
-	trap - EXIT HUP INT TERM
+	trap - EXIT
+	# Un second signal n'interrompt pas le nettoyage.
+	trap '' HUP INT TERM
 	failed=0
 	# 1. Plus aucun nouvel événement.
 	if [ -e "$I/events/aacfib/$EV/enable" ]; then
@@ -209,7 +214,8 @@ echo "r:aacfib/$EV aac_fib_send ret=\$retval:s32" >> "$T/kprobe_events"
 mkdir "$I"
 echo 'ret != -115' > "$I/events/aacfib/$EV/filter"
 echo 1 > "$I/events/aacfib/$EV/enable"
-echo "sonde active, écriture dans $OUT (Ctrl+C pour arrêter, limite $MAX_MB Mio)"
+echo "sonde aacfib/$EV active, instance $I"
+echo "écriture dans $OUT (Ctrl+C pour arrêter, limite $MAX_MB Mio)"
 # Lecteur : cat écrit chaque lecture aussitôt, sans tampon de lignes. La
 # limite est imposée par le noyau (taille de fichier, en blocs de
 # 512 octets) : au-delà, cat reçoit SIGXFSZ (statut 153). Une erreur

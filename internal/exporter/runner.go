@@ -134,6 +134,11 @@ func (r *Runner) Run(ctx context.Context, jobs map[string]func() module.Result, 
 			}
 			out[addr] = module.Result{TimedOut: true, Collected: failed}
 		}
+		// À l'arrêt (contexte annulé), les erreurs restent dans l'ordonnanceur :
+		// le cycle ne sera pas publié, LateErrors les rendra pour le journal.
+		if errors.Is(ctx.Err(), context.Canceled) {
+			continue
+		}
 		if n, e := r.late[addr], r.lateErr[addr]; n > 0 || e != nil {
 			res := out[addr]
 			res.CloseUnconfirmed += n

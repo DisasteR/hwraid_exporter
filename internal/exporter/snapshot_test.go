@@ -106,7 +106,7 @@ func TestNodeValidity(t *testing.T) {
 func TestRenderExposition(t *testing.T) {
 	initial := "# HELP hwraid_exporter_build_info Exporter version, source revision and Go version, value 1.\n# TYPE hwraid_exporter_build_info gauge\n" +
 		`hwraid_exporter_build_info{version="` + Version + `",revision="` + Revision + `",goversion="` + runtime.Version() + `"} 1` + "\n" +
-		"# HELP hwraid_snapshot_ready 1 once the first discovery has been published.\n# TYPE hwraid_snapshot_ready gauge\nhwraid_snapshot_ready 0\n"
+		"# HELP hwraid_snapshot_ready 1 when the view holds the latest collection; 0, with no hardware value, before the first one, while stopping, and when the collection loop has not published for too long.\n# TYPE hwraid_snapshot_ready gauge\nhwraid_snapshot_ready 0\n"
 	if out := Render(Snapshot{}); out != initial {
 		t.Fatalf("vue initiale :\n%s", out)
 	}

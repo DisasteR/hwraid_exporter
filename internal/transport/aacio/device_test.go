@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -357,6 +358,7 @@ type fakeFirmware struct {
 	onStop    func()   // appelé à chaque clôture reçue
 	onChunk   func()   // appelé à chaque demande de morceau reçue
 	onOpen    func()   // appelé à chaque ouverture reçue
+	openCode  uint32   // mot 4 de la réponse d'ouverture (0 : 0xda)
 }
 
 func (f *fakeFirmware) ioctl(t *testing.T) {
@@ -430,7 +432,11 @@ func (f *fakeFirmware) ioctl(t *testing.T) {
 			}
 			le.PutUint32(d[8:], mark)
 			le.PutUint32(d[12:], total)
-			le.PutUint32(d[16:], 0xda)
+			code := uint32(0xda)
+			if f.openCode != 0 {
+				code = f.openCode
+			}
+			le.PutUint32(d[16:], code)
 			le.PutUint32(d[20:], f.xfer)
 			le.PutUint32(d[28:], total)
 		}
@@ -762,5 +768,46 @@ func TestStopCheckedOnIoctlThread(t *testing.T) {
 	}
 	if *calls != 0 {
 		t.Fatalf("%d appel(s) système après l'arrêt", *calls)
+	}
+}
+
+// Réponse d'ouverture sans le code CT_OK (0xda) au mot 4 : aucun transfert
+// n'est réputé ouvert, ni morceau ni clôture ne sont envoyés.
+func TestReadPagedOpenWithoutCTOK(t *testing.T) {
+	f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: -1, openCode: 0xdb}
+	f.ioctl(t)
+	d, err := Open("/dev/null", devNull, list(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if _, err := d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return aacraid.ContainerInfoNeed }); err == nil {
+		t.Fatal("ouverture sans CT_OK acceptée")
+	}
+	if got := f.subs(); len(got) != 1 {
+		t.Fatalf("requêtes après une ouverture non conforme : %v", got)
+	}
+}
+
+// pastDeadline : échéance dépassée, mais annulation pas encore livrée par
+// le minuteur du contexte (Err nil).
+type pastDeadline struct{ context.Context }
+
+func (pastDeadline) Deadline() (time.Time, bool) { return time.Now().Add(-time.Millisecond), true }
+func (pastDeadline) Err() error                  { return nil }
+
+// Échéance dépassée avant que le contexte ne le signale : aucune commande.
+func TestAdmitChecksDeadlineClock(t *testing.T) {
+	calls := fakeIoctl(t, func(uint32, []byte) error { return nil })
+	d, err := Open("/dev/null", devNull, list(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if _, err := d.SupplementInfo(pastDeadline{context.Background()}); !errors.Is(err, ErrStopped) {
+		t.Fatalf("ErrStopped attendu, obtenu %v", err)
+	}
+	if *calls != 0 {
+		t.Fatalf("%d appel(s) système après l'échéance", *calls)
 	}
 }

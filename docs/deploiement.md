@@ -62,10 +62,10 @@ L'image est publique : aucune authentification n'est nécessaire pour la téléc
 
 ## Installation native (systemd)
 
-Chaque publication GitHub fournit le binaire statique (`hwraid-exporter-<version>-linux-amd64`, mêmes octets que dans l'image), les licences (`hwraid-exporter-<version>-licenses.tar.gz`), l'unité systemd (`hwraid-exporter.service`) et `SHA256SUMS`, qui couvre ces trois fichiers. Vérifier la somme des fichiers téléchargés avant l'installation (`--ignore-missing` : seuls les fichiers présents sont vérifiés, et au moins un doit l'être) :
+Chaque publication GitHub fournit le binaire statique (`hwraid-exporter-<version>-linux-amd64`, mêmes octets que dans l'image), les licences (`hwraid-exporter-<version>-licenses.tar.gz`), l'unité systemd (`hwraid-exporter.service`) et `SHA256SUMS`, qui couvre ces trois fichiers. Avant l'installation, vérifier au moins le binaire et l'unité ; la commande échoue si l'un des deux manque ou diffère :
 
 ```bash
-sha256sum -c --ignore-missing SHA256SUMS
+grep -E ' (hwraid-exporter-[^ ]+-linux-amd64|hwraid-exporter\.service)$' SHA256SUMS | sha256sum -c --strict
 ```
 
 Ou construire le binaire (statique, sans cgo) :
@@ -88,6 +88,16 @@ sudo install -m 0644 hwraid-exporter.service /etc/systemd/system/
 
 ```bash
 sudo systemctl daemon-reload && sudo systemctl enable --now hwraid-exporter
+```
+
+Pour une mise à jour, `enable --now` ne relance pas un service déjà actif : après avoir remplacé le binaire et l'unité, redémarrer le service (arrêt propre, qui attend la commande en cours), puis vérifier la version servie :
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl restart hwraid-exporter
+```
+
+```bash
+curl -s http://127.0.0.1:9799/metrics | grep '^hwraid_exporter_build_info'
 ```
 
 L'unité n'a été démarrée qu'en CI, sans carte : la création du nœud `aac` sous `DeviceAllow=char-aac rm` et la collecte n'y sont pas encore recettées avec une 6805. L'unité [`deploy/systemd/hwraid-exporter.service`](../deploy/systemd/hwraid-exporter.service) borne la phase privilégiée : capacités limitées à celles de la préparation, création et lecture des seuls nœuds `aac` (`DeviceAllow=char-aac rm`), système de fichiers en lecture seule, filtre d'appels système. Elle est démarrée en CI à chaque modification. Pour changer d'option, surcharger `ExecStart` (`systemctl edit hwraid-exporter`) :

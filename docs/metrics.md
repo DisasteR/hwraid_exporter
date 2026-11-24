@@ -105,8 +105,8 @@ Un disque présent qui n'est membre d'aucun volume (secours, disponible) figure 
 
 | Métrique | Labels | Valeur |
 |---|---|---|
-| `hwraid_cache_protection_present` | `controller`, `type`, `vendor_type` | 1 si un module est installé, 0 si la carte n'en a pas |
-| `hwraid_cache_protection_state` | `controller`, `state` | 1, seulement si un module est installé |
+| `hwraid_cache_protection_present` | `controller`, `type`, `vendor_type` | 1 si un module est installé, 0 si la carte établit qu'elle n'en a pas ; absente si la présence n'est pas établie (aacraid : bits d'état sans le bit d'installation) |
+| `hwraid_cache_protection_state` | `controller`, `state` | 1, si un module est installé, ou `unknown` si sa présence n'est pas établie |
 
 ## Métriques prévues
 

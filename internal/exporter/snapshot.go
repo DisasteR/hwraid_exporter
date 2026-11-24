@@ -162,7 +162,7 @@ func Render(s Snapshot) string {
 	}
 	gauge("hwraid_exporter_build_info", "Exporter version, source revision and Go version, value 1.")
 	fmt.Fprintf(&b, "hwraid_exporter_build_info{%s} 1\n", labels("version", Version, "revision", Revision, "goversion", runtime.Version()))
-	gauge("hwraid_snapshot_ready", "1 once the first discovery has been published.")
+	gauge("hwraid_snapshot_ready", "1 when the view holds the latest collection; 0, with no hardware value, before the first one, while stopping, and when the collection loop has not published for too long.")
 	fmt.Fprintf(&b, "hwraid_snapshot_ready %d\n", b2i(s.Ready))
 	if !s.Ready {
 		return b.String()

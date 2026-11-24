@@ -4,12 +4,12 @@
 package lifecycle
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"os"
 	"os/exec"
 	"os/signal"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -42,25 +42,32 @@ func TestTerminationSignalsStopGracefully(t *testing.T) {
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
-		buf := make([]byte, 64)
-		n, _ := out.Read(buf) // « prêt » : les signaux sont captés
-		if !strings.Contains(string(buf[:n]), "prêt") {
-			t.Fatalf("%v : sous-processus non prêt (%q)", sig, buf[:n])
+		// Toute la vie du sous-processus est bornée, lecture de « prêt »
+		// comprise.
+		timer := time.AfterFunc(5*time.Second, func() { _ = cmd.Process.Kill() })
+		lines := make(chan string, 2)
+		go func() {
+			sc := bufio.NewScanner(out)
+			for sc.Scan() {
+				lines <- sc.Text()
+			}
+			close(lines)
+		}()
+		if l := <-lines; l != "prêt" { // les signaux sont captés
+			t.Fatalf("%v : sous-processus non prêt (%q)", sig, l)
 		}
 		if err := cmd.Process.Signal(sig); err != nil {
 			t.Fatal(err)
 		}
-		done := make(chan error, 1)
-		go func() { done <- cmd.Wait() }()
-		select {
-		case err := <-done:
-			var ee *exec.ExitError
-			if errors.As(err, &ee) {
-				t.Fatalf("%v : processus tué ou en échec (%v)", sig, err)
-			}
-		case <-time.After(5 * time.Second):
-			_ = cmd.Process.Kill()
-			t.Fatalf("%v : le processus ne s'arrête pas", sig)
+		last := <-lines
+		err = cmd.Wait()
+		timer.Stop()
+		var ee *exec.ExitError
+		if errors.As(err, &ee) || err != nil {
+			t.Fatalf("%v : processus tué, en échec ou arrêté par le délai (%v)", sig, err)
+		}
+		if last != "arrêt propre" {
+			t.Fatalf("%v : sortie sans arrêt propre (%q)", sig, last)
 		}
 	}
 }
