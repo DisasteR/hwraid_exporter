@@ -107,7 +107,7 @@ La trace va dans un répertoire neuf et privé créé sous `/var/tmp` (chemin af
 - `ret=0` : la commande s'est terminée normalement.
 - `ret=-512` : la commande a été interrompue. Sur les cartes dont les réponses passent par `aac_intr_normal` (série 6, interface `src.c`, noyau 4.6 et plus), un bloc est perdu ; sur l'ancien chemin `aac_response_normal`, le bloc est rendu à l'arrivée de la réponse. La ligne donne le nom et le PID du programme.
 
-La sonde s'exécute à chaque retour de `aac_fib_send`, y compris pour chaque entrée-sortie disque. Le filtre n'écarte ces dernières qu'ensuite, et seules les commandes de gestion sont écrites. Son coût sous forte charge disque n'a pas été mesuré : sur une machine chargée, préférer des sessions courtes. Elle disparaît au redémarrage.
+La sonde s'exécute à chaque retour de `aac_fib_send`, y compris pour chaque entrée-sortie disque. Le filtre n'écarte ensuite que les entrées-sorties soumises normalement (`-115`) : la trace contient les commandes de gestion, et aussi les rares retours en erreur d'entrées-sorties et les appels internes du pilote (paragraphe précédent). Son coût sous forte charge disque n'a pas été mesuré : sur une machine chargée, préférer des sessions courtes. Elle disparaît au redémarrage.
 
 ## Réglage `cache` du pilote
 

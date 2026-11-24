@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -526,5 +527,28 @@ func TestReplacementCardFirstCycleKept(t *testing.T) {
 		if !strings.Contains(out, want+"\n") {
 			t.Fatalf("cycle suivant de S2 : %s absent\n%s", want, out)
 		}
+	}
+}
+
+// Même carte à la même adresse, mais nœud de gestion différent (autre
+// minor, donc autre numéro de carte pour le pilote) : l'historique n'est
+// pas repris.
+func TestNoHistoryAcrossNodeChange(t *testing.T) {
+	const addr = "0000:01:00.0"
+	withNode := func(minor uint32) module.Plan {
+		p := plan(aacHost("host0", addr, "S1"))
+		p.Cards[0].Requests = []module.NodeRequest{{Name: "aac" + strconv.FormatUint(uint64(minor), 10), MajorOf: "aac", Minor: minor}}
+		return p
+	}
+	tr := NewTracker()
+	t0 := time.Unix(1_000_000, 0)
+	ok := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"capabilities": true}, Cached: []string{"capabilities"}}}
+	tr.Update(ok, []string{addr}, t0)
+	tr.Remember(Build(withNode(0), true, ok, tr, time.Minute))
+	timedOut := map[string]module.Result{addr: {TimedOut: true, Collected: map[string]bool{"capabilities": false}}}
+	tr.Update(timedOut, []string{addr}, t0.Add(time.Minute))
+	out := Render(Build(withNode(1), true, timedOut, tr, time.Minute))
+	if want := `hwraid_collection_success{controller="serial:S1",collector="capabilities"} 0`; !strings.Contains(out, want+"\n") {
+		t.Fatalf("succès repris malgré un autre nœud : %s\n%s", want, out)
 	}
 }

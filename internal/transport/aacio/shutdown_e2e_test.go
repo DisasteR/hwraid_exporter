@@ -123,11 +123,19 @@ func TestShutdownDuringBlockedCommand(t *testing.T) {
 		t.Cleanup(func() {
 			stopSig()
 			release()
+			// L'ioctl réel n'est rétabli qu'après la fin effective de la boucle
+			// et de la collecte : un retard est signalé, puis attendu.
 			select {
 			case <-loopDone:
-			case <-time.After(5 * time.Second):
+			case <-time.After(10 * time.Second):
+				t.Errorf("late=%v : boucle de collecte toujours active au nettoyage", late)
+				<-loopDone
 			}
-			runner.Drain(5 * time.Second)
+			if !runner.Drain(10 * time.Second) {
+				t.Errorf("late=%v : collecte toujours en cours au nettoyage", late)
+				for !runner.Drain(time.Second) {
+				}
+			}
 		})
 		select {
 		case <-rec.blocked:

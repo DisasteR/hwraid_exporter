@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -95,8 +96,15 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 		default:
 			c.Label, c.IdentitySource = "pci:"+addr, "pci"
 		}
-		c.Identity = strings.Join([]string{c.Label, pc.Card.PCI.Vendor, pc.Card.PCI.Device, pc.Card.PCI.SubsystemVendor,
-			pc.Card.PCI.SubsystemDevice, c.Model, c.Firmware}, "|")
+		// Nœuds déclarés (nom et minor) compris, comme dans la clé des
+		// réponses gardées par le module : le major est fixe tant que les
+		// nœuds préparés sont valides (sinon l'exporter redémarre).
+		id := []string{c.Label, pc.Card.PCI.Vendor, pc.Card.PCI.Device, pc.Card.PCI.SubsystemVendor,
+			pc.Card.PCI.SubsystemDevice, c.Model, c.Firmware}
+		for _, rq := range pc.Requests {
+			id = append(id, rq.Name+":"+strconv.FormatUint(uint64(rq.Minor), 10))
+		}
+		c.Identity = strings.Join(id, "|")
 		// Historique d'une autre carte (ou d'un autre firmware) à la même
 		// adresse : rien n'en est repris ; seuls les apports de ce cycle sont
 		// publiés.

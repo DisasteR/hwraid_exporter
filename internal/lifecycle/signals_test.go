@@ -24,7 +24,12 @@ func TestMain(m *testing.M) {
 		if os.Getenv("HWRAID_PIPE_IGNORE") == "1" {
 			IgnoreBrokenPipe()
 		}
-		os.Stderr.WriteString("journal\n")
+		_, err := os.Stderr.WriteString("journal\n")
+		// Le marqueur n'est écrit que si l'écriture a échoué avec EPIPE :
+		// le processus a survécu au tube fermé pour la bonne raison.
+		if !errors.Is(err, syscall.EPIPE) {
+			os.Exit(3)
+		}
 		_ = os.WriteFile(f, []byte("vivant"), 0o600)
 		os.Exit(0)
 	}
@@ -99,8 +104,9 @@ func TestTerminationSignalsStopGracefully(t *testing.T) {
 }
 
 // Lecteur de stderr disparu : sans IgnoreBrokenPipe, l'écriture du journal
-// tue le processus par SIGPIPE (témoin) ; avec, il continue et sort
-// normalement. Chaque sous-processus est borné dans le temps.
+// tue le processus par SIGPIPE (témoin) ; avec, l'écriture échoue avec EPIPE
+// et le processus continue, puis sort normalement. Chaque sous-processus est
+// borné dans le temps.
 func TestIgnoreBrokenPipe(t *testing.T) {
 	for _, ignore := range []bool{false, true} {
 		mark := t.TempDir() + "/vivant"
