@@ -70,6 +70,7 @@ The nodes are created in the container's own `/dev`, not on the host. Why each c
 - [Specification (CDC)](cdc/cahier-des-charges-aacraid-exporter.md): requirements, security model, metrics contract, test plan.
 - [aacraid interface](docs/aacraid-interface.md): commands and response formats used by the exporter, with the provenance of each item.
 - [Deployment and configuration](docs/deploiement.md): Docker, systemd, options, Prometheus.
+- [aacraid driver defect](docs/aacraid-defaut-pilote.md): the Linux driver loses a management command block each time a signal interrupts a command; consequences, what the exporter does about it, how to detect a leak ([`tools/aacraid-fib-trace.sh`](tools/aacraid-fib-trace.sh)).
 - [Metrics](docs/metrics.md): every exposed metric, its labels and the normalized vocabularies shared by all drivers.
 - [Alert rules](docs/alerts.md): example Prometheus rules, tested with `promtool` ([rules](deploy/prometheus/hwraid-exporter.rules.yml)).
 - [Legal basis](docs/base-legale-interoperabilite.md): why information not documented by the vendor can be used and published (interoperability exception).

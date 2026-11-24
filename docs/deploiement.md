@@ -100,13 +100,11 @@ Le code de sortie 3 signale que les nœuds attendus ont changé (carte ajoutée 
 
 ## Limite du pilote aacraid : ne pas interrompre une commande
 
-Le pilote `aacraid` réserve à la gestion de chaque carte une petite réserve de blocs de commande (8 sous Linux), partagée par tous les outils : l'exporter, ARCCONF, maxView. Quand un signal interrompt un processus pendant qu'une de ses commandes attend la carte, le pilote ne rend jamais le bloc : il est perdu jusqu'au redémarrage de la machine. Une fois la réserve vide, toute commande de gestion échoue : l'exporter journalise `cannot allocate memory` avec `driver management command pool probably exhausted`, et ARCCONF ne trouve plus la carte. Les entrées-sorties disque ne sont pas touchées. Le défaut est présent dans le code du pilote jusqu'à Linux 7.4 au moins.
-
-L'exporter s'en protège : ses commandes partent d'un thread qui bloque les signaux, et à l'arrêt (`SIGTERM`) il attend jusqu'à 20 s la fin de la commande en cours. Rien ne protège d'un `SIGKILL`. D'où trois règles d'exploitation :
+Le pilote `aacraid` perd un bloc de commande de gestion, jusqu'au redémarrage de la machine, chaque fois qu'un signal interrompt un programme qui attend la carte ; la réserve n'en compte que 8, partagés par l'exporter, ARCCONF et maxView. Mécanisme, conséquences, protections de l'exporter et détection : [aacraid-defaut-pilote.md](aacraid-defaut-pilote.md). Règles d'exploitation :
 
 - arrêter le conteneur par `docker stop` ou `docker compose down`, jamais `docker rm -f` ni `docker kill` ; garder `stop_grace_period: 30s` (le délai par défaut de Docker est de 10 s) ;
 - ne pas tuer un autre outil de gestion pendant qu'il travaille : pas de `timeout` court ni de `SIGKILL` autour d'ARCCONF. Dans un conteneur qui lance ARCCONF, le processus principal doit, à réception de `SIGTERM`, attendre la fin de la commande en cours avant de sortir : quand il sort, le noyau tue tous les processus du conteneur, ARCCONF compris, quel que soit `stop_grace_period` (un init comme `--init` n'y change rien) ;
-- réserve épuisée : seul un redémarrage la reconstitue. **Avant de redémarrer, arrêter les applications qui écrivent, lancer `sync` et attendre une minute.** À l'arrêt, le pilote demande à la carte de vider son cache d'écriture et de fermer ses volumes par une commande de gestion : réserve vide, cette commande n'est pas envoyée. Avec le réglage par défaut du pilote (`cache=2`), Linux ne demande jamais lui-même ce vidage. Si le cache d'écriture de la carte est actif sans protection (module ZMM ou batterie défaillant), les dernières écritures peuvent être perdues au redémarrage.
+- réserve épuisée (`cannot allocate memory` au journal) : seul un redémarrage la reconstitue. **Avant de redémarrer, arrêter les applications qui écrivent, lancer `sync` et attendre une minute** : réserve vide, le pilote ne peut pas demander à la carte de vider son cache à l'arrêt ([pourquoi](aacraid-defaut-pilote.md#conséquence-à-larrêt--cache-non-vidé)).
 
 ## Prometheus
 
