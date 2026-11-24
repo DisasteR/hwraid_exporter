@@ -62,15 +62,13 @@ L'image est publique : aucune authentification n'est nécessaire pour la téléc
 
 ## Installation native (systemd)
 
-Chaque publication GitHub fournit le binaire statique (`hwraid-exporter-<version>-linux-amd64`, mêmes octets que dans l'image), les licences (`hwraid-exporter-<version>-licenses.tar.gz`), l'unité systemd (`hwraid-exporter.service`) et `SHA256SUMS`, qui couvre ces trois fichiers. Avant l'installation, vérifier le binaire de la version choisie et l'unité. Le premier contrôle échoue si chacun des deux noms n'apparaît pas exactement une fois dans `SHA256SUMS`, le second si un fichier manque sur le disque ou si sa somme diffère (remplacer `v0.1.2` par la version installée) :
+Chaque publication GitHub fournit le binaire statique (`hwraid-exporter-<version>-linux-amd64`, mêmes octets que dans l'image), les licences (`hwraid-exporter-<version>-licenses.tar.gz`), l'unité systemd (`hwraid-exporter.service`) et `SHA256SUMS`, qui couvre ces trois fichiers. Avant l'installation, vérifier le binaire de la version choisie et l'unité. La commande compare les noms littéralement, exige exactement une entrée pour chacun des deux, puis vérifie leurs deux sommes ; elle échoue au premier écart (remplacer `v0.1.2` par la version installée) :
 
 ```bash
-V=v0.1.2; bad=0; for f in "hwraid-exporter-$V-linux-amd64" hwraid-exporter.service; do [ "$(grep -c "  $f\$" SHA256SUMS)" -eq 1 ] || { echo "$f : entrée absente ou en double" >&2; bad=1; }; done; [ "$bad" -eq 0 ]
+V=v0.1.2; awk -v a="hwraid-exporter-$V-linux-amd64" -v b=hwraid-exporter.service '$2 == a {na++; print} $2 == b {nb++; print} END {if (na != 1 || nb != 1) {print "entrée absente ou en double dans SHA256SUMS" > "/dev/stderr"; exit 1}}' SHA256SUMS > SHA256SUMS.install && sha256sum -c --strict SHA256SUMS.install
 ```
 
-```bash
-V=v0.1.2; grep -E "  (hwraid-exporter-$V-linux-amd64|hwraid-exporter[.]service)\$" SHA256SUMS | sha256sum -c --strict
-```
+N'installer que si cette commande réussit.
 
 Ou construire le binaire (statique, sans cgo) :
 
@@ -120,7 +118,7 @@ Le pilote `aacraid` perd un bloc de commande de gestion, jusqu'au redémarrage d
 
 - arrêter le conteneur par `docker compose down` (qui applique `stop_grace_period`) ou par `docker stop -t 30 <conteneur>` (un `docker stop` sans délai peut retomber sur les 10 s par défaut de Docker), jamais `docker rm -f` ni `docker kill`. L'exporter attend sans limite la fin d'une commande déjà envoyée, en le journalisant toutes les 10 s : `stop_grace_period` (ou `TimeoutStopSec` pour systemd) est le seul délai, à régler sur le temps maximal que vous acceptez d'attendre une carte qui ne répond plus. 30 s convient : une commande rend la main en quelques millisecondes (le délai par défaut de Docker est de 10 s). Un délai sans limite éviterait de tuer une commande figée, mais bloquerait l'arrêt de la machine ([décision](aacraid-defaut-pilote.md#protections-de-lexporter)) ;
 - ne pas tuer un autre outil de gestion pendant qu'il travaille : pas de `timeout` court ni de `SIGKILL` autour d'ARCCONF. Dans un conteneur qui lance ARCCONF, le processus principal doit, à réception de `SIGTERM`, attendre la fin de la commande en cours avant de sortir : quand il sort, le noyau tue tous les processus du conteneur, ARCCONF compris, quel que soit `stop_grace_period` (un init comme `--init` n'y change rien) ;
-- protection du cache en panne (`HwraidCacheProtectionFailed`) : régler aussitôt le cache d'écriture des volumes en mode « seulement si protégé » (`wbb`), tant qu'ARCCONF fonctionne, **puis vérifier que la carte l'a coupé** sur chaque volume, après le changement (« Write-cache status: Off » dans ARCCONF, ou `hwraid_volume_write_cache_enabled` à 0 sur une collecte commencée après le changement : date `hwraid_collection_last_success_timestamp_seconds{collector="volumes"}` postérieure à l'heure du changement d'au moins le délai d'un cycle). Ce relevé confirme que les nouvelles écritures ne sont plus mises en attente ; laisser ensuite un peu de temps à la carte avant de redémarrer. C'est la mesure la plus fiable contre une perte au redémarrage ;
+- protection du cache en panne (`HwraidCacheProtectionFailed`) : régler aussitôt le cache d'écriture des volumes en mode « seulement si protégé » (`wbb`), tant qu'ARCCONF fonctionne, **puis vérifier que la carte l'a coupé** sur chaque volume, après le changement : « Write-cache status: Off » dans ARCCONF, relu après le changement ; `hwraid_volume_write_cache_enabled` à 0 le confirme ensuite. Ce relevé confirme que les nouvelles écritures ne sont plus mises en attente ; laisser ensuite un peu de temps à la carte avant de redémarrer. C'est la mesure la plus fiable contre une perte au redémarrage ;
 - réserve épuisée (`cannot allocate memory` sur toutes les lectures) : seul un redémarrage la reconstitue. La commande d'arrêt qui vide le cache de la carte ne partira pas, et avec le réglage par défaut du pilote (`cache=2`, à lire dans `/sys/module/aacraid/parameters/cache`) aucun autre vidage n'a lieu. Si le cache d'écriture est actif sans protection, aucun moyen ne permet de vérifier qu'il est vide : arrêter les applications qui écrivent, lancer `sync` et laisser du temps à la carte **réduit le risque sans l'éliminer** ([les deux chemins de vidage](aacraid-defaut-pilote.md#conséquence-à-larrêt--cache-non-vidé)).
 
 ### Mise à jour depuis la v0.1.1
@@ -134,6 +132,10 @@ Pour limiter ce risque :
 - un bloc perdu ne revient qu'au redémarrage de la machine ; la réserve en compte 8.
 
 Les arrêts suivants, par la v0.1.2, attendent la commande en cours.
+
+### Remplacer une carte ou mettre à jour son firmware
+
+Arrêter l'exporter avant l'intervention et le redémarrer après. L'exporter vérifie à chaque cycle que le nœud ouvert désigne la carte attendue et que son couple modèle et firmware est qualifié, d'après sysfs. Mais `GET_HBA_INFO` ne donne ni le firmware ni le numéro de série : une carte changée entre la lecture de sysfs et l'ouverture du nœud, dans le même cycle, ne serait pas détectée avant l'envoi des commandes.
 
 ## Prometheus
 
@@ -160,7 +162,7 @@ rule_files:
 curl -s http://127.0.0.1:9799/metrics | grep -E '^hwraid_(exporter_build_info|snapshot_ready|discovery_success|management_node_valid|collection_success)'
 ```
 
-Attendu : `hwraid_snapshot_ready 1`, `hwraid_discovery_success 1`, `hwraid_management_node_valid 1` et chaque `hwraid_collection_success` à 1. Le journal du démarrage indique les nœuds préparés (`nodes prepared`), l'identité et les capacités conservées (`privileges dropped`), puis l'adresse d'écoute et la version (`listening`). Les messages du journal et les textes d'aide des métriques sont en anglais.
+Attendu : `hwraid_snapshot_ready 1`, `hwraid_discovery_success 1`, et, **pour chaque carte attendue** (label `controller`), une ligne `hwraid_management_node_valid … 1` et une ligne `hwraid_collection_success{…,collector="…"} 1` par collecteur (aacraid : `capabilities`, `cache_protection`, `disk_inventory`, `disk_location`, `disks`, `volumes`). Les seules métriques globales ne suffisent pas : elles sont publiées même sans aucune carte collectée. Le journal du démarrage indique les nœuds préparés (`nodes prepared`), l'identité et les capacités conservées (`privileges dropped`), puis l'adresse d'écoute et la version (`listening`). Les messages du journal et les textes d'aide des métriques sont en anglais.
 
 | Symptôme | Cause probable |
 |---|---|
@@ -168,6 +170,6 @@ Attendu : `hwraid_snapshot_ready 1`, `hwraid_discovery_success 1`, `hwraid_manag
 | `collection_success 0` avec une erreur `EPERM` au journal | `userns-remap`, Docker rootless ou capacité `SYS_RAWIO` retirée |
 | `hwraid_collector_supported 0` sur une carte | modèle ou firmware non qualifié : carte inventoriée seulement |
 | `hwraid_discovery_success 0` | sysfs partiellement illisible : voir l'avertissement `unreadable SCSI hosts` au journal |
-| `collection_success 0` avec `cannot allocate memory` au journal | sur toutes les lectures : réserve de commandes de gestion du pilote très probablement épuisée, voir « Limite du pilote aacraid » avant de redémarrer ; sur une seule lecture (par exemple la carte des connecteurs, commande de 2 048 octets), les autres réussissant : réserve momentanément vide ou tampon de cette grande commande non alloué, les deux restent possibles ; à surveiller, et à traiter comme une réserve épuisée si l'erreur se répète. Un échec de la lecture des capacités (706) empêche toutes les autres lectures du cycle : le journal ne montre alors qu'une erreur |
+| `collection_success 0` avec `cannot allocate memory` au journal | sur toutes les lectures : réserve de commandes de gestion du pilote très probablement épuisée, voir « Limite du pilote aacraid » avant de redémarrer ; sur une seule lecture (par exemple la carte des connecteurs, commande de 2 048 octets), les autres réussissant : tampon de cette grande commande non alloué, ou réserve momentanément vide ; tant que les petites lectures de la même carte réussissent, la réserve n'est pas épuisée, même si l'erreur se répète. Seul l'échec des petites lectures de la même carte corrobore une réserve épuisée. Un échec de la lecture des capacités (706) empêche toutes les autres lectures du cycle : le journal ne montre alors qu'une erreur |
 | `hwraid_transfer_close_unconfirmed_total` augmente souvent | un autre outil (maxView, ARCCONF) interroge probablement la carte en même temps : chaque lecture rejetée est refaite, sans conséquence tant que `collection_success` reste à 1 ; si des lectures échouent, réduire la fréquence de l'autre outil ou l'arrêter temporairement ([interface aacraid](aacraid-interface.md), section 4) |
 | le conteneur s'arrête avec le code 3 | nœuds attendus changés depuis le démarrage : `restart: unless-stopped` le relance |

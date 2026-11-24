@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -51,6 +52,13 @@ func TestTerminationSignalsStopGracefully(t *testing.T) {
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
+		// Un seul Wait, sur tous les chemins : en cas d'échec, le nettoyage
+		// tue le sous-processus et récupère son statut.
+		wait := sync.OnceValue(cmd.Wait)
+		t.Cleanup(func() {
+			_ = cmd.Process.Kill()
+			_ = wait()
+		})
 		// Toute la vie du sous-processus est bornée, lecture de « prêt »
 		// comprise.
 		timer := time.AfterFunc(5*time.Second, func() { _ = cmd.Process.Kill() })
@@ -78,7 +86,7 @@ func TestTerminationSignalsStopGracefully(t *testing.T) {
 		if err := <-scanErr; err != nil {
 			t.Fatalf("%v : lecture de la sortie : %v", sig, err)
 		}
-		err = cmd.Wait()
+		err = wait()
 		timer.Stop()
 		var ee *exec.ExitError
 		if errors.As(err, &ee) || err != nil {

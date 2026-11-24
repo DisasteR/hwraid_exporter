@@ -10,6 +10,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -738,6 +739,48 @@ func TestReadPagedStopDuringOpen(t *testing.T) {
 	}
 }
 
+// queuedCall occupe le thread dédié, lance call, attend qu'elle soit mise en
+// file (le contrôle de l'appelant est franchi), exécute between, puis libère
+// le thread et rend l'erreur de call. Sur tous les chemins, échec compris,
+// le thread est libéré et la fin de call attendue avant que le crochet ne
+// soit rétabli et que le transport ne soit fermé par l'appelant.
+func queuedCall(t *testing.T, d *Device, call func() error, between func()) error {
+	t.Helper()
+	busy, release := make(chan struct{}), make(chan struct{})
+	go d.thread.run(func() { close(busy); <-release }) // commande précédente en cours
+	<-busy
+	var once sync.Once
+	free := func() { once.Do(func() { close(release) }) }
+	inQueue := make(chan struct{})
+	queued = func() { close(inQueue) }
+	errc := make(chan error, 1)
+	go func() { errc <- call() }()
+	finished := false
+	defer func() {
+		free()
+		if !finished {
+			select {
+			case <-errc:
+			case <-time.After(5 * time.Second):
+			}
+		}
+		queued = nil
+	}()
+	select {
+	case <-inQueue:
+	case err := <-errc:
+		finished = true
+		t.Fatalf("commande refusée avant sa mise en file : %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("commande jamais mise en file")
+	}
+	between()
+	free()
+	err := <-errc
+	finished = true
+	return err
+}
+
 // Arrêt demandé alors que la commande attend son tour sur le thread dédié
 // (après le contrôle fait par l'appelant) : le contrôle fait sur le thread,
 // juste avant l'appel système, la refuse ; rien n'atteint le noyau.
@@ -748,36 +791,9 @@ func TestStopCheckedOnIoctlThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	busy, release := make(chan struct{}), make(chan struct{})
-	go d.thread.run(func() { close(busy); <-release }) // commande précédente en cours
-	<-busy
-	released := false
-	defer func() {
-		if !released {
-			released = true
-			close(release) // le thread n'est jamais laissé bloqué
-		}
-	}()
 	ctx, cancel := context.WithCancel(context.Background())
-	inQueue := make(chan struct{})
-	queued = func() { close(inQueue) }
-	defer func() { queued = nil }()
-	errc := make(chan error, 1)
-	go func() {
-		_, err := d.SupplementInfo(ctx) // contrôle de l'appelant passé, en file
-		errc <- err
-	}()
-	select {
-	case <-inQueue:
-	case err := <-errc:
-		t.Fatalf("commande refusée avant sa mise en file : %v", err)
-	case <-time.After(5 * time.Second):
-		t.Fatal("commande jamais mise en file")
-	} // le premier contrôle est franchi : seule la vérification sur le thread reste
-	cancel()
-	released = true
-	close(release)
-	if err := <-errc; !errors.Is(err, ErrStopped) {
+	err = queuedCall(t, d, func() error { _, err := d.SupplementInfo(ctx); return err }, cancel)
+	if !errors.Is(err, ErrStopped) {
 		t.Fatalf("ErrStopped attendu, obtenu %v", err)
 	}
 	if *calls != 0 {
@@ -823,36 +839,11 @@ func TestAdmitChecksDeadlineClock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	busy, release := make(chan struct{}), make(chan struct{})
-	go d.thread.run(func() { close(busy); <-release })
-	<-busy
-	released := false
-	defer func() {
-		if !released {
-			released = true
-			close(release) // le thread n'est jamais laissé bloqué
-		}
-	}()
 	ctx := clockOnly{context.Background(), time.Now().Add(500 * time.Millisecond)}
-	inQueue := make(chan struct{})
-	queued = func() { close(inQueue) }
-	defer func() { queued = nil }()
-	errc := make(chan error, 1)
-	go func() {
-		_, err := d.SupplementInfo(ctx) // échéance pas encore atteinte : admise par l'appelant
-		errc <- err
-	}()
-	select {
-	case <-inQueue:
-	case err := <-errc:
-		t.Fatalf("commande refusée avant sa mise en file : %v", err)
-	case <-time.After(5 * time.Second):
-		t.Fatal("commande jamais mise en file")
-	}
-	time.Sleep(time.Until(ctx.deadline) + 10*time.Millisecond) // échéance passée, Err toujours nil
-	released = true
-	close(release)
-	if err := <-errc; !errors.Is(err, ErrStopped) {
+	err = queuedCall(t, d, func() error { _, err := d.SupplementInfo(ctx); return err }, func() {
+		time.Sleep(time.Until(ctx.deadline) + 10*time.Millisecond) // échéance passée, Err toujours nil
+	})
+	if !errors.Is(err, ErrStopped) {
 		t.Fatalf("ErrStopped attendu, obtenu %v", err)
 	}
 	if *calls != 0 {

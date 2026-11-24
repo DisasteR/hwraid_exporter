@@ -372,16 +372,17 @@ func TestTimedOutHeldIdentityChange(t *testing.T) {
 	if want := `hwraid_collection_success{controller="serial:S1",collector="capabilities"} 0`; !strings.Contains(out, want+"\n") {
 		t.Fatalf("succès transmis à une identité nouvelle : %s\n%s", want, out)
 	}
-	// Succès établi sous S1 ; un cycle sans collecte effective sous S2
-	// ne change pas l'identité retenue.
+	// Succès établi sous S1 ; un cycle, même sans collecte effective, sous
+	// S2 montre une autre carte à cette adresse : l'historique est oublié,
+	// et le retour de S1 ne le réactive pas.
 	tr2 := NewTracker()
 	tr2.Update(ok, []string{addr}, t0)
 	tr2.Remember(Build(plan(aacHost("host0", addr, "S1")), true, ok, tr2, time.Minute))
 	noNode := map[string]module.Result{addr: {NodeValid: false}}
 	tr2.Remember(Build(plan(aacHost("host0", addr, "S2")), true, noNode, tr2, time.Minute))
 	out = Render(Build(plan(aacHost("host0", addr, "S1")), true, timedOut, tr2, time.Minute))
-	if want := `hwraid_collection_success{controller="serial:S1",collector="capabilities"} 1`; !strings.Contains(out, want+"\n") {
-		t.Fatalf("identité changée par un cycle sans collecte effective : %s\n%s", want, out)
+	if want := `hwraid_collection_success{controller="serial:S1",collector="capabilities"} 0`; !strings.Contains(out, want+"\n") {
+		t.Fatalf("historique réactivé après un passage par une autre carte : %s\n%s", want, out)
 	}
 }
 
@@ -451,5 +452,38 @@ func TestTimedOutKeepsUnsupported(t *testing.T) {
 	}
 	if want := `hwraid_collection_success{controller="serial:S1",collector="volumes"} 0`; !strings.Contains(out, want+"\n") {
 		t.Fatalf("ligne absente : %s\n%s", want, out)
+	}
+}
+
+// Carte remplacée à la même adresse (S1 puis S2), premier cycle de S2 en
+// échec : ni les dates de succès ni le compteur 0xc5 de S1 ne sont publiés
+// pour S2.
+func TestNoHistoryInheritedByReplacementCard(t *testing.T) {
+	const addr = "0000:01:00.0"
+	tr := NewTracker()
+	t0 := time.Unix(1_000_000, 0)
+	ok := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"volumes": true}, CloseUnconfirmed: 2}}
+	tr.Update(ok, []string{addr}, t0)
+	tr.Remember(Build(plan(aacHost("host0", addr, "S1")), true, ok, tr, time.Minute))
+	failed := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"volumes": false}}}
+	tr.Update(failed, []string{addr}, t0.Add(time.Minute))
+	out := Render(Build(plan(aacHost("host0", addr, "S2")), true, failed, tr, time.Minute))
+	if strings.Contains(out, `hwraid_collection_last_success_timestamp_seconds{controller="serial:S2"`) {
+		t.Fatalf("date de succès de S1 publiée pour S2 :\n%s", out)
+	}
+	if want := `hwraid_transfer_close_unconfirmed_total{controller="serial:S2"} 0`; !strings.Contains(out, want+"\n") {
+		t.Fatalf("compteur de S1 repris pour S2 : %s\n%s", want, out)
+	}
+	// Cycles suivants de S2 : l'historique de S1 a été oublié, il ne
+	// réapparaît pas une fois l'identité S2 établie.
+	s2 := plan(aacHost("host0", addr, "S2"))
+	tr.Remember(Build(s2, true, failed, tr, time.Minute))
+	tr.Update(failed, []string{addr}, t0.Add(2*time.Minute))
+	out = Render(Build(s2, true, failed, tr, time.Minute))
+	if strings.Contains(out, `hwraid_collection_last_success_timestamp_seconds{controller="serial:S2"`) {
+		t.Fatalf("date de succès de S1 réapparue pour S2 :\n%s", out)
+	}
+	if want := `hwraid_transfer_close_unconfirmed_total{controller="serial:S2"} 0`; !strings.Contains(out, want+"\n") {
+		t.Fatalf("compteur de S1 réapparu pour S2 : %s\n%s", want, out)
 	}
 }

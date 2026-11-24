@@ -266,8 +266,8 @@ func serve(args []string) int {
 			// erreurs tardives déjà rendues dans ce cycle sont journalisées
 			// ici, puisque le cycle n'est pas publié.
 			for addr, r := range results {
-				if r.LateErr != nil {
-					log.Warn("a collection finished after its timeout, not published", "pci", addr, "err", r.LateErr)
+				if err := errors.Join(r.Err, r.CollectErr, r.LateErr); err != nil {
+					log.Warn("collection errors in the cycle interrupted by the stop, not published", "pci", addr, "err", err)
 				}
 			}
 			return

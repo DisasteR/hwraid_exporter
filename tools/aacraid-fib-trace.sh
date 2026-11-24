@@ -146,7 +146,7 @@ cleanup() {
 			i=$((i + 1))
 		done
 		sleep 1
-		kill "$READER" 2>/dev/null || true
+		kill -KILL "$READER" 2>/dev/null || true
 		wait "$READER" 2>/dev/null || true
 	fi
 	# 3. Bilan des pertes, lu avant le retrait.
@@ -223,6 +223,11 @@ echo "écriture dans $OUT (Ctrl+C pour arrêter, limite $MAX_MB Mio)"
 # limite est imposée par le noyau (taille de fichier, en blocs de
 # 512 octets) : au-delà, cat reçoit SIGXFSZ (statut 153). Une erreur
 # d'écriture l'arrête avec un autre statut.
+# Signaux ignorés le temps de lancer le lecteur et de noter son PID : un
+# arrêt dans cette fenêtre laisserait sinon un lecteur inconnu du nettoyage.
+# Le lecteur hérite de ces signaux ignorés ; le nettoyage l'arrête donc par
+# SIGKILL (cat sur trace_pipe, aucune commande de la carte en jeu).
+trap '' HUP INT TERM
 (
 	# Pas de fichier core sur SIGXFSZ (option hors POSIX, gérée par dash).
 	# shellcheck disable=SC3045
@@ -231,6 +236,7 @@ echo "écriture dans $OUT (Ctrl+C pour arrêter, limite $MAX_MB Mio)"
 	exec cat "$I/trace_pipe"
 ) >&3 &
 READER=$!
+trap 'exit 0' HUP INT TERM
 # Le shell attend dans wait, qu'un signal interrompt aussitôt.
 rc=0
 wait "$READER" || rc=$?

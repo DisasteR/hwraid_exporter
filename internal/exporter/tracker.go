@@ -24,19 +24,20 @@ type Tracker struct {
 	// module (Cached) et réussis lors de leur dernière collecte. Une carte
 	// hors délai les sert toujours : ils ne sont pas publiés en échec.
 	held map[string]map[string]bool
-	// heldLabel : identité (label controller et firmware) de la carte
-	// observée par la dernière collecte effective ; held et unsupported ne
-	// valent que pour elle.
-	heldLabel map[string]string
 	// unsupported : collecteurs déclarés non pris en charge par la dernière
 	// collecte effective ; conservés pendant un dépassement de délai.
 	unsupported map[string][]string
+	// ident : identité de la carte (Controller.Identity) vue au dernier
+	// instantané. Quand elle change à la même adresse, tout l'historique
+	// de l'adresse (dates, compteur, held, unsupported) est oublié : il
+	// appartenait à une autre carte, ou à un autre firmware.
+	ident map[string]string
 }
 
 // NewTracker crée un suivi vide.
 func NewTracker() *Tracker {
 	return &Tracker{last: map[string]map[string]time.Time{}, serial: map[string]string{}, closes: map[string]uint64{},
-		held: map[string]map[string]bool{}, heldLabel: map[string]string{}, unsupported: map[string][]string{}}
+		held: map[string]map[string]bool{}, unsupported: map[string][]string{}, ident: map[string]string{}}
 }
 
 // Update enregistre les succès du cycle terminé à now. Une carte n'est
@@ -65,8 +66,8 @@ func (t *Tracker) Update(results map[string]module.Result, present []string, now
 	for addr := range t.held {
 		if !keep[addr] {
 			delete(t.held, addr)
-			delete(t.heldLabel, addr)
 			delete(t.unsupported, addr)
+			delete(t.ident, addr)
 		}
 	}
 	for addr, r := range results {
@@ -100,35 +101,42 @@ func (t *Tracker) Update(results map[string]module.Result, present []string, now
 	}
 }
 
+// Same indique si l'historique gardé pour addr appartient à la carte
+// d'identité id (ou s'il n'y a pas encore d'identité connue).
+func (t *Tracker) Same(addr, id string) bool {
+	if t == nil {
+		return false
+	}
+	old, ok := t.ident[addr]
+	return !ok || old == id
+}
+
 // Held rend les collecteurs de la carte servis par une réponse gardée en
-// mémoire et réussis lors de leur dernière collecte, si la carte porte
-// toujours l'identité label observée alors ; rien sinon (carte changée à la
-// même adresse).
-//
-// Tout changement d'identité l'annule, y compris le passage de
-// pci:<adresse> à serial:<numéro> : rien ne prouve alors qu'il s'agit de la
-// même carte. Le collecteur est publié en échec jusqu'à la prochaine
-// collecte effective.
-func (t *Tracker) Held(addr, id string) map[string]bool {
-	if t == nil || t.heldLabel[addr] != id {
+// mémoire et réussis lors de leur dernière collecte. À n'utiliser que si
+// Same est vrai.
+func (t *Tracker) Held(addr string) map[string]bool {
+	if t == nil {
 		return nil
 	}
 	return t.held[addr]
 }
 
 // Unsupported rend les collecteurs déclarés non pris en charge par la
-// dernière collecte effective de la carte, si elle porte toujours l'identité
-// id ; rien sinon.
-func (t *Tracker) Unsupported(addr, id string) []string {
-	if t == nil || t.heldLabel[addr] != id {
+// dernière collecte effective de la carte. À n'utiliser que si Same est vrai.
+func (t *Tracker) Unsupported(addr string) []string {
+	if t == nil {
 		return nil
 	}
 	return t.unsupported[addr]
 }
 
-// identity est l'identité d'une carte pour held et unsupported : label et
-// firmware (un firmware mis à jour fait relire les capacités).
-func identity(c Controller) string { return c.Label + "|" + c.Firmware }
+// forget oublie l'historique d'une adresse.
+func (t *Tracker) forget(addr string) {
+	delete(t.last, addr)
+	delete(t.closes, addr)
+	delete(t.held, addr)
+	delete(t.unsupported, addr)
+}
 
 // Remember enregistre les identités serial: établies dans un instantané.
 func (t *Tracker) Remember(s Snapshot) {
@@ -136,10 +144,13 @@ func (t *Tracker) Remember(s Snapshot) {
 		return
 	}
 	for _, c := range s.Controllers {
-		// Seule une collecte effective (nœud vérifié, pas hors délai) établit
-		// l'identité de la carte à laquelle se rapporte held.
+		// Changement d'identité observé, même pendant un dépassement de
+		// délai ou sans collecte effective : l'historique est oublié.
+		if old, ok := t.ident[c.PCIAddress]; ok && old != c.Identity {
+			t.forget(c.PCIAddress)
+		}
+		t.ident[c.PCIAddress] = c.Identity
 		if !c.TimedOut && c.NodeValid {
-			t.heldLabel[c.PCIAddress] = identity(c)
 			t.unsupported[c.PCIAddress] = append([]string(nil), c.Unsupported...)
 		}
 		if c.IdentitySource != "serial" {
