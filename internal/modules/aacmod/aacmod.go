@@ -79,6 +79,11 @@ type Module struct {
 	// connectors garde de même la carte des connecteurs (708), fixe tant que
 	// la carte n'est pas réinitialisée.
 	connectors map[string]keptMap
+	// keyOf garde, par adresse PCI, la clé d'identité de la dernière
+	// collecte : quand elle change, les réponses gardées sous l'ancienne clé
+	// sont oubliées, pour qu'un retour à une identité antérieure (firmware
+	// rétrogradé, carte remise) les relise.
+	keyOf map[string]string
 }
 
 // New construit le module avec le transport réel et la liste blanche aacraid.
@@ -191,12 +196,13 @@ func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeR
 	_, h, _ := hostOf(c)
 	key := strings.Join([]string{c.PCI.Address, strconv.FormatUint(refs[0].Dev, 10),
 		c.PCI.Vendor, c.PCI.Device, c.PCI.SubsystemVendor, c.PCI.SubsystemDevice, h.SerialNumber, h.Firmware}, "|")
+	m.forgetOtherKeys(c.PCI.Address, key)
 	sup, err := m.supplementInfo(key, d)
 	r.Collected = map[string]bool{CapabilitiesCollector: err == nil}
 	// Réponse 706 gardée en mémoire : pas de date de dernier succès.
 	r.Cached = []string{CapabilitiesCollector}
 	if err != nil {
-		r.CollectErr = fmt.Errorf("RequestSupplementAdapterInfo: %w", err)
+		r.CollectErr = fmt.Errorf("RequestSupplementAdapterInfo: %w; no other card read attempted this cycle", err)
 		return r
 	}
 	// Lectures firmware au-delà de 706 : seulement vers un couple modèle et
@@ -580,6 +586,21 @@ func collectCacheProtection(r *module.Result, d reader) {
 }
 
 // supplementInfo lit la réponse 706 une seule fois par carte et par nœud.
+// forgetOtherKeys oublie les réponses gardées pour addr sous une autre clé
+// que key (identité de la carte changée depuis la dernière collecte).
+func (m *Module) forgetOtherKeys(addr, key string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.keyOf == nil {
+		m.keyOf = map[string]string{}
+	}
+	if old, ok := m.keyOf[addr]; ok && old != key {
+		delete(m.supplement, old)
+		delete(m.connectors, old)
+	}
+	m.keyOf[addr] = key
+}
+
 // La lecture firmware se fait hors du verrou : une carte qui ne répond pas
 // ne doit pas bloquer la collecte des autres.
 func (m *Module) supplementInfo(key string, d reader) (aacraid.SupplementInfo, error) {

@@ -751,6 +751,13 @@ func TestStopCheckedOnIoctlThread(t *testing.T) {
 	busy, release := make(chan struct{}), make(chan struct{})
 	go d.thread.run(func() { close(busy); <-release }) // commande précédente en cours
 	<-busy
+	released := false
+	defer func() {
+		if !released {
+			released = true
+			close(release) // le thread n'est jamais laissé bloqué
+		}
+	}()
 	ctx, cancel := context.WithCancel(context.Background())
 	inQueue := make(chan struct{})
 	queued = func() { close(inQueue) }
@@ -760,8 +767,15 @@ func TestStopCheckedOnIoctlThread(t *testing.T) {
 		_, err := d.SupplementInfo(ctx) // contrôle de l'appelant passé, en file
 		errc <- err
 	}()
-	<-inQueue // le premier contrôle est franchi : seule la vérification sur le thread reste
+	select {
+	case <-inQueue:
+	case err := <-errc:
+		t.Fatalf("commande refusée avant sa mise en file : %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("commande jamais mise en file")
+	} // le premier contrôle est franchi : seule la vérification sur le thread reste
 	cancel()
+	released = true
 	close(release)
 	if err := <-errc; !errors.Is(err, ErrStopped) {
 		t.Fatalf("ErrStopped attendu, obtenu %v", err)
@@ -812,7 +826,14 @@ func TestAdmitChecksDeadlineClock(t *testing.T) {
 	busy, release := make(chan struct{}), make(chan struct{})
 	go d.thread.run(func() { close(busy); <-release })
 	<-busy
-	ctx := clockOnly{context.Background(), time.Now().Add(50 * time.Millisecond)}
+	released := false
+	defer func() {
+		if !released {
+			released = true
+			close(release) // le thread n'est jamais laissé bloqué
+		}
+	}()
+	ctx := clockOnly{context.Background(), time.Now().Add(500 * time.Millisecond)}
 	inQueue := make(chan struct{})
 	queued = func() { close(inQueue) }
 	defer func() { queued = nil }()
@@ -821,8 +842,15 @@ func TestAdmitChecksDeadlineClock(t *testing.T) {
 		_, err := d.SupplementInfo(ctx) // échéance pas encore atteinte : admise par l'appelant
 		errc <- err
 	}()
-	<-inQueue
+	select {
+	case <-inQueue:
+	case err := <-errc:
+		t.Fatalf("commande refusée avant sa mise en file : %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("commande jamais mise en file")
+	}
 	time.Sleep(time.Until(ctx.deadline) + 10*time.Millisecond) // échéance passée, Err toujours nil
+	released = true
 	close(release)
 	if err := <-errc; !errors.Is(err, ErrStopped) {
 		t.Fatalf("ErrStopped attendu, obtenu %v", err)

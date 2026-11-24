@@ -54,13 +54,15 @@ func TestTerminationSignalsStopGracefully(t *testing.T) {
 		// Toute la vie du sous-processus est bornée, lecture de « prêt »
 		// comprise.
 		timer := time.AfterFunc(5*time.Second, func() { _ = cmd.Process.Kill() })
-		lines := make(chan string, 2)
+		lines := make(chan string, 4)
+		scanErr := make(chan error, 1)
 		go func() {
 			sc := bufio.NewScanner(out)
 			for sc.Scan() {
 				lines <- sc.Text()
 			}
 			close(lines)
+			scanErr <- sc.Err()
 		}()
 		if l := <-lines; l != "prêt" { // les signaux sont captés
 			t.Fatalf("%v : sous-processus non prêt (%q)", sig, l)
@@ -68,7 +70,14 @@ func TestTerminationSignalsStopGracefully(t *testing.T) {
 		if err := cmd.Process.Signal(sig); err != nil {
 			t.Fatal(err)
 		}
-		last := <-lines
+		// Lecture jusqu'à la fin du flux, puis Wait (qui ferme le tube).
+		var last string
+		for l := range lines {
+			last = l
+		}
+		if err := <-scanErr; err != nil {
+			t.Fatalf("%v : lecture de la sortie : %v", sig, err)
+		}
 		err = cmd.Wait()
 		timer.Stop()
 		var ee *exec.ExitError
@@ -82,7 +91,8 @@ func TestTerminationSignalsStopGracefully(t *testing.T) {
 }
 
 // Lecteur de stderr disparu : sans IgnoreBrokenPipe, l'écriture du journal
-// tue le processus (témoin) ; avec, il continue.
+// tue le processus par SIGPIPE (témoin) ; avec, il continue et sort
+// normalement. Chaque sous-processus est borné dans le temps.
 func TestIgnoreBrokenPipe(t *testing.T) {
 	for _, ignore := range []bool{false, true} {
 		mark := t.TempDir() + "/vivant"
@@ -91,18 +101,30 @@ func TestIgnoreBrokenPipe(t *testing.T) {
 			t.Fatal(err)
 		}
 		r.Close() // lecteur disparu
-		cmd := exec.Command(os.Args[0], "-test.run=^$")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^$")
 		cmd.Env = append(os.Environ(), "HWRAID_PIPE_CHILD="+mark)
 		if ignore {
 			cmd.Env = append(cmd.Env, "HWRAID_PIPE_IGNORE=1")
 		}
 		cmd.Stderr = w
 		err = cmd.Run()
+		cancel()
 		w.Close()
 		_, statErr := os.Stat(mark)
-		alive := err == nil && statErr == nil
-		if alive != ignore {
-			t.Fatalf("SIGPIPE ignoré=%v : processus vivant=%v (%v)", ignore, alive, err)
+		if ignore {
+			if err != nil || statErr != nil {
+				t.Fatalf("SIGPIPE ignoré : sortie %v, marqueur %v", err, statErr)
+			}
+			continue
+		}
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) {
+			t.Fatalf("témoin : terminaison par SIGPIPE attendue, obtenu %v", err)
+		}
+		ws, ok := ee.Sys().(syscall.WaitStatus)
+		if !ok || !ws.Signaled() || ws.Signal() != syscall.SIGPIPE || statErr == nil {
+			t.Fatalf("témoin : terminaison par SIGPIPE attendue, obtenu %v (marqueur %v)", err, statErr)
 		}
 	}
 }

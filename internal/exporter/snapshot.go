@@ -109,9 +109,18 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 				c.NodeChecked, c.TimedOut = false, true
 				// Les collecteurs servis par une réponse gardée en mémoire
 				// (capabilities) restent valides : pas d'échec publié pour eux.
+				// Les collecteurs connus comme non pris en charge le restent
+				// (même carte, même firmware) : ni échec ni succès publié.
+				c.Unsupported = tracker.Unsupported(addr, identity(c))
+				skip := map[string]bool{}
+				for _, col := range c.Unsupported {
+					skip[col] = true
+				}
 				c.Collected = map[string]bool{}
 				for col, ok := range r.Collected {
-					c.Collected[col] = ok || tracker.Held(addr, c.Label)[col]
+					if !skip[col] {
+						c.Collected[col] = ok || tracker.Held(addr, identity(c))[col]
+					}
 				}
 				c.LastSuccess = tracker.Last(addr)
 				c.CollectError = "collection timed out"

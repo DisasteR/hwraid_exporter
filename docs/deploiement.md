@@ -62,14 +62,14 @@ L'image est publique : aucune authentification n'est nécessaire pour la téléc
 
 ## Installation native (systemd)
 
-Chaque publication GitHub fournit le binaire statique (`hwraid-exporter-<version>-linux-amd64`, mêmes octets que dans l'image), les licences (`hwraid-exporter-<version>-licenses.tar.gz`), l'unité systemd (`hwraid-exporter.service`) et `SHA256SUMS`, qui couvre ces trois fichiers. Avant l'installation, vérifier le binaire et l'unité. Le premier contrôle échoue si l'un des deux n'est pas listé dans `SHA256SUMS`, le second si un fichier listé manque sur le disque ou si sa somme diffère :
+Chaque publication GitHub fournit le binaire statique (`hwraid-exporter-<version>-linux-amd64`, mêmes octets que dans l'image), les licences (`hwraid-exporter-<version>-licenses.tar.gz`), l'unité systemd (`hwraid-exporter.service`) et `SHA256SUMS`, qui couvre ces trois fichiers. Avant l'installation, vérifier le binaire de la version choisie et l'unité. Le premier contrôle échoue si chacun des deux noms n'apparaît pas exactement une fois dans `SHA256SUMS`, le second si un fichier manque sur le disque ou si sa somme diffère (remplacer `v0.1.2` par la version installée) :
 
 ```bash
-test "$(grep -cE ' (hwraid-exporter-[^ ]+-linux-amd64|hwraid-exporter\.service)$' SHA256SUMS)" -eq 2
+V=v0.1.2; bad=0; for f in "hwraid-exporter-$V-linux-amd64" hwraid-exporter.service; do [ "$(grep -c "  $f\$" SHA256SUMS)" -eq 1 ] || { echo "$f : entrée absente ou en double" >&2; bad=1; }; done; [ "$bad" -eq 0 ]
 ```
 
 ```bash
-grep -E ' (hwraid-exporter-[^ ]+-linux-amd64|hwraid-exporter\.service)$' SHA256SUMS | sha256sum -c --strict
+V=v0.1.2; grep -E "  (hwraid-exporter-$V-linux-amd64|hwraid-exporter[.]service)\$" SHA256SUMS | sha256sum -c --strict
 ```
 
 Ou construire le binaire (statique, sans cgo) :
@@ -104,12 +104,12 @@ sudo systemctl daemon-reload && sudo systemctl restart hwraid-exporter
 curl -s http://127.0.0.1:9799/metrics | grep '^hwraid_exporter_build_info'
 ```
 
-L'unité n'a été démarrée qu'en CI, sans carte : la création du nœud `aac` sous `DeviceAllow=char-aac rm` et la collecte n'y sont pas encore recettées avec une 6805. L'unité [`deploy/systemd/hwraid-exporter.service`](../deploy/systemd/hwraid-exporter.service) borne la phase privilégiée : capacités limitées à celles de la préparation, création et lecture des seuls nœuds `aac` (`DeviceAllow=char-aac rm`), système de fichiers en lecture seule, filtre d'appels système. Elle est démarrée en CI à chaque modification. Pour changer d'option, surcharger `ExecStart` (`systemctl edit hwraid-exporter`) :
+L'unité n'a été démarrée qu'en CI, sans carte : la création du nœud `aac` sous `DeviceAllow=char-aac rm` et la collecte n'y sont pas encore recettées avec une 6805. L'unité [`deploy/systemd/hwraid-exporter.service`](../deploy/systemd/hwraid-exporter.service) borne la phase privilégiée : capacités limitées à celles de la préparation, création et lecture des seuls nœuds `aac` (`DeviceAllow=char-aac rm`), système de fichiers en lecture seule, filtre d'appels système. Elle est démarrée en CI à chaque modification. Pour changer d'option, surcharger `ExecStart` (`systemctl edit hwraid-exporter`). L'exemple garde l'écoute locale : `/metrics` publie numéros de série et WWN sans authentification ; pour une collecte distante, écouter sur une adresse d'un réseau d'administration et filtrer l'accès au port :
 
 ```ini
 [Service]
 ExecStart=
-ExecStart=/usr/local/bin/hwraid-exporter serve -listen 0.0.0.0:9799 -interval 2m
+ExecStart=/usr/local/bin/hwraid-exporter serve -listen 127.0.0.1:9799 -interval 2m
 ```
 
 Le code de sortie 3 signale que les nœuds attendus ont changé (carte ajoutée ou retirée, pilote rechargé) : `Restart=on-failure` relance le service, qui refait la préparation.
@@ -118,9 +118,9 @@ Le code de sortie 3 signale que les nœuds attendus ont changé (carte ajoutée 
 
 Le pilote `aacraid` perd un bloc de commande de gestion, jusqu'au redémarrage de la machine, chaque fois qu'un signal interrompt un programme qui attend la carte ; la réserve n'en compte que 8, partagés par l'exporter, ARCCONF et maxView. Mécanisme, conséquences, protections de l'exporter et détection : [aacraid-defaut-pilote.md](aacraid-defaut-pilote.md). Règles d'exploitation :
 
-- arrêter le conteneur par `docker stop` ou `docker compose down`, jamais `docker rm -f` ni `docker kill`. L'exporter attend sans limite la fin d'une commande déjà envoyée, en le journalisant toutes les 10 s : `stop_grace_period` (ou `TimeoutStopSec` pour systemd) est le seul délai, à régler sur le temps maximal que vous acceptez d'attendre une carte qui ne répond plus. 30 s convient : une commande rend la main en quelques millisecondes (le délai par défaut de Docker est de 10 s). Un délai sans limite éviterait de tuer une commande figée, mais bloquerait l'arrêt de la machine ([décision](aacraid-defaut-pilote.md#protections-de-lexporter)) ;
+- arrêter le conteneur par `docker compose down` (qui applique `stop_grace_period`) ou par `docker stop -t 30 <conteneur>` (un `docker stop` sans délai peut retomber sur les 10 s par défaut de Docker), jamais `docker rm -f` ni `docker kill`. L'exporter attend sans limite la fin d'une commande déjà envoyée, en le journalisant toutes les 10 s : `stop_grace_period` (ou `TimeoutStopSec` pour systemd) est le seul délai, à régler sur le temps maximal que vous acceptez d'attendre une carte qui ne répond plus. 30 s convient : une commande rend la main en quelques millisecondes (le délai par défaut de Docker est de 10 s). Un délai sans limite éviterait de tuer une commande figée, mais bloquerait l'arrêt de la machine ([décision](aacraid-defaut-pilote.md#protections-de-lexporter)) ;
 - ne pas tuer un autre outil de gestion pendant qu'il travaille : pas de `timeout` court ni de `SIGKILL` autour d'ARCCONF. Dans un conteneur qui lance ARCCONF, le processus principal doit, à réception de `SIGTERM`, attendre la fin de la commande en cours avant de sortir : quand il sort, le noyau tue tous les processus du conteneur, ARCCONF compris, quel que soit `stop_grace_period` (un init comme `--init` n'y change rien) ;
-- protection du cache en panne (`HwraidCacheProtectionFailed`) : régler aussitôt le cache d'écriture des volumes en mode « seulement si protégé » (`wbb`), tant qu'ARCCONF fonctionne, **puis vérifier que la carte l'a coupé** sur chaque volume, après le changement (« Write-cache status: Off » dans ARCCONF, ou `hwraid_volume_write_cache_enabled` à 0 sur une collecte commencée après le changement, soit deux intervalles plus tard). Ce relevé confirme que les nouvelles écritures ne sont plus mises en attente ; laisser ensuite un peu de temps à la carte avant de redémarrer. C'est la mesure la plus fiable contre une perte au redémarrage ;
+- protection du cache en panne (`HwraidCacheProtectionFailed`) : régler aussitôt le cache d'écriture des volumes en mode « seulement si protégé » (`wbb`), tant qu'ARCCONF fonctionne, **puis vérifier que la carte l'a coupé** sur chaque volume, après le changement (« Write-cache status: Off » dans ARCCONF, ou `hwraid_volume_write_cache_enabled` à 0 sur une collecte commencée après le changement : date `hwraid_collection_last_success_timestamp_seconds{collector="volumes"}` postérieure à l'heure du changement d'au moins le délai d'un cycle). Ce relevé confirme que les nouvelles écritures ne sont plus mises en attente ; laisser ensuite un peu de temps à la carte avant de redémarrer. C'est la mesure la plus fiable contre une perte au redémarrage ;
 - réserve épuisée (`cannot allocate memory` sur toutes les lectures) : seul un redémarrage la reconstitue. La commande d'arrêt qui vide le cache de la carte ne partira pas, et avec le réglage par défaut du pilote (`cache=2`, à lire dans `/sys/module/aacraid/parameters/cache`) aucun autre vidage n'a lieu. Si le cache d'écriture est actif sans protection, aucun moyen ne permet de vérifier qu'il est vide : arrêter les applications qui écrivent, lancer `sync` et laisser du temps à la carte **réduit le risque sans l'éliminer** ([les deux chemins de vidage](aacraid-defaut-pilote.md#conséquence-à-larrêt--cache-non-vidé)).
 
 ### Mise à jour depuis la v0.1.1
@@ -129,8 +129,8 @@ Lors de la mise à jour, c'est **l'ancien processus** qui reçoit l'arrêt : rem
 
 Pour limiter ce risque :
 
-- arrêter l'ancienne version une seule fois, par `docker stop` ou `systemctl stop`, et démarrer directement la nouvelle ;
-- si la réserve doit être vérifiée, lancer la sonde (`tools/aacraid-fib-trace.sh`, section « Détecter une fuite » de [aacraid-defaut-pilote.md](aacraid-defaut-pilote.md)) avant l'arrêt : une ligne `hwraid-exporter ret=-512` signale le bloc perdu ;
+- arrêter l'ancienne version une seule fois, par `docker stop -t 30 <conteneur>` ou `systemctl stop`, et démarrer directement la nouvelle ;
+- pour savoir si cet arrêt a coûté un bloc, lancer la sonde (`tools/aacraid-fib-trace.sh`, section « Détecter une fuite » de [aacraid-defaut-pilote.md](aacraid-defaut-pilote.md)) et la laisser tourner au moins un intervalle de collecte avant l'arrêt : une sonde ne voit que les commandes entrées dans le pilote après son activation. Une ligne `hwraid-exporter ret=-512` signale alors une commande interrompue, donc un bloc perdu sur la série 6 (chemin `aac_intr_normal`). La sonde ne renseigne pas sur les blocs déjà perdus avant son lancement ;
 - un bloc perdu ne revient qu'au redémarrage de la machine ; la réserve en compte 8.
 
 Les arrêts suivants, par la v0.1.2, attendent la commande en cours.
@@ -168,6 +168,6 @@ Attendu : `hwraid_snapshot_ready 1`, `hwraid_discovery_success 1`, `hwraid_manag
 | `collection_success 0` avec une erreur `EPERM` au journal | `userns-remap`, Docker rootless ou capacité `SYS_RAWIO` retirée |
 | `hwraid_collector_supported 0` sur une carte | modèle ou firmware non qualifié : carte inventoriée seulement |
 | `hwraid_discovery_success 0` | sysfs partiellement illisible : voir l'avertissement `unreadable SCSI hosts` au journal |
-| `collection_success 0` avec `cannot allocate memory` au journal | sur toutes les lectures : réserve de commandes de gestion du pilote très probablement épuisée, voir « Limite du pilote aacraid » avant de redémarrer ; sur une seule grande commande, les autres lectures réussissant : tampon de cette commande non alloué, sans effet sur la réserve |
+| `collection_success 0` avec `cannot allocate memory` au journal | sur toutes les lectures : réserve de commandes de gestion du pilote très probablement épuisée, voir « Limite du pilote aacraid » avant de redémarrer ; sur une seule lecture (par exemple la carte des connecteurs, commande de 2 048 octets), les autres réussissant : réserve momentanément vide ou tampon de cette grande commande non alloué, les deux restent possibles ; à surveiller, et à traiter comme une réserve épuisée si l'erreur se répète. Un échec de la lecture des capacités (706) empêche toutes les autres lectures du cycle : le journal ne montre alors qu'une erreur |
 | `hwraid_transfer_close_unconfirmed_total` augmente souvent | un autre outil (maxView, ARCCONF) interroge probablement la carte en même temps : chaque lecture rejetée est refaite, sans conséquence tant que `collection_success` reste à 1 ; si des lectures échouent, réduire la fréquence de l'autre outil ou l'arrêter temporairement ([interface aacraid](aacraid-interface.md), section 4) |
 | le conteneur s'arrête avec le code 3 | nœuds attendus changés depuis le démarrage : `restart: unless-stopped` le relance |

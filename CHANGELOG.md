@@ -13,7 +13,8 @@
 - Documentation of the `aacraid` driver defect (`docs/aacraid-defaut-pilote.md`) and `tools/aacraid-fib-trace.sh`, a kernel probe that names the programs losing command blocks; it writes to a new private directory, bounded to 100 MiB, names its probe per run, drains the buffer before removing the probe, checks the removal, and says whether the trace is complete (returns missed by the probe, events lost by the buffer).
 - `HwraidVolumeDisappeared` and `HwraidControllerDisappeared` raise one alert per object, even after a rename or a firmware update.
 - `HwraidCollectionStale` ignores a collector that has become unsupported.
-- aacraid: the cached 706 and 708 answers are tied to the card as sysfs describes it (address, node, PCI IDs, serial number, firmware): a replaced card or an updated firmware is read again.
+- aacraid: the cached 706 and 708 answers are tied to the card as sysfs describes it (address, node, PCI IDs, serial number, firmware), and forgotten when it changes: a replaced card, an updated or downgraded firmware is read again.
+- During a collection timeout, collectors known as unsupported stay unsupported, and a memory-served success is kept only for the same card and firmware.
 - Upgrade notes: the first stop of a v0.1.1 process is not protected (docs/deploiement.md).
 - `HwraidCollectionIntermittent`: at least six success/failure transitions of a collector in an hour (about three failures), which would otherwise keep `for` delays from ever completing.
 - aacraid: a paged transfer is engaged only if the open response carries `CT_OK` (`0xda`) in data word 4 (zero-based), as documented; otherwise neither chunk nor close is sent.

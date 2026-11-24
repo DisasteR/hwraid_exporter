@@ -166,6 +166,7 @@ Chaque mesure d’état expose uniquement l’état observé avec la valeur 1. U
 | Module absent, confirmé | `present=0`, collecte réussie, série d’état omise |
 | Présent, optimal ou en charge | `present=1`, état reconnu, collecte réussie |
 | Présent, code d’état inconnu | `present=1`, état `unknown`, collecte réussie si la réponse est complète |
+| Présence indéterminée (bits d’état sans le bit d’installation) | présence omise, état `unknown`, collecte réussie |
 | Lecture en échec | Collecte à 0, aucune valeur d’état ou de présence issue de l’échantillon en échec |
 | Fonction explicitement non prise en charge | `hwraid_collector_supported{collector="cache_protection"}=0`, présence et état omis |
 

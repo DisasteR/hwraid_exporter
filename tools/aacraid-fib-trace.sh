@@ -20,7 +20,9 @@
 # sonde, aucun événement perdu ni restant dans le tampon, compteurs de
 # toutes les CPU lus, autant de lignes écrites que d'événements lus, lecteur
 # sans erreur et limite de taille non atteinte. Le bilan ne couvre que les
-# retours survenus pendant que la sonde était active. Un redémarrage retire aussi
+# retours survenus pendant que la sonde était active, d'appels entrés dans
+# aac_fib_send après son activation (une commande déjà en cours au lancement
+# n'est pas vue). Un redémarrage retire aussi
 # la sonde. Si le script a disparu sans nettoyer (SIGKILL), retirer à la main
 # l'instance et la sonde affichées au démarrage (« sonde … active, instance
 # … »), sous la racine de trace qu'il a utilisée (<racine> :

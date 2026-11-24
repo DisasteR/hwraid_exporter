@@ -250,7 +250,7 @@ Règle appliquée à R, dans cet ordre :
 | bit `0x4` présent | en charge |
 | sinon | optimal |
 
-Sur l'hôte de référence : R = `0x40000081`, module en panne, conforme à l'affichage de l'outil témoin. Les états « en charge » et « optimal » restent à observer sur matériel.
+Cette règle est celle de l'outil de référence, établie par analyse statique de son code (construction de l'état de la batterie à partir de R, masques `0x1`, `0x4` et `0x8`). Sur l'hôte de référence : R = `0x40000081`, module en panne, conforme à l'affichage de l'outil témoin. Les états « en charge » et « optimal » restent à observer sur matériel ; tout bit autre que `0x1`, `0x4` et `0x8` (dont `0x80`, présent sur le module en panne) rend l'état indéterminé plutôt qu'optimal.
 
 ## 7. Domaine de validité [interopérabilité]
 

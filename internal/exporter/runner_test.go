@@ -411,3 +411,45 @@ func TestRunnerLateErrorsBeforeReturn(t *testing.T) {
 		}
 	}
 }
+
+// Même carte (même numéro de série), firmware mis à jour, première
+// collecte hors délai : le module doit relire ses capacités, leur succès
+// n'est pas reporté.
+func TestTimedOutHeldNotAfterFirmwareUpdate(t *testing.T) {
+	const addr = "0000:01:00.0"
+	tr := NewTracker()
+	t0 := time.Unix(1_000_000, 0)
+	ok := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"capabilities": true}, Cached: []string{"capabilities"}}}
+	tr.Update(ok, []string{addr}, t0)
+	tr.Remember(Build(plan(aacHost("host0", addr, "S1")), true, ok, tr, time.Minute))
+	h := aacHost("host0", addr, "S1")
+	h.Firmware = "5.3-0[19205]"
+	timedOut := map[string]module.Result{addr: {TimedOut: true, Collected: map[string]bool{"capabilities": false}}}
+	out := Render(Build(plan(h), true, timedOut, tr, time.Minute))
+	if want := `hwraid_collection_success{controller="serial:S1",collector="capabilities"} 0`; !strings.Contains(out, want+"\n") {
+		t.Fatalf("succès reporté malgré le nouveau firmware : %s\n%s", want, out)
+	}
+}
+
+// Collecteur non pris en charge, puis collecte hors délai sur la même
+// carte : il reste non pris en charge, sans succès ni échec publié.
+func TestTimedOutKeepsUnsupported(t *testing.T) {
+	const addr = "0000:01:00.0"
+	p := plan(aacHost("host0", addr, "S1"))
+	tr := NewTracker()
+	t0 := time.Unix(1_000_000, 0)
+	ok := map[string]module.Result{addr: {NodeValid: true, Collected: map[string]bool{"volumes": true}, Unsupported: []string{"cache_protection"}}}
+	tr.Update(ok, []string{addr}, t0)
+	tr.Remember(Build(p, true, ok, tr, time.Minute))
+	timedOut := map[string]module.Result{addr: {TimedOut: true, Collected: map[string]bool{"volumes": false, "cache_protection": false}}}
+	out := Render(Build(p, true, timedOut, tr, time.Minute))
+	if want := `hwraid_collector_supported{controller="serial:S1",collector="cache_protection"} 0`; !strings.Contains(out, want+"\n") {
+		t.Fatalf("non-prise en charge perdue : %s\n%s", want, out)
+	}
+	if strings.Contains(out, `hwraid_collection_success{controller="serial:S1",collector="cache_protection"}`) {
+		t.Fatalf("collecteur non pris en charge publié en échec :\n%s", out)
+	}
+	if want := `hwraid_collection_success{controller="serial:S1",collector="volumes"} 0`; !strings.Contains(out, want+"\n") {
+		t.Fatalf("ligne absente : %s\n%s", want, out)
+	}
+}

@@ -265,6 +265,11 @@ func TestCollectSupplementGate(t *testing.T) {
 	if d.supCall != 3 {
 		t.Fatalf("706 relue %d fois après changements de firmware et de carte, attendu 3", d.supCall)
 	}
+	// Retour à l'identité d'origine : l'ancienne réponse a été oubliée.
+	m.Collect(context.Background(), c, ref)
+	if d.supCall != 4 {
+		t.Fatalf("ancienne réponse 706 réutilisée au retour à l'identité d'origine (%d lectures)", d.supCall)
+	}
 
 	for name, sup := range map[string]aacraid.SupplementInfo{
 		"bit absent": {Version: 15, SupportedOptions2: 0x00c86934},

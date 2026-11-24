@@ -110,11 +110,25 @@ func TestShutdownDuringBlockedCommand(t *testing.T) {
 			cycles <- runner.Run(cycle, jobs, map[string][]string{c.PCI.Address: m.Collectors()})
 		}
 		sig, stopSig := signal.NotifyContext(context.Background(), lifecycle.TerminationSignals()...)
+		release := sync.OnceFunc(func() { close(rec.release) })
 		loopDone := make(chan struct{})
 		go func() {
 			defer close(loopDone)
 			lifecycle.RunLoop(sig, 5*time.Millisecond, collect)
 		}()
+		// Sur tous les chemins, échec compris : arrêt de la boucle, libération
+		// de la commande simulée et fin de la collecte, avant que l'ioctl
+		// réel ne soit rétabli (nettoyage enregistré après ReplaceIoctl, donc
+		// exécuté avant lui).
+		t.Cleanup(func() {
+			stopSig()
+			release()
+			select {
+			case <-loopDone:
+			case <-time.After(5 * time.Second):
+			}
+			runner.Drain(5 * time.Second)
+		})
 		select {
 		case <-rec.blocked:
 		case <-time.After(5 * time.Second):
@@ -141,7 +155,7 @@ func TestShutdownDuringBlockedCommand(t *testing.T) {
 			t.Fatalf("late=%v : l'arrêt n'attend pas la commande en cours", late)
 		case <-time.After(60 * time.Millisecond):
 		}
-		close(rec.release)
+		release()
 		select {
 		case <-idle:
 		case <-time.After(2 * time.Second):
