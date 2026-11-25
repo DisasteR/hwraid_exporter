@@ -16,12 +16,12 @@ Ces règles sont un point de départ : seuils, durées et gravités sont à adap
 
 | Alerte | Condition | Délai | Gravité | Action |
 |---|---|---|---|---|
-| `HwraidVolumeFailed` | volume `failed` | immédiat | critical | données inaccessibles ou perdues : restauration |
+| `HwraidVolumeFailed` | volume `failed` | immédiat | critical | données probablement inaccessibles ou perdues ; pour un RAID 10 ou 50 dont les pertes touchent des grappes différentes, vérifier l'accessibilité avant de restaurer (la règle, celle de l'outil constructeur, ne tient pas compte des grappes) |
 | `HwraidVolumeDegraded` | volume `degraded` (membre perdu, ou membre inconnu à côté d'une perte ou d'une reconstruction) | 5 min | critical | identifier et remplacer le disque en panne ; une panne de plus dans ce volume serait fatale |
 | `HwraidVolumeRebuilding` | volume `degraded_rebuilding` | 5 min | warning | laisser la reconstruction aboutir, éviter toute coupure |
 | `HwraidVolumeRedundancyReduced` | volume `reduced_redundancy` ou `reduced_redundancy_rebuilding` (RAID 6 ou 60 privé d'un membre, ou assemblage qui en contient un) | 5 min | warning | remplacer le disque en panne, ou laisser aboutir la reconstruction en cours ; le RAID 6 ou 60 tolère encore une panne, pas forcément l'assemblage qui le contient |
 | `HwraidVolumeStateUnknown` | volume `unknown` | 30 min | warning | vérifier les volumes membres et l'outil du constructeur |
-| `HwraidDiskFailed` | disque `failed` (déclaré en panne par la carte, membre ou non d'un volume ; membre absent de la carte ; périphérique qui n'est pas un disque désigné par un volume). Un disque à la fois en panne et « non pris en charge » est publié `unsupported`, comme dans l'outil : l'alerte ne se déclenche pas pour lui, mais un volume dont il est membre le compte perdu | immédiat | critical | remplacer le disque |
+| `HwraidDiskFailed` | disque `failed` (déclaré en panne par la carte, membre ou non d'un volume ; membre absent de la carte ; périphérique qui n'est pas un disque désigné par un volume). Un disque à la fois en panne et « non pris en charge » est publié `failed` (l'outil constructeur peut l'afficher « Unsupported ») | immédiat | critical | remplacer le disque |
 | `HwraidVolumeDisappeared` | volume vu dans les dernières 24 h, absent alors que la lecture réussit | immédiat, pendant 24 h | warning | suppression ou perte du volume ; mettre en silence après une suppression volontaire |
 | `HwraidCacheProtectionFailed` | protection du cache `failed` | 5 min | warning | remplacer le module ; en attendant, régler le cache d'écriture en mode « seulement si protégé » (Adaptec : `SETCACHE … wbb`) |
 | `HwraidControllerTemperatureHigh` | température du contrôleur ≥ 55 °C et < 60 °C | 10 min | warning | vérifier la ventilation du boîtier et le dissipateur ; seuils à adapter |
@@ -55,7 +55,7 @@ L'intervalle de collecte est configurable (`-interval`, 1 minute par défaut) et
 
 ## Cas particulier : information des disques illisible
 
-L'état d'un volume tient compte des disques que la carte déclare en panne dans leur information (lecture 248). Si cette lecture échoue pendant un cycle, les états sont calculés sans elle : un volume publié `degraded` ou `failed` à cause d'une panne visible seulement dans cette lecture peut repasser `optimal` et son alerte se résoudre. Avant de conclure à un rétablissement, vérifier `hwraid_collection_success{collector="disk_inventory"}`.
+L'état d'un volume tient compte des disques que la carte déclare en panne dans leur information (lecture 248). Si cette lecture échoue pendant un cycle, les pannes déjà lues dans le cycle comptent, mais les disques non lus sont évalués sans elle : un volume publié `degraded` ou `failed` à cause d'une panne visible seulement dans cette lecture peut repasser `optimal` et son alerte se résoudre. Avant de conclure à un rétablissement, vérifier `hwraid_collection_success{collector="disk_inventory"}`.
 
 ## Cas particulier : grappe à plusieurs niveaux
 

@@ -29,7 +29,7 @@ groups:
           severity: critical
         annotations:
           summary: "Volume RAID {{ $labels.volume }} en échec ({{ $labels.controller }})"
-          description: "Le volume a perdu plus de membres que sa redondance ne le permet : données inaccessibles ou perdues."
+          description: "Le volume a perdu plus de membres que sa redondance ne le permet : données probablement inaccessibles ou perdues. Pour un RAID 10 ou 50, si les pertes touchent des grappes différentes, les données peuvent rester accessibles : le vérifier avant toute restauration."
 
       - alert: HwraidVolumeDegraded
         expr: hwraid_volume_state{state="degraded"} == 1

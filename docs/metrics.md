@@ -80,7 +80,7 @@ Une grappe à plusieurs niveaux (par exemple quatre miroirs assemblés) publie u
 
 | Métrique | Labels | Valeur |
 |---|---|---|
-| `hwraid_disk_state` | `controller`, `disk`, `state`, `vendor_state` | 1, pour chaque disque présent et pour chaque disque désigné par un volume mais absent ; un périphérique qui n'est pas un disque n'a un état (`failed`) que s'il est désigné par un volume ou porte le bit de secours ; `vendor_state` : libellé de l'outil constructeur (`Online`, `Hot Spare`, `Raw (Pass Through)`…), vide quand l'information du disque n'a pas pu être lue |
+| `hwraid_disk_state` | `controller`, `disk`, `state`, `vendor_state` | 1, pour chaque disque présent et pour chaque disque désigné par un volume mais absent ; un périphérique qui n'est pas un disque n'a un état (`failed`) que s'il est désigné par un volume ou porte le bit de secours ; `vendor_state` : libellé de l'outil constructeur pour l'état publié (`Online`, `Hot Spare`, `Raw (Pass Through)`…), vide quand l'information du disque n'a pas pu être lue ; quand l'exporter s'écarte de l'outil par prudence (disque en panne et non pris en charge), c'est le libellé de l'état publié (`Failed`) |
 | `hwraid_disk_info` | `controller`, `disk`, `vendor`, `model`, `firmware`, `serial`, `wwn` | 1, pour chaque disque présent sur la carte, membre ou non (un périphérique qui n'est pas un disque, par exemple le fond de panier d'une baie, n'est pas publié) ; `wwn` au format `0x` suivi de 16 chiffres hexadécimaux, vide si la carte n'en donne pas |
 | `hwraid_disk_capacity_bytes` | `controller`, `disk` | capacité brute en octets, absente si la taille de bloc n'est pas reconnue |
 | `hwraid_disk_os_device` | `controller`, `disk`, `device`, `scsi_address` | 1, pour chaque disque que le pilote présente à Linux : nœud SCSI générique (`sg8`) et adresse SCSI Linux (`0:1:7:0`) |
@@ -99,7 +99,7 @@ hwraid_disk_info{serial!=""} * on (host, serial) group_left (device)
 
 La jointure exige une seule série `smartctl_device` par couple `(host, serial)`. Si smartctl_exporter voit le même disque par deux nœuds, filtrer avant la jointure celui à garder (par exemple `smartctl_device{device=~"sg.*"}`) ; si le nœud n'est pas utile, joindre sur `max by (host, serial) (…)` et retirer `device` de `group_left`.
 
-L'état de tous les disques présents, membres ou non, s'appuie sur leur information (lecture 248). Si elle échoue pendant un cycle, seuls les disques membres d'un volume ont un état, déduit des drapeaux de leurs membres, avec un `vendor_state` vide. La santé SMART des disques est hors périmètre : elle relève d'outils dédiés.
+L'état de tous les disques présents, membres ou non, s'appuie sur leur information (lecture 248). Si elle échoue pendant un cycle, ou est incomplète, seuls les disques membres d'un volume ont un état, déduit des drapeaux de leurs membres, et tout disque qu'une réponse lue dans le cycle déclare en panne est publié `failed`, membre ou non ; `vendor_state` est alors vide. La santé SMART des disques est hors périmètre : elle relève d'outils dédiés.
 
 ### Protection du cache
 

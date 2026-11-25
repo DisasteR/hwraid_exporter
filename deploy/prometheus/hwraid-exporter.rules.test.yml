@@ -125,7 +125,7 @@ tests:
           - exp_labels: {severity: critical, controller: "serial:A", volume: b3, state: failed}
             exp_annotations:
               summary: "Volume RAID b3 en échec (serial:A)"
-              description: "Le volume a perdu plus de membres que sa redondance ne le permet : données inaccessibles ou perdues."
+              description: "Le volume a perdu plus de membres que sa redondance ne le permet : données probablement inaccessibles ou perdues. Pour un RAID 10 ou 50, si les pertes touchent des grappes différentes, les données peuvent rester accessibles : le vérifier avant toute restauration."
 
   # Protection du cache : panne après 5 min ; charge normale de 20 min sans
   # alerte ; lecture en échec prolongée signalée.

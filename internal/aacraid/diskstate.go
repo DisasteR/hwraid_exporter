@@ -92,7 +92,10 @@ func diskState(i DiskInfo, role memberRole, caps DiskCaps) DiskStatus {
 	if failed {
 		st = DiskStatus{DiskFailed, "Failed"}
 	}
-	if i.HasStatus332 && i.Status332&0x2 != 0 {
+	// « Non pris en charge » : écart prudent, la panne déclarée l'emporte
+	// (l'outil de référence affiche « Unsupported » et le disque sortirait
+	// de toute alerte de panne).
+	if i.HasStatus332 && i.Status332&0x2 != 0 && !failed {
 		st = DiskStatus{DiskUnsupported, "Unsupported"}
 	}
 	exposed := (caps.DirectDisks && !failed && !both) || (caps.JBOD && i.Qualifier&0xe0 == 0)

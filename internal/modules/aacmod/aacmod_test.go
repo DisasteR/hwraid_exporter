@@ -1392,9 +1392,10 @@ func TestCollectInvalidRank(t *testing.T) {
 
 // Bout en bout : la 248 du disque 7 le déclare en panne (bit 0x1 de
 // l'octet 68), les drapeaux de son membre restent nuls. Son miroir est
-// dégradé, l'assemblage aussi, le disque est publié en panne. Si la 248 ne
-// peut pas être lue entièrement, les états sont calculés sans elle : une
-// panne lue sur un disque précédent (le 3) ne compte pas non plus.
+// dégradé, l'assemblage aussi, le disque est publié en panne. Si la 248 du
+// disque 7 échoue, la panne déjà lue sur le disque 3 (même miroir) compte
+// encore : miroir et assemblage dégradés, disque 3 en panne, disque 7 en
+// ligne d'après ses membres ; l'inventaire est en échec.
 func TestCollectDiskDeclaredFailed(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
 	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
@@ -1402,7 +1403,7 @@ func TestCollectDiskDeclaredFailed(t *testing.T) {
 		d := &fakeDev{info: hba, sup: arcIo, paged: func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
 			b, err := referencePaged(r, p, size)
 			if err == nil && r == aacraid.ReadDiskInfo && p == 3 && !readable {
-				b[68] |= 0x01 // lu avant l'échec : ne doit pas compter
+				b[68] |= 0x01 // lu avant l'échec : compte
 			}
 			if err == nil && r == aacraid.ReadDiskInfo && p == 7 {
 				if !readable {
@@ -1414,10 +1415,9 @@ func TestCollectDiskDeclaredFailed(t *testing.T) {
 		}}
 		res := withDev(d, nil).Collect(context.Background(), card("0000:01:00.0", "0"), ref)
 		want := map[string]string{"1d000004": "degraded", "1d000000": "degraded"}
-		disk := "failed"
+		disk, disk3 := "failed", "online"
 		if !readable {
-			want = map[string]string{"1d000004": "optimal", "1d000000": "optimal"}
-			disk = "online"
+			disk, disk3 = "online", "failed"
 		}
 		for _, v := range res.Volumes {
 			if w, ok := want[v.ID]; ok && v.State != w {
@@ -1428,9 +1428,7 @@ func TestCollectDiskDeclaredFailed(t *testing.T) {
 		for _, dk := range res.Disks {
 			states[dk.ID] = dk.State
 		}
-		// d3 partage le miroir de d7 : en ligne dans les deux cas (sa panne
-		// injectée quand la 248 échoue ensuite ne compte pas).
-		if states["d7"] != disk || states["d3"] != "online" {
+		if states["d7"] != disk || states["d3"] != disk3 {
 			t.Errorf("248 lisible %v : disques %v", readable, states)
 		}
 		seen := 0
@@ -1625,6 +1623,47 @@ func TestCollectDiskStateCases(t *testing.T) {
 	}})
 	if got := states(r)["d8"]; got != [2]string{"failed", ""} {
 		t.Errorf("248 incomplète, disque hors volume en panne : %v", got)
+	}
+	// Lecture interrompue : la 248 du disque 8 (hors volume) le déclare en
+	// panne, puis celle du disque 9 échoue. Le disque 8 reste publié en
+	// panne (réponse lue avant l'échec), l'inventaire est en échec.
+	r = collect(&fakeDev{info: hba, sup: arcIo, paged: func(rd aacraid.PagedRead, p, size uint32) ([]byte, error) {
+		if rd == aacraid.ReadDiskList {
+			b, err := extra(rd, p, size)
+			if err != nil {
+				return nil, err
+			}
+			n := binary.LittleEndian.Uint32(b)
+			b = binary.LittleEndian.AppendUint32(b, 9)
+			binary.LittleEndian.PutUint32(b, n+1)
+			return b, nil
+		}
+		if rd == aacraid.ReadDiskInfo && p == 9 {
+			return nil, errors.New("EIO")
+		}
+		b, err := extra(rd, p, size)
+		if err == nil && rd == aacraid.ReadDiskInfo && p == 8 {
+			b[68] = 0x11
+		}
+		return b, err
+	}})
+	if got := states(r)["d8"]; got != [2]string{"failed", ""} || r.Collected["disk_inventory"] {
+		t.Errorf("lecture interrompue, disque hors volume en panne : %v, %v", got, r.Collected)
+	}
+	// Même cas, mais le périphérique 8 est un fond de panier (type 0x0d) :
+	// il n'est pas publié comme disque, même avec le bit de panne.
+	r = collect(&fakeDev{info: hba, sup: arcIo, paged: func(rd aacraid.PagedRead, p, size uint32) ([]byte, error) {
+		b, err := extra(rd, p, size)
+		if err == nil && rd == aacraid.ReadDiskInfo {
+			if p == 8 {
+				b[68], b[80] = 0x11, 0x0d
+			}
+			b = b[:300]
+		}
+		return b, err
+	}})
+	if got, ok := states(r)["d8"]; ok {
+		t.Errorf("248 incomplète, fond de panier en panne publié : %v", got)
 	}
 	native := aacraid.AdapterInfo{SupportedOptions: 1 << 25}
 	r = collect(&fakeDev{info: hba, sup: arcIo, ai: &native, paged: extra})

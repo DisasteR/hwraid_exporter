@@ -311,23 +311,20 @@ func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.
 	}
 	// L'inventaire (248) est lu avant le calcul des états : un disque qu'il
 	// déclare en panne compte comme membre perdu, comme dans l'outil de
-	// référence. S'il n'a pas pu être lu, les états sont calculés sans lui
-	// (drapeaux des membres et liste des disques présents) ; son échec reste
-	// visible par son propre collecteur.
+	// référence. Chaque réponse lue est une preuve, même si une lecture
+	// suivante échoue ; les disques non lus sont évalués par les drapeaux de
+	// leurs membres et la liste des disques présents. L'échec reste visible
+	// par le collecteur de l'inventaire.
 	inv, err := readInventory(d, present)
-	var failed map[uint32]bool
+	failed := map[uint32]bool{}
 	complete := err == nil
-	if err == nil {
-		failed = map[uint32]bool{}
-		for _, i := range inv {
-			// Un périphérique qui n'est pas un disque compte, pour un
-			// membre qui le désigne, comme un disque en panne (outil de
-			// référence).
-			if i.Failed() || !i.HardDrive() {
-				failed[i.Number] = true
-			}
-			complete = complete && i.HasStatus332
+	for _, i := range inv {
+		// Un périphérique qui n'est pas un disque compte, pour un membre
+		// qui le désigne, comme un disque en panne (outil de référence).
+		if i.Failed() || !i.HardDrive() {
+			failed[i.Number] = true
 		}
+		complete = complete && i.HasStatus332
 	}
 	ev := aacraid.Evaluate(cs, present, failed)
 	r.Volumes, r.Disks = volumesOf(cs, ev), disksOf(ev)
@@ -341,16 +338,18 @@ func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.
 			byNum[i.Number] = i
 		}
 		r.Disks = diskStatesOf(aacraid.DiskStates(cs, present, byNum, caps))
-	} else if err == nil {
-		// Information lue mais incomplète : son bit de panne reste fiable ;
-		// un disque qu'elle déclare en panne est publié en panne, membre ou
-		// non (plus prudent que de ne rien publier pour lui).
+	} else {
+		// Information absente, partielle ou incomplète : états déduits des
+		// membres, et tout disque qu'une réponse lue déclare en panne est
+		// publié en panne, membre ou non (plus prudent que de ne rien
+		// publier pour lui ; un périphérique qui n'est pas un disque reste
+		// hors des disques).
 		st := map[uint32]aacraid.DiskStatus{}
 		for n, ds := range ev.Disks {
 			st[n] = aacraid.DiskStatus{State: ds}
 		}
 		for _, i := range inv {
-			if i.Failed() {
+			if i.Failed() && i.HardDrive() {
 				st[i.Number] = aacraid.DiskStatus{State: aacraid.DiskFailed}
 			}
 		}
@@ -487,6 +486,10 @@ func (m *Module) forgetConnectorMap(key string) {
 
 // readInventory lit l'information de chaque disque présent. Seul le début
 // de chaque réponse est lu (DiskInventoryNeed), puis le transfert est clos.
+//
+// En cas d'erreur, readInventory rend aussi les réponses déjà lues et
+// vérifiées : elles ne servent pas à l'inventaire (tout ou rien), mais leur
+// bit de panne reste une preuve pour le calcul des états.
 func readInventory(d reader, nums []uint32) ([]aacraid.DiskInfo, error) {
 	sorted := append([]uint32(nil), nums...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
@@ -494,14 +497,14 @@ func readInventory(d reader, nums []uint32) ([]aacraid.DiskInfo, error) {
 	for _, n := range sorted {
 		raw, err := d.ReadPaged(aacraid.ReadDiskInfo, n, 0, func([]byte) int { return aacraid.DiskInventoryNeed })
 		if err != nil {
-			return nil, err
+			return out, err
 		}
 		i, err := aacraid.DecodeDiskInfo(raw)
 		if err != nil {
-			return nil, err
+			return out, err
 		}
 		if i.Number != n {
-			return nil, fmt.Errorf("disk %d info: the response is for disk %d", n, i.Number)
+			return out, fmt.Errorf("disk %d info: the response is for disk %d", n, i.Number)
 		}
 		out = append(out, i)
 	}
