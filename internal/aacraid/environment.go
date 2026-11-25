@@ -52,6 +52,14 @@ type AdapterInfo struct {
 // HeatSensor indique si la carte annonce un capteur de température.
 func (a AdapterInfo) HeatSensor() bool { return a.SupportedOptions&SupportedHeatSensor != 0 }
 
+// SupportedNativeHBA est le bit 25 de SupportedOptions : option HBA natif
+// annoncée (docs/aacraid-interface.md, section 6 bis ; le mode courant de la
+// carte n'est pas testé).
+const SupportedNativeHBA = 0x2000000
+
+// NativeHBA indique l'option HBA natif.
+func (a AdapterInfo) NativeHBA() bool { return a.SupportedOptions&SupportedNativeHBA != 0 }
+
 // DecodeAdapterInfo décode la réponse à RequestAdapterInfo. Size inclut
 // l'en-tête : il doit couvrir SupportedOptions et tenir dans le tampon.
 func DecodeAdapterInfo(b []byte) (AdapterInfo, error) {

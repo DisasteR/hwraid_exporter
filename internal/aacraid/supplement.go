@@ -104,6 +104,7 @@ func CheckFIBRequest(b []byte) error {
 // Décalages vérifiés avec offsetof() sur la définition de aacraid.h.
 const (
 	supVersion          = 0x20
+	supFeatureBits      = 0x24
 	supSupportedOptions = 0x90
 	supMinData          = supSupportedOptions + 4
 )
@@ -112,12 +113,33 @@ const (
 // (AAC_SUPPORTED_ARCIO_PHYDEV, FreeBSD aacraid_reg.h).
 const SupportedArcIo = 0x08
 
+// Bits de capacité qui changent l'état affiché d'un disque
+// (docs/aacraid-interface.md, section 6 bis) : bit 16 de SupportedOptions2
+// et AAC_FEATURE_JBOD (bit 27 de FeatureBits, Linux aacraid.h).
+const (
+	SupportedDirectDisks = 0x10000
+	FeatureJBOD          = 0x08000000
+)
+
 // SupplementInfo regroupe les champs utilisés de la réponse à
 // RequestSupplementAdapterInfo.
 type SupplementInfo struct {
 	Version           uint32
 	SupportedOptions2 uint32
+	FeatureBits       uint32
 }
+
+// capability : comme SupportedOptions2, FeatureBits n'est valide que si
+// Version est supérieur à 1.
+func (s SupplementInfo) capability(field, bit uint32) bool { return s.Version > 1 && field&bit != 0 }
+
+// DirectDisks indique le bit 16 de SupportedOptions2.
+func (s SupplementInfo) DirectDisks() bool {
+	return s.capability(s.SupportedOptions2, SupportedDirectDisks)
+}
+
+// JBOD indique AAC_FEATURE_JBOD.
+func (s SupplementInfo) JBOD() bool { return s.capability(s.FeatureBits, FeatureJBOD) }
 
 // ArcIoReads indique si la carte annonce l'interface des lectures de volume,
 // de membres et de disque décrites dans docs/aacraid-interface.md :
@@ -145,5 +167,6 @@ func DecodeSupplementInfo(b []byte) (SupplementInfo, error) {
 	return SupplementInfo{
 		Version:           le.Uint32(d[supVersion:]),
 		SupportedOptions2: le.Uint32(d[supSupportedOptions:]),
+		FeatureBits:       le.Uint32(d[supFeatureBits:]),
 	}, nil
 }

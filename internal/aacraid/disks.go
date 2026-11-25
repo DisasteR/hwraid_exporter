@@ -25,10 +25,18 @@ const (
 	diskSerial    = 116 // 20 octets au plus, terminé par un octet nul
 	diskPhy       = 200 // phy de la carte auquel le disque est relié
 	diskWWN       = 288 // 8 octets, ordre de l'identifiant
+	// Octets d'état lus par l'outil de référence (docs/aacraid-interface.md,
+	// section 6 bis) : seul leur effet sur l'état affiché est établi.
+	diskFlags0    = 0
+	diskStatus68  = 68
+	diskStatus69  = 69
+	diskStatus70  = 70
+	diskQualifier = 80
+	diskStatus332 = 332
 )
 
 // DiskInfoNeed est le nombre d'octets nécessaires au décodage.
-const DiskInfoNeed = diskWWN + 8
+const DiskInfoNeed = diskStatus332 + 4
 
 // DiskInfo regroupe les champs d'inventaire d'un disque.
 type DiskInfo struct {
@@ -38,6 +46,9 @@ type DiskInfo struct {
 	Blocks                          uint64
 	BlockSize                       uint32
 	Phy                             uint8 // phy de la carte (contrôle de la carte des connecteurs)
+	// Octets bruts de la section 6 bis de docs/aacraid-interface.md.
+	Flags0, Status68, Status69, Status70, Qualifier uint8
+	Status332                                       uint32
 }
 
 // DecodeDiskInfo décode l'information de disque.
@@ -55,6 +66,13 @@ func DecodeDiskInfo(d []byte) (DiskInfo, error) {
 		Blocks:    le.Uint64(d[diskBlocks:]),
 		BlockSize: le.Uint32(d[diskBlockSize:]),
 		Phy:       d[diskPhy],
+
+		Flags0:    d[diskFlags0],
+		Status68:  d[diskStatus68],
+		Status69:  d[diskStatus69],
+		Status70:  d[diskStatus70],
+		Qualifier: d[diskQualifier],
+		Status332: le.Uint32(d[diskStatus332:]),
 	}
 	if w := d[diskWWN : diskWWN+8]; !bytes.Equal(w, make([]byte, 8)) {
 		i.WWN = "0x" + hex.EncodeToString(w)

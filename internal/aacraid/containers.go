@@ -99,6 +99,15 @@ const (
 	containerParent  = 52
 	containerMembers = 56
 	containerBlocks  = 64
+	// Champs lus par l'outil de référence, dont seul l'effet est établi
+	// (docs/aacraid-interface.md, section 6 bis).
+	containerVisible    = 88  // bit 22 : affiché comme volume autonome au-delà du seuil
+	containerSelectA    = 96  // 3 : numérotation classique des types
+	containerSelectB    = 100 // 1 : numérotation classique des types
+	containerTask       = 120 // 3 : migration ; 7 ou 8 : voir RebuildCountInhibited
+	containerTaskActive = 128
+	containerMigrationA = 224 // conteneurs associés à une migration
+	containerMigrationB = 228
 	// Cache d'écriture (docs/aacraid-interface.md, section 5) : réglage
 	// configuré et état effectif.
 	containerWriteCachePolicy  = 148
@@ -125,6 +134,24 @@ type ContainerInfo struct {
 	// brute, WriteCache*). WriteCacheEnabled : état effectif (valeur brute,
 	// 1 = actif, 0 = inactif ; autre valeur non observée).
 	WriteCachePolicy, WriteCacheEnabled uint32
+	// Champs bruts de la section 6 bis de docs/aacraid-interface.md.
+	Visible, SelectA, SelectB, Task, TaskActive uint32
+	MigrationA, MigrationB                      uint32
+}
+
+// ClassicNumbering indique que le type suit la numérotation classique
+// (types CT_* publics) au lieu de la numérotation ARCIO.
+func (c ContainerInfo) ClassicNumbering() bool { return c.SelectB == 1 || c.SelectA == 3 }
+
+// Migrating indique un conteneur en migration d'après son propre champ de
+// tâche (l'outil de référence le déduit aussi d'un conteneur associé).
+func (c ContainerInfo) Migrating() bool { return c.Task == 3 }
+
+// RebuildCountInhibited reprend la condition sous laquelle l'outil de
+// référence ne compte pas un membre en reconstruction parmi les membres
+// morts.
+func (c ContainerInfo) RebuildCountInhibited() bool {
+	return c.TaskActive != 0 && (c.Task == 7 || c.Task == 8)
 }
 
 // DecodeContainerInfo décode l'information de conteneur.
@@ -147,6 +174,14 @@ func DecodeContainerInfo(d []byte) (ContainerInfo, error) {
 
 		WriteCachePolicy:  le.Uint32(d[containerWriteCachePolicy:]),
 		WriteCacheEnabled: le.Uint32(d[containerWriteCacheEnabled:]),
+
+		Visible:    le.Uint32(d[containerVisible:]),
+		SelectA:    le.Uint32(d[containerSelectA:]),
+		SelectB:    le.Uint32(d[containerSelectB:]),
+		Task:       le.Uint32(d[containerTask:]),
+		TaskActive: le.Uint32(d[containerTaskActive:]),
+		MigrationA: le.Uint32(d[containerMigrationA:]),
+		MigrationB: le.Uint32(d[containerMigrationB:]),
 	}
 	if c.Members < 1 || c.Members > MaxMembers {
 		return ContainerInfo{}, fmt.Errorf("container info %#x: %d members", c.UID, c.Members)
@@ -164,7 +199,7 @@ const (
 type Member struct {
 	Disk     uint32 // NoUID si le membre est un conteneur
 	ChildUID uint32 // NoUID si le membre est un disque
-	Rank     uint8
+	Rank     uint16 // ordre de parcours de l'outil de référence
 	Flags    uint32
 	Start    uint64
 	Blocks   uint64
@@ -187,7 +222,7 @@ func DecodeMemberList(d []byte) ([]Member, error) {
 		out[i] = Member{
 			Disk:     le.Uint32(e[0:]),
 			ChildUID: le.Uint32(e[4:]),
-			Rank:     e[10],
+			Rank:     le.Uint16(e[10:]),
 			Flags:    le.Uint32(e[12:]),
 			Start:    le.Uint64(e[16:]),
 			Blocks:   le.Uint64(e[24:]),
