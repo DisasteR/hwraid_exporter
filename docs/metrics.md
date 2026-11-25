@@ -25,7 +25,7 @@ Les métriques sont **les mêmes quel que soit le pilote, le contrôleur ou le c
 
 `unknown` signifie que la carte a répondu, mais que l'exporter ne sait pas interpréter la réponse avec certitude (type de volume non qualifié, drapeau inconnu, propagation non établie). C'est un état à surveiller, pas une panne.
 
-Valeurs réservées pour les modules à venir, non publiées aujourd'hui : `reduced_redundancy` et `reduced_redundancy_rebuilding` (perte d'un membre sur un RAID 6), `spare`, `ready`, `copyback` (disques).
+Valeurs réservées, non publiées aujourd'hui : `reduced_redundancy` et `reduced_redundancy_rebuilding` (perte d'un membre sur un RAID 6, la redondance restante tolère encore une panne) ; `single` (`raid_level` d'un volume posé sur un seul disque, sans découpage) ; pour les disques, `ready` (disponible), `spare` (secours), `copyback` (copie de retour vers un disque remplacé), `passthrough` (disque présenté directement au système, hors volume : JBOD, mode HBA) et `unsupported` (disque refusé par la carte). Les variantes propres à un constructeur se rattachent au terme commun le plus proche, leur nom restant dans `vendor_level` (par exemple RAID 5EE → `raid5`, RAID 6 Reed-Solomon → `raid6`).
 
 ## Métriques
 

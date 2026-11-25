@@ -130,7 +130,7 @@ En-tête de 8 octets (mot 1 = nombre de membres), puis une entrée de 32 octets 
 |---|---|
 | 0-3 | numéro du disque membre, `0xffffffff` si le membre est un conteneur |
 | 4-7 | UID du conteneur membre, `0xffffffff` si le membre est un disque |
-| 10 | rang du membre |
+| 10-11 | rang du membre (l'exporter n'en lit que l'octet 10 et ne trie pas les membres) |
 | 12-15 | état du membre (section 6) [interopérabilité] |
 | 16-23 | bloc de début du membre sur le disque |
 | 24-31 | taille du membre en blocs |
@@ -228,17 +228,17 @@ Les octets 12 à 15 d'une entrée de la liste des membres portent l'état du mem
 
 Si les deux bits sont positionnés, le membre est traité comme en reconstruction. Un autre bit positionné rend l'état du membre **indéterminé**. Sur l'hôte de référence, les 16 entrées ont ces octets à 0.
 
-Un membre est aussi **défaillant** lorsque le disque qu'il désigne (octets 0-3) n'apparaît pas dans la liste des disques présents. Cette règle n'est appliquée que sur une liste des disques lue complètement dans le même cycle ; sinon, l'état est **indéterminé**.
+Un membre est aussi **défaillant** lorsque le disque qu'il désigne (octets 0-3) n'apparaît pas dans la liste des disques présents, sauf s'il porte le bit `0x2` : il reste alors « en reconstruction » pour le calcul du conteneur, alors que le disque est publié « en panne » (l'outil de référence compte mort un membre dont il ne trouve pas le disque, section 6 bis). Cette règle n'est appliquée que sur une liste des disques lue complètement dans le même cycle ; sinon, le relevé du cycle échoue et aucun état n'est publié.
 
 ### État d'un conteneur
 
 L'état d'un conteneur ne figure pas tel quel dans les réponses : il se calcule à partir de ses membres et de son type. Seuls les types observés sur l'hôte de référence sont évalués :
 
-- **miroir** (type 3, deux disques) : si un membre a un drapeau inconnu, ou si la liste des membres ne compte pas les deux membres annoncés, l'état est **indéterminé**. Sinon on compte les membres défaillants et en reconstruction : aucun → **optimal** ; un, en reconstruction → **dégradé en reconstruction** ; un, défaillant → **dégradé** ; deux → **en échec** ;
-- **assemblage** (type 1) : **optimal** si tous ses conteneurs membres le sont ; sinon **indéterminé**, la façon dont l'état d'un conteneur membre se reporte sur l'assemblage n'étant pas établie. Les miroirs publient leur propre état : une perte de redondance reste visible à leur niveau ;
+- **miroir** (type 3, deux disques) : si un membre a un drapeau inconnu, l'état est **indéterminé** (une liste des membres dont le nombre diffère du nombre annoncé fait échouer la collecte du cycle, voir ci-dessous). Sinon on compte les membres défaillants et en reconstruction : aucun → **optimal** ; un, en reconstruction → **dégradé en reconstruction** ; un, défaillant → **dégradé** ; deux → **en échec** ;
+- **assemblage** (type 1) : **optimal** si tous ses membres sont des miroirs distincts, optimaux et qui le désignent comme parent ; sinon **indéterminé** : l'exporter n'applique pas encore la règle de fusion de l'outil de référence (section 6 bis). Les miroirs publient leur propre état : une perte de redondance reste visible à leur niveau ;
 - tout autre type : **indéterminé**.
 
-Toutes les lectures du cycle (liste des conteneurs, informations, liste des disques, listes des membres) doivent aboutir ; sinon aucun état n'est publié pour ce cycle.
+Toutes les lectures du cycle (liste des conteneurs, informations, liste des disques, listes des membres) doivent aboutir, chaque liste des membres doit compter le nombre de membres annoncé et ne lister aucun membre deux fois ; sinon aucun état n'est publié pour ce cycle.
 
 ### État d'un disque
 
@@ -270,7 +270,118 @@ Règle appliquée à R, dans cet ordre :
 | bit `0x4` présent | en charge |
 | sinon | optimal |
 
-Cette règle est celle de l'outil de référence, établie par analyse statique de son code (construction de l'état de la batterie à partir de R, masques `0x1`, `0x4` et `0x8`). Sur l'hôte de référence : R = `0x40000081`, module en panne, conforme à l'affichage de l'outil témoin. Les états « en charge » et « optimal » restent à observer sur matériel. Les conditions sont appliquées dans l'ordre du tableau : un module sans le bit `0x8` est en panne quels que soient ses autres bits (c'est le cas de `0x40000081`) ; un module prêt (`0x8`) portant un bit autre que `0x1`, `0x4` et `0x8`, comme `0x80`, est indéterminé plutôt qu'optimal ou en charge.
+Cette règle est celle de l'outil de référence (état de la batterie construit à partir de R, masques `0x1`, `0x4` et `0x8`). Sur l'hôte de référence : R = `0x40000081`, module en panne, conforme à l'affichage de l'outil témoin. Les états « en charge » et « optimal » restent à observer sur matériel. Les conditions sont appliquées dans l'ordre du tableau : un module sans le bit `0x8` est en panne quels que soient ses autres bits (c'est le cas de `0x40000081`) ; un module prêt (`0x8`) portant un bit autre que `0x1`, `0x4` et `0x8`, comme `0x80`, est indéterminé plutôt qu'optimal ou en charge.
+
+## 6 bis. Règles de l'outil de référence pour tous les niveaux [interopérabilité]
+
+Cette section décrit les règles de l'outil de référence (versions 2.05 et 3.07) au-delà des types observés sur l'hôte de référence. **L'exporter n'applique aujourd'hui que les règles de la section 6.** Il décode le type dans la numérotation ARCIO sans tenir compte des champs qui la choisissent (type 3 → `raid1`, type 1 → `concat`, autres → `unknown`) ; il évalue l'état des seuls miroirs et assemblages de miroirs, et compte tout membre en reconstruction dans la perte de redondance d'un miroir ; il ne publie un état que pour les disques membres d'un volume (l'inventaire des disques présents est publié à part). Ses lectures au-delà de la 706 restent réservées aux couples modèle et firmware qualifiés (section 8).
+
+### Type d'un conteneur et niveau RAID
+
+Sur le chemin de lecture décrit dans ce document (lectures 229, 234, 247, 248 et 249), le type (octets 48-51 de la lecture 234) se lit dans l'une de deux numérotations, choisie **par conteneur** :
+
+- **numérotation ARCIO**, la seule observée sur l'hôte de référence ;
+- **numérotation classique**, celle des types `CT_*` publics (FreeBSD `aacraid_reg.h`), quand les octets 100-103 valent 1 ou les octets 96-99 valent 3. Le sens de ces deux champs n'est pas établi ; ils valent 0 pour les cinq conteneurs de l'hôte de référence.
+
+Les deux numérotations n'attribuent pas la même valeur aux mêmes niveaux : 2 et 3 y sont inversés (miroir et agrégat par bandes). Décoder un type sans tenir compte de la numérotation pourrait faire publier un RAID 0 comme un RAID 1.
+
+Conversion de base, hors traitements particuliers (énumérés après le tableau) :
+
+| Type | Numérotation ARCIO | Numérotation classique |
+|---|---|---|
+| 0 | volume simple (moins de deux membres) ou étendu (au moins deux) | inconnu |
+| 1 | volume simple ou étendu (même règle) | volume simple ou étendu (même règle) |
+| 2 | RAID 0 | RAID 1 |
+| 3 | RAID 1 | RAID 0 |
+| 4 | RAID 10 | RAID 5 |
+| 5 | RAID 1E | inconnu |
+| 6 | inconnu | inconnu |
+| 7 | RAID 5 | inconnu |
+| 8 | RAID 50 | volume simple ou étendu (même règle) |
+| 9 | RAID 5EE | inconnu (affiché « Unknown ») |
+| 10 | RAID 5EE | RAID 10 |
+| 11 | RAID 6 | RAID 0 |
+| 12 | RAID 60 | assemblage (« RAID_volume ») |
+| 13 | RAID 6 Reed-Solomon | inconnu (affiché « Unknown ») |
+| 14 | RAID 60 Reed-Solomon | RAID 50 |
+| 15 | inconnu | RAID 5EE |
+| 16 | inconnu | RAID 5EE |
+| 17 | inconnu | RAID 1E |
+| 18 | inconnu | RAID 6 (Reed-Solomon si le bit `0x4` de l'octet 89 est positionné) |
+| 19 | inconnu | RAID 60 (même condition) |
+| 20 et au-delà | inconnu | inconnu |
+
+Traitements particuliers : pour le type classique 1, l'outil envoie une commande supplémentaire dont le résultat choisit la façon d'évaluer l'état, sans changer le niveau ; les types classiques 5 et 6 reprennent le niveau d'un autre conteneur quand l'outil le trouve ; le type classique 7, et un conteneur dont les octets 120-123 valent 3, suivent le traitement de migration, où le niveau peut être celui du conteneur d'origine ou de destination. Dans la numérotation ARCIO seulement, un conteneur dont les octets 52-55 valent `0xffffffff` est aussi traité ainsi si un autre conteneur, dont les octets 120-123 valent 3, porte son identifiant aux octets 224-227 ou 228-231.
+
+Un volume (types 0 ou 1 de la numérotation ARCIO) dont un membre est un conteneur présent dans la liste des conteneurs est un **assemblage** : l'outil l'affiche « RAID_volume », quel que soit le type de ses membres (cas de l'hôte de référence, quatre miroirs assemblés). La version 3.07 affiche « 6 » au lieu de « 6 Reed-Solomon » (type ARCIO 13 et type classique 18 avec le bit Reed-Solomon) ; le niveau est le même.
+
+Les règles d'état qui suivent sont celles de la numérotation ARCIO. Pour la numérotation classique, l'outil emprunte d'autres chemins (les RAID 10 et 50 y sont évalués par leurs conteneurs membres), non décrits ici.
+
+### Membres morts et en reconstruction
+
+Pour chaque membre disque, l'outil retient, d'après les drapeaux de la liste des membres (octets 12-15) : bit `0x2` → partition en reconstruction ; sinon bit `0x4` → partition morte ; sinon → normale. Il ignore les autres bits (l'exporter les traite comme indéterminés, section 6). Le membre est **mort** si sa partition est morte, si l'état courant de son disque est « en panne » (cet état prime sur le drapeau de reconstruction), ou si la recherche de sa partition sur le disque n'aboutit pas. Si l'outil ne trouve pas de disque utilisable pour le membre (disque absent, ou dont la taille de bloc diffère de celle du volume et qu'une seconde recherche ne remplace pas), il crée un disque « en panne » qui compte comme mort ; s'il n'y parvient pas, le membre est ignoré. Ces cas ne sont pas observés sur matériel.
+
+Les membres sont parcourus **par rang croissant** (octets 10-11 de l'entrée), qui n'est pas l'ordre de la liste : sur l'hôte de référence, les membres de l'assemblage arrivent dans l'ordre des rangs 0, 3, 1, 2. Le compte k des membres morts augmente de un par membre mort, et de un par membre en reconstruction dans deux cas : le volume est à double redondance (RAID 6, 60), ou le compte vaut encore 0 quand ce membre est parcouru. **Le résultat dépend donc de l'ordre** : en simple redondance, un membre en reconstruction de rang inférieur à celui d'un membre mort donne k = 2 ; l'ordre inverse donne k = 1 (hors inhibition ci-dessous, et si le disque du membre en reconstruction n'est pas en panne). Un membre en reconstruction (son disque reste « en reconstruction ») n'est jamais compté quand les octets 128-131 de la lecture 234 sont non nuls et que les octets 120-123 valent 7 ou 8.
+
+### État d'un volume à membres disques
+
+L'état part d'« optimal » ; avec k = 0, il reste inchangé. Les autres résultats de la conversion ARCIO (niveau inconnu notamment) sont « en échec » dès que k ≥ 1. La variante « en reconstruction » suit la règle décrite après le tableau.
+
+| Famille de niveaux | k = 1 | k = 2 | k ≥ 3 |
+|---|---|---|---|
+| Simple redondance : 1, 1E, 5, 5EE, 10, 50 | dégradé, ou dégradé en reconstruction | en échec | en échec |
+| Double redondance : 6, 60, y compris Reed-Solomon | redondance réduite (encore tolérant à une panne), ou redondance réduite en reconstruction | dégradé, ou dégradé en reconstruction | en échec |
+| Sans redondance : 0, volumes simples ou étendus | en échec | en échec | en échec |
+
+Ce tableau donne le résultat du compte k. Pour un conteneur en migration, le niveau qui décide du comptage d'un membre en reconstruction peut être celui du conteneur associé ; l'outil peut ensuite combiner l'état avec un état de reconfiguration, ou le poser « en échec » si le conteneur associé est absent ou en échec.
+
+**Variante « en reconstruction ».** Pour k = 2 en double redondance, il suffit qu'un disque du volume soit en reconstruction. Pour k = 1, l'outil parcourt les disques du volume : un disque en reconstruction pose la variante, un disque en panne rencontré ensuite l'efface. En simple redondance avec k = 1, la version 3.07 ajoute un second parcours : si une partition du volume marquée morte se trouve sur un disque en reconstruction, la variante est effacée. Cas visé [probable] : un disque de remplacement reconstruit plusieurs volumes l'un après l'autre ; un volume dont la partition sur ce disque est encore morte attend son tour et reste « dégradé ».
+
+**L'outil ne tient pas compte des grappes.** Dans ce calcul, qui compte directement les disques, un RAID 10 ou un RAID 50 à deux membres morts est « en échec », même si les deux pannes touchent deux grappes différentes, cas où les données devraient rester lisibles.
+
+### État d'un assemblage
+
+Pour un assemblage dont tous les membres sont des conteneurs, l'état part d'« optimal », puis l'outil y fusionne l'état de chacun de ses conteneurs membres, par rang croissant (un assemblage qui compte aussi des membres disques suit le calcul par disques ci-dessus). Tableau limité aux états de cette section ; la fusion connaît aussi des états de reconfiguration, de système et de vidage du cache, qui produisent des états combinés :
+
+| État du membre fusionné | Effet sur l'état de l'assemblage |
+|---|---|
+| en échec | en échec |
+| dégradé en reconstruction, redondance réduite en reconstruction | remplacé par cet état, quel qu'il soit jusque-là, même « en échec » |
+| dégradé | devient « dégradé », sauf s'il est « en échec » |
+| redondance réduite | devient « redondance réduite » seulement s'il est « optimal » |
+| optimal | inchangé |
+
+Le résultat dépend lui aussi de l'ordre : un membre « en échec » suivi (par rang) d'un membre « dégradé en reconstruction » donne « dégradé en reconstruction ». Sur l'hôte de référence, les quatre miroirs sont optimaux et l'assemblage aussi.
+
+### Conteneurs internes
+
+L'outil n'affiche pas comme volumes autonomes les conteneurs dont le numéro dépasse un seuil propre à la carte (un numéro égal au seuil passe ce filtre ; un autre seuil s'applique si la carte annonce le bit 28 de `SupportedOptions2` et fonctionne en mode « Auto Volume » ou « Simple Volume » ; interpréter ce seuil comme le nombre maximal de volumes est probable), sauf si le bit 22 des octets 88-91 de leur lecture 234 est positionné. Franchir ce seuil ne suffit pas : un conteneur dont la lecture 234 porte le type 15 (numérotation ARCIO) ou 20 (numérotation classique) n'est jamais affiché comme volume autonome, sauf si le traitement de migration change son type. Aucun conteneur de ces types n'est observé sur l'hôte de référence. Ce sont notamment les conteneurs membres d'un assemblage : sur l'hôte de référence, les quatre miroirs `0xfc` à `0xff`, dont la lecture 234 désigne le volume `Array0` comme parent. L'exporter publie leur état.
+
+### État d'un disque
+
+Positions relatives à la lecture 248 ; le tableau décrit le chemin de lecture par la 248 (certaines cartes, selon une capacité annoncée, sautent les lignes 1 à 6). L'outil part de « prêt » (disque disponible), puis applique ces règles **dans cet ordre**, chacune pouvant remplacer l'état posé par les précédentes. « Non en panne » désigne, aux lignes 3 à 6, l'absence du bit `0x1` de l'octet 68 ; aux lignes 7 à 10, l'état courant du disque, qui peut déjà avoir été remplacé par « non pris en charge » :
+
+| Ordre | État | Condition |
+|---|---|---|
+| 1 | en panne | bit `0x1` de l'octet 68 |
+| 2 | non pris en charge | bit `0x2` des octets 332-335 |
+| 3 | brut | disque présenté directement au système (ci-dessous), non en panne, dont l'octet 68 n'a pas à la fois les bits `0x10` et `0x40` |
+| 4 | en ligne | disque présenté directement au système, non en panne, dont l'octet 68 a les bits `0x10` et `0x40` |
+| 5 | brut, ou brut HBA | carte annonçant l'option HBA natif (bit 25 de `SupportedOptions`, commande 703 ; le mode de fonctionnement courant n'est pas testé), disque non en panne et sans le bit `0x40` de l'octet 68 : « brut HBA » si le bit `0x80` de l'octet 69 et le bit `0x1` de l'octet 70 sont positionnés, sinon « brut » |
+| 6 | copie de retour | disque non en panne, bit `0x1` de l'octet 0 et bit `0x8` de l'octet 69 |
+| 7 | secours | bit `0x4` de l'octet 68 (secours global), disque non en panne. L'outil lit les secours dédiés par une autre commande, que l'exporter n'utilise pas |
+| 8 | en ligne | disque membre d'un volume, s'il est encore « prêt » (lignes 8 et 9 appliquées membre par membre, volume après volume : un disque peut déjà être « en reconstruction » quand un autre volume est traité) |
+| 9 | en reconstruction | disque portant une partition reconnue en reconstruction (membre de la liste dont le drapeau `0x2` est positionné, associé à ce disque), s'il n'est pas en panne |
+| 10 | secours | secours dédié à un volume (autre commande, non utilisée par l'exporter), si le disque n'est ni en panne, ni en reconstruction, ni partitionné |
+| — | en panne | disque désigné par un membre ou par la liste des secours globaux mais introuvable ; avec le basculement automatique désactivé, l'outil crée aussi un disque « en panne » pour un membre dont la partition est classée morte (bit `0x4` sans le bit `0x2`), même si le disque est présent |
+
+Un disque est dit ici **présenté directement au système** (interprétation probable de l'effet observé dans l'outil) si la carte annonce l'une de deux capacités dans sa réponse 706 : le bit 16 de `SupportedOptions2` (octets 144-147), pour un disque sans le bit `0x1` de l'octet 68 et auquel manque au moins l'un des bits `0x10` et `0x40` ; ou le bit 27 de `FeatureBits` (octets 36-39, `AAC_FEATURE_JBOD` dans Linux `aacraid.h`), pour un disque dont les bits `0xe0` de l'octet 80 sont nuls. Seule la seconde condition peut mener à la ligne 4. Ce nom traduit l'effet sur l'état affiché [probable] ; la présentation effective du disque au système d'exploitation n'est pas vérifiée. Sur l'hôte de référence, le bit 16 de `SupportedOptions2` et le bit 25 de `SupportedOptions` sont nuls.
+
+Sur l'hôte de référence, l'octet 68 vaut `0x70`, l'octet 69 `0x10`, l'octet 70 et les octets 332-335 sont nuls pour les huit disques, membres des miroirs : « en ligne », conforme à l'affichage de l'outil témoin. Les noms des bits des octets 69, 70 et 332-335 ne sont pas établis ; seul leur effet sur l'état affiché l'est. Les autres états ne sont pas observés sur matériel.
+
+### Octets 120-123 de la lecture 234
+
+La valeur 3 mène au traitement d'une migration ; les valeurs 7 et 8, avec les octets 128-131 non nuls, empêchent de compter un membre en reconstruction (voir plus haut). Le sens général du champ (probablement la tâche en cours sur le volume) et le nom de chaque valeur ne sont pas établis. Le champ vaut 0 pour les cinq conteneurs de l'hôte de référence.
 
 ## 7. Domaine de validité [interopérabilité]
 
@@ -285,7 +396,9 @@ Une carte sous `aacraid` annonce ces lectures si `Version` est supérieur à 1 e
 
 Sur l'hôte de référence : `Version` = 15, `SupportedOptions2` = `0x00c8693c` (bit `0x08` positionné).
 
-Ce critère, les formats de la section 5 et les règles de la section 6 sont les mêmes dans les versions 2.05 (2017) et 3.07 (2023) de l'outil constructeur ; la 3.07 est la dernière version de l'outil qui gère les cartes `aacraid`.
+Ce critère, les formats de la section 5 et les règles de la section 6 bis sont les mêmes dans les versions 2.05 (2017) et 3.07 (2023) de l'outil constructeur, aux exceptions signalées en section 6 bis (seconde passe sur la reconstruction, libellés) ; la section 6 décrit le calcul de l'exporter, qui en diffère dans les cas qu'elle indique ; à notre connaissance, la 3.07 est la dernière version publiée de l'outil qui gère les cartes `aacraid`.
+
+Dans les chemins de lecture des volumes et des disques examinés, aucun test du modèle, des identifiants PCI ou de la version du firmware n'a été relevé dans l'outil de référence (à l'ouverture, il lit les identifiants PCI et les relit s'ils sont invalides). Ses bifurcations portent sur la version de la réponse 706 et les capacités annoncées par la carte (`SupportedOptions2` et `FeatureBits` de la 706, `SupportedOptions` de la 703), sur le mode de fonctionnement de la carte (« Auto Volume »), sur son réglage de basculement automatique, et sur des champs propres à chaque conteneur ou disque (section 6 bis). Qu'une carte qui annonce les mêmes capacités, dans le même mode et avec le même réglage, soit lue selon les mêmes règles reste une hypothèse ; seule la qualification (section 8) l'établit pour un couple modèle et firmware.
 
 Ce critère dit quelles cartes annoncent cette interface. Il ne prouve pas qu'un firmware non testé y répond à l'identique : la qualification de la section 8 reste la preuve pour chaque nouveau couple modèle et firmware, et l'exporter publie la version de firmware avec ses métriques.
 
