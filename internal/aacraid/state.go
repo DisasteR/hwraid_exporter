@@ -101,21 +101,40 @@ func Evaluate(containers []Container, disks []uint32) Evaluation {
 		}
 	}
 
-	// Conteneurs de disques d'abord (miroirs), puis assemblages.
+	// L'état suit la même classification que le niveau publié
+	// (ContainerLevel) : miroirs d'abord, puis assemblages ; tout autre
+	// niveau est indéterminé.
+	infos := map[uint32]ContainerInfo{}
+	byUID := map[uint32]Container{}
 	for _, c := range containers {
-		if c.Info.Type == TypeMirror {
+		infos[c.Info.UID] = c.Info
+		byUID[c.Info.UID] = c
+	}
+	// Les règles d'état ne sont établies que pour la numérotation ARCIO
+	// (docs/aacraid-interface.md, section 6 bis) : un conteneur de
+	// numérotation classique garde son niveau publié, mais son état reste
+	// indéterminé.
+	levels := map[uint32]Level{}
+	for _, c := range containers {
+		if c.Info.ClassicNumbering() {
+			levels[c.Info.UID] = Level{Redundancy: RedundancyUnknown}
+			continue
+		}
+		levels[c.Info.UID] = ContainerLevel(c, infos)
+	}
+	for _, c := range containers {
+		if levels[c.Info.UID] == levelRaid1 {
 			ev.Volumes[c.Info.UID] = mirrorState(c, present)
 		}
 	}
-	byUID := map[uint32]Container{}
 	for _, c := range containers {
-		byUID[c.Info.UID] = c
-	}
-	for _, c := range containers {
-		if c.Info.Type == TypeMirror {
-			continue
+		switch levels[c.Info.UID] {
+		case levelRaid1:
+		case levelAsm:
+			ev.Volumes[c.Info.UID] = assemblyState(c, ev.Volumes, byUID, levels)
+		default:
+			ev.Volumes[c.Info.UID] = VolumeUnknown
 		}
-		ev.Volumes[c.Info.UID] = assemblyState(c, ev.Volumes, byUID)
 	}
 	return ev
 }
@@ -164,14 +183,14 @@ func mirrorState(c Container, present map[uint32]bool) VolumeState {
 // chacun déclarant l'assemblage comme parent. Toute autre forme (membre
 // disque, assemblage imbriqué, membre en double, parenté incohérente) est
 // indéterminée, indépendamment de l'ordre de lecture.
-func assemblyState(c Container, volumes map[uint32]VolumeState, byUID map[uint32]Container) VolumeState {
-	if c.Info.Type != TypeAssembly || len(c.Members) != c.Info.Members {
+func assemblyState(c Container, volumes map[uint32]VolumeState, byUID map[uint32]Container, levels map[uint32]Level) VolumeState {
+	if len(c.Members) != c.Info.Members {
 		return VolumeUnknown
 	}
 	seen := map[uint32]bool{}
 	for _, m := range c.Members {
 		child, ok := byUID[m.ChildUID]
-		if m.ChildUID == NoUID || !ok || child.Info.Type != TypeMirror || child.Info.Parent != c.Info.UID || seen[m.ChildUID] {
+		if m.ChildUID == NoUID || !ok || levels[m.ChildUID] != levelRaid1 || child.Info.Parent != c.Info.UID || seen[m.ChildUID] {
 			return VolumeUnknown
 		}
 		seen[m.ChildUID] = true

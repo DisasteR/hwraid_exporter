@@ -431,13 +431,13 @@ func (m *Module) forgetConnectorMap(key string) {
 }
 
 // readInventory lit l'information de chaque disque présent. Seul le début
-// de chaque réponse est lu (DiskInfoNeed), puis le transfert est clos.
+// de chaque réponse est lu (DiskInventoryNeed), puis le transfert est clos.
 func readInventory(d reader, nums []uint32) ([]aacraid.DiskInfo, error) {
 	sorted := append([]uint32(nil), nums...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
 	out := make([]aacraid.DiskInfo, 0, len(sorted))
 	for _, n := range sorted {
-		raw, err := d.ReadPaged(aacraid.ReadDiskInfo, n, 0, func([]byte) int { return aacraid.DiskInfoNeed })
+		raw, err := d.ReadPaged(aacraid.ReadDiskInfo, n, 0, func([]byte) int { return aacraid.DiskInventoryNeed })
 		if err != nil {
 			return nil, err
 		}
@@ -516,6 +516,10 @@ func uidID(uid uint32) string { return fmt.Sprintf("%08x", uid) }
 
 func volumesOf(cs []aacraid.Container, ev aacraid.Evaluation) []module.Volume {
 	out := make([]module.Volume, 0, len(cs))
+	byUID := make(map[uint32]aacraid.ContainerInfo, len(cs))
+	for _, c := range cs {
+		byUID[c.Info.UID] = c.Info
+	}
 	for _, c := range cs {
 		v := module.Volume{
 			ID:            uidID(c.Info.UID),
@@ -523,18 +527,11 @@ func volumesOf(cs []aacraid.Container, ev aacraid.Evaluation) []module.Volume {
 			CapacityBytes: c.Info.Blocks * 512,
 			State:         string(ev.Volumes[c.Info.UID]),
 		}
-		// Niveau normalisé et terme de l'outil constructeur : son JSON
-		// donne raidLevel 1 aux miroirs ; il affiche « RAID_volume » pour
-		// l'assemblage, qu'Adaptec définit comme une concaténation de
-		// grappes. Autre type : non observé, jamais deviné.
-		switch c.Info.Type {
-		case aacraid.TypeMirror:
-			v.RaidLevel, v.VendorLevel = "raid1", "1"
-		case aacraid.TypeAssembly:
-			v.RaidLevel, v.VendorLevel = "concat", "RAID_volume"
-		default:
-			v.RaidLevel, v.VendorLevel = "unknown", fmt.Sprintf("type %d", c.Info.Type)
-		}
+		// Niveau normalisé et libellé de l'outil constructeur
+		// (docs/aacraid-interface.md, section 6 bis) ; traitements
+		// particuliers de l'outil : unknown, jamais deviné.
+		lv := aacraid.ContainerLevel(c, byUID)
+		v.RaidLevel, v.VendorLevel = lv.Raid, lv.Vendor
 		if c.Info.Parent != aacraid.NoUID {
 			v.Parent = uidID(c.Info.Parent)
 		}

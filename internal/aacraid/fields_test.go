@@ -41,29 +41,41 @@ func TestReferenceSection6bisFields(t *testing.T) {
 func TestDecodeContainerInfoSection6bisOffsets(t *testing.T) {
 	d := fixture(t, "234-0")
 	le := binary.LittleEndian
-	for off, v := range map[int]uint32{88: 0xb1, 96: 0xb2, 100: 0xb3, 120: 0xb4, 128: 0xb5, 224: 0xb6, 228: 0xb7} {
+	// Valeurs sur quatre octets, toutes différentes : lire un seul octet,
+	// ou un mot décalé, se voit.
+	for off, v := range map[int]uint32{88: 0xb1c1d1e1, 96: 0xb2c2d2e2, 100: 0xb3c3d3e3, 120: 0xb4c4d4e4, 128: 0xb5c5d5e5, 224: 0xb6c6d6e6, 228: 0xb7c7d7e7} {
 		le.PutUint32(d[off:], v)
 	}
 	i, err := DecodeContainerInfo(d)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if i.Visible != 0xb1 || i.SelectA != 0xb2 || i.SelectB != 0xb3 || i.Task != 0xb4 || i.TaskActive != 0xb5 ||
-		i.MigrationA != 0xb6 || i.MigrationB != 0xb7 {
+	if i.Visible != 0xb1c1d1e1 || i.SelectA != 0xb2c2d2e2 || i.SelectB != 0xb3c3d3e3 || i.Task != 0xb4c4d4e4 ||
+		i.TaskActive != 0xb5c5d5e5 || i.MigrationA != 0xb6c6d6e6 || i.MigrationB != 0xb7c7d7e7 {
 		t.Fatalf("%+v", i)
 	}
 }
 
-// Le rang occupe deux octets : l'octet 11 compte.
-func TestDecodeMemberRankTwoBytes(t *testing.T) {
+// Le rang occupe deux octets (l'octet 11 compte) et doit être, pour chaque
+// entrée, distinct et inférieur au nombre d'entrées.
+func TestDecodeMemberRanks(t *testing.T) {
 	d := fixture(t, "249-1d000000")
-	d[8+10], d[8+11] = 0x02, 0x01
-	ms, err := DecodeMemberList(d)
-	if err != nil {
-		t.Fatal(err)
+	d[8+10], d[8+11] = 0x00, 0x01 // rang 256 : hors limites
+	if _, err := DecodeMemberList(d); err == nil {
+		t.Fatal("rang 256 accepté : l'octet 11 n'est pas lu")
 	}
-	if ms[0].Rank != 0x0102 {
-		t.Fatalf("rang %#x", ms[0].Rank)
+	for name, rank := range map[string]uint16{"rang égal au nombre": 4, "rang répété": 3} {
+		d := fixture(t, "249-1d000000")
+		binary.LittleEndian.PutUint16(d[8+10:], rank) // entrée 0 ; l'entrée 1 a le rang 3
+		if _, err := DecodeMemberList(d); err == nil {
+			t.Fatalf("%s accepté", name)
+		}
+	}
+	d = fixture(t, "249-1d000000")
+	binary.LittleEndian.PutUint16(d[8+10:], 3)
+	binary.LittleEndian.PutUint16(d[8+32+10:], 0) // permutation valide
+	if ms, err := DecodeMemberList(d); err != nil || ms[0].Rank != 3 || ms[1].Rank != 0 {
+		t.Fatalf("permutation : %+v %v", ms, err)
 	}
 }
 
@@ -139,5 +151,24 @@ func TestAdapterInfoNativeHBA(t *testing.T) {
 	// Numéro de bit écrit en dur (documentation), pas la constante testée.
 	if !(AdapterInfo{SupportedOptions: 1 << 25}).NativeHBA() || (AdapterInfo{SupportedOptions: ^uint32(1 << 25)}).NativeHBA() {
 		t.Fatal("bit 25 mal testé")
+	}
+}
+
+// Bornes exactes, écrites en dur : la 234 exige 312 octets (nom inclus),
+// la 248 décode les octets d'état à partir de 336 octets.
+func TestDecodeSizeBounds(t *testing.T) {
+	c := fixture(t, "234-0")
+	if _, err := DecodeContainerInfo(c[:311]); err == nil {
+		t.Fatal("234 de 311 octets acceptée")
+	}
+	if _, err := DecodeContainerInfo(c[:312]); err != nil {
+		t.Fatalf("234 de 312 octets : %v", err)
+	}
+	d := fixture(t, "248-0")
+	if i, err := DecodeDiskInfo(d[:336]); err != nil || !i.HasStatus || i.Status68 != 0x70 {
+		t.Fatalf("248 de 336 octets : %+v %v", i, err)
+	}
+	if i, err := DecodeDiskInfo(d[:296]); err != nil || i.HasStatus {
+		t.Fatalf("248 de 296 octets : %+v %v", i, err)
 	}
 }

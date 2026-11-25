@@ -29,7 +29,7 @@ func TestDecodeDiskInfoReference(t *testing.T) {
 			Phy: uint8(4*(n/4) + 3 - n%4),
 			// Octets d'état identiques sur les huit disques, « Online » pour
 			// l'outil témoin (docs/aacraid-interface.md, section 6 bis).
-			Flags0: 0x03, Status68: 0x70, Status69: 0x10}
+			HasStatus: true, Flags0: 0x03, Status68: 0x70, Status69: 0x10}
 		if i != exp {
 			t.Fatalf("disque %d :\n got %+v\nwant %+v", n, i, exp)
 		}
@@ -57,7 +57,7 @@ func TestDecodeDiskInfoEdges(t *testing.T) {
 	if i.Serial != "ABCDEFGHIJKLMNOPQRST" || i.WWN != "" || i.CapacityBytes() != 0 || i.Model != "?T8000VN0022-2EL" {
 		t.Fatalf("%+v", i)
 	}
-	if _, err := DecodeDiskInfo(d[:DiskInfoNeed-1]); err == nil {
+	if _, err := DecodeDiskInfo(d[:295]); err == nil { // sans le dernier octet du WWN
 		t.Fatal("réponse trop courte acceptée")
 	}
 	d[64], d[65] = 0, 0x10 // 4 096 octets par bloc
@@ -79,7 +79,12 @@ func TestDecodeDiskInfoStatusOffsets(t *testing.T) {
 	if i.Flags0 != 0xa1 || i.Status68 != 0xa2 || i.Status69 != 0xa3 || i.Status70 != 0xa4 || i.Qualifier != 0xa5 || i.Status332 != 0xa6a7a8a9 {
 		t.Fatalf("%+v", i)
 	}
-	if _, err := DecodeDiskInfo(d[:335]); err == nil {
-		t.Fatal("réponse sans les octets 332-335 acceptée")
+	// Réponse sans les octets 332-335 : inventaire décodé, sans état.
+	short, err := DecodeDiskInfo(d[:335])
+	if err != nil || short.HasStatus || short.Status68 != 0 || short.Serial != i.Serial {
+		t.Fatalf("réponse courte : %+v %v", short, err)
+	}
+	if _, err := DecodeDiskInfo(d[:295]); err == nil {
+		t.Fatal("réponse sans le WWN acceptée")
 	}
 }

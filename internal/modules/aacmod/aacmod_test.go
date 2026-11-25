@@ -188,24 +188,52 @@ func (f *fakeDev) ReadPaged(ctx context.Context, r aacraid.PagedRead, param, siz
 		return nil, aacio.ErrStopped
 	}
 	f.reads = append(f.reads, fmt.Sprintf("%d-%x", r, param))
+	var b []byte
+	var err error
 	if f.paged == nil {
-		return referencePaged(r, param, size)
+		b, err = referencePaged(r, param, size)
+	} else {
+		b, err = f.paged(r, param, size)
 	}
-	return f.paged(r, param, size)
+	if err != nil {
+		return b, err
+	}
+	// Comme le transport réel : des morceaux entiers de 432 octets, jusqu'à
+	// couvrir ce que demande need. Un besoin sous-estimé par le module se
+	// voit donc dans les tests.
+	n := 0
+	for n < len(b) && (n == 0 || need(b[:n]) > n) {
+		n = min(n+aacraid.ChunkData, len(b))
+	}
+	if want := need(b[:n]); want > n {
+		return nil, fmt.Errorf("read %d: %d bytes needed, transfer of %d", r, want, n)
+	}
+	return b[:n], nil
 }
 
 // referencePaged sert les données enregistrées sur l'hôte de référence
 // (internal/aacraid/testdata), et vérifie la taille demandée pour une liste
 // de membres.
 func referencePaged(r aacraid.PagedRead, param, size uint32) ([]byte, error) {
+	b, err := referenceRaw(r, param)
+	if err != nil {
+		return nil, err
+	}
+	return checkMemberListSize(r, size, b)
+}
+
+// referenceRaw sert les données enregistrées, sans contrôle.
+func referenceRaw(r aacraid.PagedRead, param uint32) ([]byte, error) {
 	s, err := os.ReadFile(fmt.Sprintf("../../aacraid/testdata/%d-%x.hex", r, param))
 	if err != nil {
 		return nil, err
 	}
-	b, err := hex.DecodeString(strings.TrimSpace(string(s)))
-	if err != nil {
-		return nil, err
-	}
+	return hex.DecodeString(strings.TrimSpace(string(s)))
+}
+
+// checkMemberListSize : comme la carte, une liste des membres a exactement
+// la taille annoncée par la 234 et demandée par le module.
+func checkMemberListSize(r aacraid.PagedRead, size uint32, b []byte) ([]byte, error) {
 	if r == aacraid.ReadMemberList && uint32(len(b)) != size {
 		return nil, fmt.Errorf("taille demandée %d, liste de %d octets", size, len(b))
 	}
@@ -456,16 +484,123 @@ func TestCollectVolumesReference(t *testing.T) {
 	c := card("0000:01:00.0", "0")
 	d := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}, sup: arcIo}
 	r := withDev(d, nil).Collect(context.Background(), c, ref)
-	// Type non observé : niveau inconnu, jamais deviné.
+	// Type sans niveau connu (6 en numérotation ARCIO) : niveau inconnu,
+	// jamais deviné.
 	d2 := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}, sup: arcIo, paged: func(rd aacraid.PagedRead, p, size uint32) ([]byte, error) {
 		b, err := referencePaged(rd, p, size)
 		if err == nil && rd == aacraid.ReadContainerInfo && p == 0xfc {
-			b[48] = 4
+			b[48] = 6
 		}
 		return b, err
 	}}
-	if r2 := withDev(d2, nil).Collect(context.Background(), c, ref); r2.Volumes[1].RaidLevel != "unknown" || r2.Volumes[1].State != "unknown" {
+	if r2 := withDev(d2, nil).Collect(context.Background(), c, ref); r2.Volumes[1].RaidLevel != "unknown" || r2.Volumes[1].VendorLevel != "type 6" || r2.Volumes[1].State != "unknown" {
 		t.Fatalf("type non observé : %+v", r2.Volumes[1])
+	}
+	// Bout en bout, le niveau et l'état publiés suivent la même lecture du
+	// type : le miroir 0xfc (UID 1d000004, disques 3 et 7) relu en
+	// numérotation classique est un RAID 0 ; sans son disque 7, il n'est
+	// jamais publié « dégradé ». En migration (octets 120-123 = 3), ni son
+	// niveau ni son état ne sont établis.
+	for _, tc := range []struct {
+		name          string
+		mod           func(r aacraid.PagedRead, p uint32, b []byte) []byte
+		level, vendor string
+		state, topSt  string
+	}{
+		{"RAID 0 classique sans disque 7", func(r aacraid.PagedRead, p uint32, b []byte) []byte {
+			switch {
+			case r == aacraid.ReadContainerInfo && p == 0xfc:
+				b[96] = 3
+			case r == aacraid.ReadDiskList:
+				var out []byte
+				n := binary.LittleEndian.Uint32(b)
+				for i := uint32(0); i < n; i++ {
+					if d := binary.LittleEndian.Uint32(b[4+4*i:]); d != 7 {
+						out = binary.LittleEndian.AppendUint32(out, d)
+					}
+				}
+				b = append(binary.LittleEndian.AppendUint32(nil, uint32(len(out)/4)), out...)
+			}
+			return b
+		}, "raid0", "0", "unknown", "unknown"},
+		{"type RAID 5 à un seul membre", func(r aacraid.PagedRead, p uint32, b []byte) []byte {
+			switch {
+			case r == aacraid.ReadContainerInfo && p == 0xfc:
+				b[48], b[56] = 7, 1
+			case r == aacraid.ReadMemberList && p == 0x1d000004:
+				b[4] = 1
+				b = b[:8+32]
+			}
+			return b
+		}, "unknown", "type 7", "unknown", "unknown"},
+		{"RAID 6 Reed-Solomon classique", func(r aacraid.PagedRead, p uint32, b []byte) []byte {
+			switch {
+			case r == aacraid.ReadContainerInfo && p == 0xfc:
+				b[48], b[56], b[96], b[89] = 18, 4, 3, 0x04
+			case r == aacraid.ReadMemberList && p == 0x1d000004:
+				// Quatre membres disques (3, 7, 0, 4), rangs 0 à 3.
+				e := append([]byte(nil), b[8:8+64]...)
+				for i, dsk := range []uint32{0, 4} {
+					x := append([]byte(nil), b[8:8+32]...)
+					binary.LittleEndian.PutUint32(x[0:], dsk)
+					binary.LittleEndian.PutUint16(x[10:], uint16(2+i))
+					e = append(e, x...)
+				}
+				b = append(binary.LittleEndian.AppendUint32(binary.LittleEndian.AppendUint32(nil, 0), 4), e...)
+			}
+			return b
+		}, "raid6", "6 Reed-Solomon", "unknown", "unknown"},
+		{"miroir en migration", func(r aacraid.PagedRead, p uint32, b []byte) []byte {
+			if r == aacraid.ReadContainerInfo && p == 0xfc {
+				b[120] = 3
+			}
+			return b
+		}, "unknown", "type 3", "unknown", "unknown"},
+	} {
+		d3 := &fakeDev{info: d.info, sup: arcIo, paged: func(rd aacraid.PagedRead, p, size uint32) ([]byte, error) {
+			b, err := referenceRaw(rd, p)
+			if err != nil {
+				return b, err
+			}
+			return checkMemberListSize(rd, size, tc.mod(rd, p, b))
+		}}
+		r3 := withDev(d3, nil).Collect(context.Background(), c, ref)
+		var got, top module.Volume
+		for _, v := range r3.Volumes {
+			switch v.ID {
+			case "1d000004":
+				got = v
+			case "1d000000":
+				top = v
+			}
+		}
+		if r3.CollectErr != nil || got.RaidLevel != tc.level || got.VendorLevel != tc.vendor || got.State != tc.state || top.State != tc.topSt {
+			t.Fatalf("%s : %+v ; assemblage %s ; erreur %v", tc.name, got, top.State, r3.CollectErr)
+		}
+	}
+	// Migration par conteneur associé : le miroir 0xfc, en migration,
+	// désigne aux octets 224-227 l'assemblage, qui n'a pas de parent ;
+	// l'assemblage n'a alors ni niveau ni état établis.
+	d4 := &fakeDev{info: d.info, sup: arcIo, paged: func(rd aacraid.PagedRead, p, size uint32) ([]byte, error) {
+		b, err := referencePaged(rd, p, size)
+		if err == nil && rd == aacraid.ReadContainerInfo && p == 0xfc {
+			b[120] = 3
+			binary.LittleEndian.PutUint32(b[224:], 0x1d000000)
+		}
+		return b, err
+	}}
+	r4 := withDev(d4, nil).Collect(context.Background(), c, ref)
+	found := false
+	for _, v := range r4.Volumes {
+		if v.ID == "1d000000" {
+			found = true
+			if v.RaidLevel != "unknown" || v.State != "unknown" {
+				t.Fatalf("assemblage désigné par une migration : %+v", v)
+			}
+		}
+	}
+	if !found || r4.CollectErr != nil || len(r4.Volumes) != 5 {
+		t.Fatalf("migration associée : %+v", r4)
 	}
 	if !r.Collected["volumes"] || !r.Collected["disks"] || r.CollectErr != nil {
 		t.Fatalf("%+v", r)
@@ -936,7 +1071,9 @@ func TestCollectDuplicateMember(t *testing.T) {
 		sup: arcIo, paged: func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
 			b, err := referencePaged(r, p, size)
 			if err == nil && r == aacraid.ReadMemberList && p == 0x1d000004 {
-				copy(b[8+32:8+64], b[8:8+32]) // second membre = premier
+				rank := [2]byte{b[8+32+10], b[8+32+11]}
+				copy(b[8+32:8+64], b[8:8+32])             // second membre = premier,
+				b[8+32+10], b[8+32+11] = rank[0], rank[1] // rang conservé : seul le doublon est en cause
 			}
 			return b, err
 		}}
@@ -1165,4 +1302,52 @@ func TestCollectTemperature(t *testing.T) {
 			t.Fatalf("703 gardée sous identité incomplète : %d lectures en 2 cycles", f.aiCall)
 		}
 	})
+}
+
+// Une réponse 248 plus courte que les octets d'état (ici 300 octets, la
+// carte de référence en renvoie 448) garde son inventaire : seuls les
+// champs d'inventaire sont exigés.
+func TestCollectDiskInventoryShortAnswer(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	d := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301},
+		sup: arcIo, paged: func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
+			b, err := referencePaged(r, p, size)
+			if err == nil && r == aacraid.ReadDiskInfo {
+				b = b[:300]
+			}
+			return b, err
+		}}
+	r := withDev(d, nil).Collect(context.Background(), card("0000:01:00.0", "0"), ref)
+	if !r.Collected["disk_inventory"] || len(r.DiskInventory) != 8 || r.DiskInventory[0].Serial == "" {
+		t.Fatalf("%+v", r)
+	}
+}
+
+// Un rang invalide dans la liste des membres d'un seul volume (rang 5 pour
+// un miroir de deux membres) refuse toute la configuration du cycle : ni
+// volumes, ni états des disques, ni inventaire, ni emplacement ; les quatre
+// collecteurs sont en échec. Les lectures indépendantes de la configuration
+// (protection du cache, température) ne sont pas touchées.
+func TestCollectInvalidRank(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	d := &fakeDev{info: aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301},
+		sup: arcIo, paged: func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
+			b, err := referencePaged(r, p, size)
+			if err == nil && r == aacraid.ReadMemberList && p == 0x1d000004 {
+				binary.LittleEndian.PutUint16(b[8+32+10:], 5)
+			}
+			return b, err
+		}}
+	r := withDev(d, nil).Collect(context.Background(), card("0000:01:00.0", "0"), ref)
+	if r.CollectErr == nil || r.Volumes != nil || r.Disks != nil || r.DiskInventory != nil || r.DiskLocations != nil {
+		t.Fatalf("%+v", r)
+	}
+	for _, name := range []string{"volumes", "disks", DiskInventoryCollector, DiskLocationCollector} {
+		if r.Collected[name] {
+			t.Fatalf("collecteur %s publié : %+v", name, r.Collected)
+		}
+	}
+	if !r.Collected[CapabilitiesCollector] {
+		t.Fatalf("capacités touchées : %+v", r.Collected)
+	}
 }

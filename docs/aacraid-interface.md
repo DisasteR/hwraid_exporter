@@ -110,7 +110,7 @@ Sur l'hôte de référence : 5 conteneurs, numéros 0, `0xfc`, `0xfd`, `0xfe`, `
 | Octets | Champ | Valeur de référence |
 |---|---|---|
 | 16-19 | identifiant unique | égal au « Unique Identifier » affiché par l'outil témoin |
-| 48-51 | type : 1 = assemblage de conteneurs (« RAID_volume » pour l'outil témoin, concaténation de volumes), 3 = miroir de deux disques (RAID 1) ; seuls types observés | 1 (volume), 3 (miroirs) |
+| 48-51 | type, dans la numérotation choisie par les octets 96-103 (section 6 bis) : 1 = assemblage de conteneurs (« RAID_volume » pour l'outil témoin, concaténation de volumes), 3 = miroir de deux disques (RAID 1) ; seuls types observés | 1 (volume), 3 (miroirs) |
 | 52-55 | UID du conteneur qui l'assemble, `0xffffffff` sinon | `0xffffffff` (volume), UID du volume (miroirs) |
 | 56-59 | nombre de membres | 4 (volume), 2 (miroirs) |
 | 64-71 | taille en blocs de 512 octets | 62 495 109 120 (= 30 515 190 Mio) |
@@ -120,7 +120,9 @@ Sur l'hôte de référence : 5 conteneurs, numéros 0, `0xfc`, `0xfd`, `0xfe`, `
 
 **Cache d'écriture.** Positions établies en changeant le réglage avec l'outil témoin et en comparant les lectures de chaque état, sur les cinq conteneurs de l'hôte de référence (module de protection en panne) : réglage « Enabled », état « On » ; réglage « On when protected », état « Off » ; réglage « Disabled », état « Off ». Le passage du deuxième au troisième ne change que l'octet 148 : c'est le réglage. L'octet 156 est le seul autre octet qui ait changé : c'est l'état. Le passage de l'état à « On » avec le réglage « On when protected » et un module opérationnel reste à observer. Une autre valeur de réglage est publiée `unknown` ; une autre valeur d'état n'est pas publiée. Les octets 144 et 152 valent 1 dans toutes les captures, quand l'outil affiche le cache de lecture « Enabled » et « On » ; ils ne sont pas utilisés.
 
-L'exporter publie le niveau RAID de `hwraid_volume_info` dans le vocabulaire normalisé ([metrics.md](metrics.md)) et, dans `vendor_level`, dans les termes de l'outil témoin : type 3 → `raid_level="raid1"`, `vendor_level="1"` ; type 1 → `raid_level="concat"`, `vendor_level="RAID_volume"` (assemblage par concaténation) ; tout autre type → `raid_level="unknown"`, `vendor_level="type N"`.
+L'exporter publie le niveau RAID de `hwraid_volume_info` dans le vocabulaire normalisé ([metrics.md](metrics.md)) et, dans `vendor_level`, le libellé de l'outil témoin, selon la table de la section 6 bis : sur l'hôte de référence, type 3 → `raid_level="raid1"`, `vendor_level="1"` ; type 1 assemblant des miroirs → `raid_level="concat"`, `vendor_level="RAID_volume"`. Un type sans niveau dans la table, ou soumis à un traitement particulier (migration, types classiques 5, 6 et 7), donne `raid_level="unknown"` et `vendor_level="type N"` (`"classic type N"` en numérotation classique) : c'est plus prudent que l'outil, qui peut alors afficher le niveau d'un conteneur associé. Les libellés de `vendor_level` sont ceux de la version 2.05 de l'outil (la 3.07 affiche « 6 » au lieu de « 6 Reed-Solomon »). Les variantes 5EE et Reed-Solomon sont publiées `raid5`, `raid6` ou `raid60`, la variante restant dans `vendor_level` ; un volume simple donne `single` (`Simple_volume`), un volume étendu `concat` (`Spanned_volume`), à condition que tous leurs membres soient des disques : un membre conteneur qui ne fait pas un assemblage donne `unknown`. Le niveau n'est publié que si les membres lui correspondent : hors assemblage, tous les membres sont des disques, au moins aussi nombreux que le minimum de la table de création de l'outil (RAID 0, 1, volume étendu : 2 ; RAID 1E et 5 : 3 ; RAID 5EE, 6 et 10 : 4 ; RAID 50 : 6 ; RAID 60 : 8) ; un assemblage compte au moins deux membres. Sinon : `unknown`. Les RAID 10 et 50 de numérotation classique que l'outil construit sur des grappes, forme non observée, sont donc publiés `unknown`. Un assemblage exige au moins un membre qui soit un autre conteneur lu dans le cycle : un conteneur dont le seul membre conteneur est lui-même, ou un type classique 12 (volume de miroirs) fait de disques, donne `unknown`. Ce contrôle ne cherche pas les boucles plus longues (deux volumes qui se désignent mutuellement gardent leur niveau) ; l'état d'un tel assemblage reste indéterminé, ses membres n'étant pas des miroirs (section 6).
+
+**Principe.** L'exporter publie le niveau que la carte déclare, après ces contrôles de cohérence de la réponse elle-même (nature des membres, minimum de disques établi pour les cartes `aacraid`, membre conteneur distinct du conteneur lui-même pour un assemblage). Il ne revalide pas la géométrie de création des volumes (parité, multiples, maximums) : l'outil de référence ne la revalide pas non plus quand il affiche une configuration, et la carte reste la source de vérité.
 
 ### Liste des membres (sous-commande 249, paramètre : UID du conteneur)
 
@@ -130,7 +132,7 @@ En-tête de 8 octets (mot 1 = nombre de membres), puis une entrée de 32 octets 
 |---|---|
 | 0-3 | numéro du disque membre, `0xffffffff` si le membre est un conteneur |
 | 4-7 | UID du conteneur membre, `0xffffffff` si le membre est un disque |
-| 10-11 | rang du membre (l'exporter n'en lit que l'octet 10 et ne trie pas les membres) |
+| 10-11 | rang du membre : ordre de parcours de l'outil de référence, qui ignore une entrée de rang supérieur ou égal au nombre de membres ; l'exporter refuse une telle liste, ainsi qu'une liste aux rangs répétés |
 | 12-15 | état du membre (section 6) [interopérabilité] |
 | 16-23 | bloc de début du membre sur le disque |
 | 24-31 | taille du membre en blocs |
@@ -232,13 +234,13 @@ Un membre est aussi **défaillant** lorsque le disque qu'il désigne (octets 0-3
 
 ### État d'un conteneur
 
-L'état d'un conteneur ne figure pas tel quel dans les réponses : il se calcule à partir de ses membres et de son type. Seuls les types observés sur l'hôte de référence sont évalués :
+L'état d'un conteneur ne figure pas tel quel dans les réponses : il se calcule à partir de ses membres et de son niveau, tel qu'il est publié (section 5). Seules les formes observées sur l'hôte de référence sont évaluées :
 
-- **miroir** (type 3, deux disques) : si un membre a un drapeau inconnu, l'état est **indéterminé** (une liste des membres dont le nombre diffère du nombre annoncé fait échouer la collecte du cycle, voir ci-dessous). Sinon on compte les membres défaillants et en reconstruction : aucun → **optimal** ; un, en reconstruction → **dégradé en reconstruction** ; un, défaillant → **dégradé** ; deux → **en échec** ;
-- **assemblage** (type 1) : **optimal** si tous ses membres sont des miroirs distincts, optimaux et qui le désignent comme parent ; sinon **indéterminé** : l'exporter n'applique pas encore la règle de fusion de l'outil de référence (section 6 bis). Les miroirs publient leur propre état : une perte de redondance reste visible à leur niveau ;
-- tout autre type : **indéterminé**.
+- **miroir** (niveau RAID 1, type 3, deux disques) : si un membre a un drapeau inconnu, l'état est **indéterminé** (une liste des membres dont le nombre diffère du nombre annoncé fait échouer la collecte du cycle, voir ci-dessous). Sinon on compte les membres défaillants et en reconstruction : aucun → **optimal** ; un, en reconstruction → **dégradé en reconstruction** ; un, défaillant → **dégradé** ; deux → **en échec** ;
+- **assemblage** (type 0 ou 1 dont un membre est un conteneur lu dans le cycle) : **optimal** si tous ses membres sont des miroirs distincts, optimaux et qui le désignent comme parent ; sinon **indéterminé** : l'exporter n'applique pas encore la règle de fusion de l'outil de référence (section 6 bis). Les miroirs publient leur propre état : une perte de redondance reste visible à leur niveau ;
+- tout autre niveau, un conteneur en migration ou un conteneur de numérotation classique (dont les règles d'état ne sont pas établies, section 6 bis) : **indéterminé**.
 
-Toutes les lectures du cycle (liste des conteneurs, informations, liste des disques, listes des membres) doivent aboutir, chaque liste des membres doit compter le nombre de membres annoncé et ne lister aucun membre deux fois ; sinon aucun état n'est publié pour ce cycle.
+Toutes les lectures du cycle (liste des conteneurs, informations, liste des disques, listes des membres) doivent aboutir, chaque liste des membres doit compter le nombre de membres annoncé, ne lister aucun membre deux fois et donner à chacun un rang distinct inférieur à ce nombre ; sinon la lecture de la configuration de la carte échoue pour le cycle : ni volumes, ni états des disques, ni inventaire et emplacement des disques ne sont publiés.
 
 ### État d'un disque
 
@@ -274,7 +276,7 @@ Cette règle est celle de l'outil de référence (état de la batterie construit
 
 ## 6 bis. Règles de l'outil de référence pour tous les niveaux [interopérabilité]
 
-Cette section décrit les règles de l'outil de référence (versions 2.05 et 3.07) au-delà des types observés sur l'hôte de référence. **L'exporter n'applique aujourd'hui que les règles de la section 6.** Il décode le type dans la numérotation ARCIO sans tenir compte des champs qui la choisissent (type 3 → `raid1`, type 1 → `concat`, autres → `unknown`) ; il évalue l'état des seuls miroirs et assemblages de miroirs, et compte tout membre en reconstruction dans la perte de redondance d'un miroir ; il ne publie un état que pour les disques membres d'un volume (l'inventaire des disques présents est publié à part). Ses lectures au-delà de la 706 restent réservées aux couples modèle et firmware qualifiés (section 8).
+Cette section décrit les règles de l'outil de référence (versions 2.05 et 3.07) au-delà des types observés sur l'hôte de référence. **Pour l'état, l'exporter n'applique aujourd'hui que les règles de la section 6** ; pour le niveau RAID, il suit la table ci-dessous (section 5). Il évalue l'état des seuls miroirs et assemblages de miroirs, et compte tout membre en reconstruction dans la perte de redondance d'un miroir ; il ne publie un état que pour les disques membres d'un volume (l'inventaire des disques présents est publié à part). Ses lectures au-delà de la 706 restent réservées aux couples modèle et firmware qualifiés (section 8).
 
 ### Type d'un conteneur et niveau RAID
 

@@ -178,11 +178,68 @@ func TestEvaluateBranches(t *testing.T) {
 			}
 		}
 	}
-	// Type non qualifié : indéterminé, jamais deviné.
+	// Type sans niveau connu : indéterminé, jamais deviné.
 	cs, disks := referenceContainers(t)
-	cs[1].Info.Type = 4
+	cs[1].Info.Type = 6
 	if st := Evaluate(cs, disks).Volumes[cs[1].Info.UID]; st != VolumeUnknown {
-		t.Fatalf("type 4 : %s", st)
+		t.Fatalf("type 6 : %s", st)
+	}
+}
+
+// L'état suit la classification du niveau publié, pas le type brut, et ses
+// règles ne valent que pour la numérotation ARCIO : un type 3 classique (RAID
+// 0) n'est jamais évalué comme un miroir, un type 2 classique (miroir) reste
+// indéterminé, comme l'assemblage qui le contient ; un miroir en migration
+// n'a pas d'état établi.
+func TestEvaluateFollowsLevel(t *testing.T) {
+	const mirror = 0x1d000004 // disques 3 et 7
+	without7 := func(disks []uint32) []uint32 {
+		var out []uint32
+		for _, d := range disks {
+			if d != 7 {
+				out = append(out, d)
+			}
+		}
+		return out
+	}
+	idx := func(cs []Container) int {
+		for i := range cs {
+			if cs[i].Info.UID == mirror {
+				return i
+			}
+		}
+		t.Fatal("miroir absent")
+		return -1
+	}
+	cs, disks := referenceContainers(t)
+	cs[idx(cs)].Info.SelectA = 3 // type 3 classique : RAID 0
+	if st := Evaluate(cs, without7(disks)).Volumes[mirror]; st != VolumeUnknown {
+		t.Fatalf("RAID 0 classique à un disque absent : %s", st)
+	}
+	cs, disks = referenceContainers(t)
+	cs[idx(cs)].Info.SelectB, cs[idx(cs)].Info.Type = 1, 2 // type 2 classique : miroir
+	if st := Evaluate(cs, without7(disks)).Volumes[mirror]; st != VolumeUnknown {
+		t.Fatalf("miroir classique à un disque absent : %s", st)
+	}
+	cs, disks = referenceContainers(t)
+	for i := 1; i < len(cs); i++ {
+		cs[i].Info.SelectB, cs[i].Info.Type = 1, 2
+	}
+	ev := Evaluate(cs, disks)
+	if ev.Volumes[0x1d000000] != VolumeUnknown || ev.Volumes[mirror] != VolumeUnknown {
+		t.Fatalf("assemblage de miroirs classiques : %s, miroir %s", ev.Volumes[0x1d000000], ev.Volumes[mirror])
+	}
+	// Miroir classique en migration propre : indéterminé aussi.
+	cs, disks = referenceContainers(t)
+	cs[idx(cs)].Info.SelectB, cs[idx(cs)].Info.Type, cs[idx(cs)].Info.Task = 1, 2, 3
+	if st := Evaluate(cs, disks).Volumes[mirror]; st != VolumeUnknown {
+		t.Fatalf("miroir classique en migration : %s", st)
+	}
+	cs, disks = referenceContainers(t)
+	cs[idx(cs)].Info.Task = 3
+	ev = Evaluate(cs, disks)
+	if ev.Volumes[mirror] != VolumeUnknown || ev.Volumes[0x1d000000] != VolumeUnknown {
+		t.Fatalf("miroir en migration : %s, assemblage %s", ev.Volumes[mirror], ev.Volumes[0x1d000000])
 	}
 }
 

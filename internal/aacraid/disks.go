@@ -35,8 +35,13 @@ const (
 	diskStatus332 = 332
 )
 
-// DiskInfoNeed est le nombre d'octets nécessaires au décodage.
-const DiskInfoNeed = diskStatus332 + 4
+// DiskInventoryNeed est le nombre d'octets exigés (inventaire) ; les octets
+// d'état, jusqu'à DiskStatusNeed, sont décodés quand la réponse les contient
+// (HasStatus), ce qui est le cas dès le premier morceau de 432 octets.
+const (
+	DiskInventoryNeed = diskWWN + 8
+	DiskStatusNeed    = diskStatus332 + 4
+)
 
 // DiskInfo regroupe les champs d'inventaire d'un disque.
 type DiskInfo struct {
@@ -46,14 +51,16 @@ type DiskInfo struct {
 	Blocks                          uint64
 	BlockSize                       uint32
 	Phy                             uint8 // phy de la carte (contrôle de la carte des connecteurs)
-	// Octets bruts de la section 6 bis de docs/aacraid-interface.md.
+	// Octets bruts de la section 6 bis de docs/aacraid-interface.md, lus
+	// seulement si la réponse les contient (HasStatus).
+	HasStatus                                       bool
 	Flags0, Status68, Status69, Status70, Qualifier uint8
 	Status332                                       uint32
 }
 
 // DecodeDiskInfo décode l'information de disque.
 func DecodeDiskInfo(d []byte) (DiskInfo, error) {
-	if len(d) < DiskInfoNeed {
+	if len(d) < DiskInventoryNeed {
 		return DiskInfo{}, fmt.Errorf("disk info: %d bytes", len(d))
 	}
 	le := binary.LittleEndian
@@ -66,13 +73,11 @@ func DecodeDiskInfo(d []byte) (DiskInfo, error) {
 		Blocks:    le.Uint64(d[diskBlocks:]),
 		BlockSize: le.Uint32(d[diskBlockSize:]),
 		Phy:       d[diskPhy],
-
-		Flags0:    d[diskFlags0],
-		Status68:  d[diskStatus68],
-		Status69:  d[diskStatus69],
-		Status70:  d[diskStatus70],
-		Qualifier: d[diskQualifier],
-		Status332: le.Uint32(d[diskStatus332:]),
+	}
+	if len(d) >= DiskStatusNeed {
+		i.HasStatus = true
+		i.Flags0, i.Status68, i.Status69, i.Status70 = d[diskFlags0], d[diskStatus68], d[diskStatus69], d[diskStatus70]
+		i.Qualifier, i.Status332 = d[diskQualifier], le.Uint32(d[diskStatus332:])
 	}
 	if w := d[diskWWN : diskWWN+8]; !bytes.Equal(w, make([]byte, 8)) {
 		i.WWN = "0x" + hex.EncodeToString(w)

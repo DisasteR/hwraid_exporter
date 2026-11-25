@@ -231,6 +231,17 @@ func DecodeMemberList(d []byte) ([]Member, error) {
 			return nil, fmt.Errorf("member list: entry %d is neither a disk nor a container", i)
 		}
 	}
+	// Rangs : l'outil de référence ignore une entrée de rang hors de
+	// [0, nombre de membres) ; ses résultats dépendent ensuite des rangs
+	// retenus. L'exporter refuse la liste, comme un doublon : relevé en échec,
+	// jamais un état calculé sur des membres que l'outil écarterait.
+	ranks := make([]bool, n)
+	for i, m := range out {
+		if int(m.Rank) >= n || ranks[m.Rank] {
+			return nil, fmt.Errorf("member list: entry %d has rank %d (out of range or repeated)", i, m.Rank)
+		}
+		ranks[m.Rank] = true
+	}
 	return out, nil
 }
 
