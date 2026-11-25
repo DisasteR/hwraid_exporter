@@ -32,11 +32,12 @@ const (
 	diskStatus69  = 69
 	diskStatus70  = 70
 	diskQualifier = 80
+	diskStatus81  = 81
 	diskStatus332 = 332
 )
 
 // DiskInventoryNeed est le nombre d'octets exigés (inventaire) ; il couvre
-// les octets d'état 0 à 80. Les octets 332-335 sont décodés quand la
+// les octets d'état 0 à 81. Les octets 332-335 sont décodés quand la
 // réponse les contient (HasStatus332), ce qui est le cas dès le premier
 // morceau de 432 octets.
 const (
@@ -54,9 +55,9 @@ type DiskInfo struct {
 	Phy                             uint8 // phy de la carte (contrôle de la carte des connecteurs)
 	// Octets bruts de la section 6 bis de docs/aacraid-interface.md ;
 	// Status332 seulement si la réponse le contient (HasStatus332).
-	Flags0, Status68, Status69, Status70, Qualifier uint8
-	HasStatus332                                    bool
-	Status332                                       uint32
+	Flags0, Status68, Status69, Status70, Qualifier, Status81 uint8
+	HasStatus332                                              bool
+	Status332                                                 uint32
 }
 
 // DecodeDiskInfo décode l'information de disque.
@@ -80,6 +81,7 @@ func DecodeDiskInfo(d []byte) (DiskInfo, error) {
 		Status69:  d[diskStatus69],
 		Status70:  d[diskStatus70],
 		Qualifier: d[diskQualifier],
+		Status81:  d[diskStatus81],
 	}
 	if len(d) >= DiskStatusNeed {
 		i.HasStatus332, i.Status332 = true, le.Uint32(d[diskStatus332:])
@@ -94,6 +96,12 @@ func DecodeDiskInfo(d []byte) (DiskInfo, error) {
 // de l'octet 68, docs/aacraid-interface.md, section 6 bis), présent dans
 // toute réponse décodée.
 func (i DiskInfo) Failed() bool { return i.Status68&0x1 != 0 }
+
+// HardDrive indique un périphérique que l'outil de référence traite comme un
+// disque : type 0 (5 bits bas de l'octet 80) et bit 0x80 de l'octet 81 nul
+// (docs/aacraid-interface.md, section 6 bis) ; autrement, autre
+// périphérique, sans état de disque.
+func (i DiskInfo) HardDrive() bool { return i.Qualifier&0x1f == 0 && i.Status81&0x80 == 0 }
 
 // CapacityBytes renvoie la capacité brute en octets, 0 si la taille de bloc
 // n'est pas une valeur connue (512 ou 4 096 octets).

@@ -252,7 +252,7 @@ func TestVolumeRender(t *testing.T) {
 			{ID: "1d000004", Name: "Array0", RaidLevel: "raid1", VendorLevel: "1", Parent: "1d000000", CapacityBytes: 512, State: "degraded", Members: []string{"d3", "d7"},
 				WriteCachePolicy: "write_back_when_protected", VendorWriteCachePolicy: "On when protected by battery/ZMM", WriteCacheEnabled: &off},
 		},
-		Disks: []module.Disk{{ID: "d3", State: "online"}, {ID: "d7", State: "failed"}}}}
+		Disks: []module.Disk{{ID: "d3", State: "online"}, {ID: "d7", State: "failed", VendorState: "Failed"}}}}
 	out := Render(Build(p, true, res, nil, 0))
 	for _, line := range []string{
 		`hwraid_volume_info{controller="serial:S1",volume="1d000000",name="Array0",raid_level="concat",vendor_level="RAID_volume",parent=""} 1`,
@@ -260,7 +260,9 @@ func TestVolumeRender(t *testing.T) {
 		`hwraid_volume_state{controller="serial:S1",volume="1d000004",state="degraded"} 1`,
 		`hwraid_volume_capacity_bytes{controller="serial:S1",volume="1d000000"} 1024`,
 		`hwraid_volume_member{controller="serial:S1",volume="1d000004",member="d7"} 1`,
-		`hwraid_disk_state{controller="serial:S1",disk="d7",state="failed"} 1`,
+		`hwraid_disk_state{controller="serial:S1",disk="d7",state="failed",vendor_state="Failed"} 1`,
+		// vendor_state vide quand il n'est pas établi (repli sans lecture 248).
+		`hwraid_disk_state{controller="serial:S1",disk="d3",state="online",vendor_state=""} 1`,
 		`hwraid_volume_write_cache_policy{controller="serial:S1",volume="1d000004",policy="write_back_when_protected",vendor_policy="On when protected by battery/ZMM"} 1`,
 		`hwraid_volume_write_cache_enabled{controller="serial:S1",volume="1d000004"} 0`,
 	} {

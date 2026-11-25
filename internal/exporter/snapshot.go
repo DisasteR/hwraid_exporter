@@ -319,10 +319,10 @@ func Render(s Snapshot) string {
 			}
 		}
 	}
-	gauge("hwraid_disk_state", "Member disk state, value 1.")
+	gauge("hwraid_disk_state", "Disk state, value 1.")
 	for _, c := range s.Controllers {
 		for _, d := range c.Disks {
-			fmt.Fprintf(&b, "hwraid_disk_state{%s} 1\n", labels("controller", c.Label, "disk", d.ID, "state", d.State))
+			fmt.Fprintf(&b, "hwraid_disk_state{%s} 1\n", labels("controller", c.Label, "disk", d.ID, "state", d.State, "vendor_state", d.VendorState))
 		}
 	}
 	gauge("hwraid_disk_info", "Disks present on the card, value 1.")

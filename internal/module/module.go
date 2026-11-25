@@ -145,10 +145,12 @@ type Volume struct {
 	WriteCacheEnabled *bool
 }
 
-// Disk est un disque membre d'un conteneur et son état.
+// Disk est un disque de la carte (présent, ou désigné par un volume mais
+// absent) et son état.
 type Disk struct {
-	ID    string // « d<N> », numéro de disque de la carte
-	State string
+	ID          string // « d<N> », numéro de disque de la carte
+	State       string
+	VendorState string // libellé de l'outil constructeur, vide s'il n'est pas établi
 }
 
 // DiskInfo est l'inventaire d'un disque présent sur la carte.

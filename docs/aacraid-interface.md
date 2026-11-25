@@ -230,7 +230,7 @@ Les octets 12 à 15 d'une entrée de la liste des membres portent l'état du mem
 
 Si les deux bits sont positionnés, le membre est traité comme en reconstruction. Un autre bit positionné rend l'état du membre **indéterminé** (l'outil de référence l'ignorerait), sauf preuve de perte (ci-dessous). Ces drapeaux ne sont lus que pour les membres disques ; un membre conteneur d'un assemblage tient son état de son propre calcul. Sur l'hôte de référence, les 16 entrées ont ces octets à 0.
 
-Un membre est **perdu**, quels que soient ses drapeaux, si le disque qu'il désigne (octets 0-3) n'apparaît pas dans la liste des disques présents, ou si l'information de ce disque (248) le déclare en panne (bit `0x1` de l'octet 68, section 6 bis) : comme dans l'outil de référence, la panne l'emporte sur la reconstruction. Écart prudent : l'outil peut afficher « non pris en charge » un disque qui porte aussi le bit de panne (section 6 bis) et ne plus le compter perdu ; l'exporter le compte perdu. La liste des disques est lue complètement dans le même cycle ; l'information des disques est lue avant le calcul des états, et si elle échoue, les états sont calculés sans elle (son échec reste visible par `hwraid_collection_success{collector="disk_inventory"}`).
+Un membre est **perdu**, quels que soient ses drapeaux, si le disque qu'il désigne (octets 0-3) n'apparaît pas dans la liste des disques présents, ou si l'information de ce disque (248) le déclare en panne (bit `0x1` de l'octet 68, section 6 bis) ou montre qu'il n'est pas un disque (section « État d'un disque ») : comme dans l'outil de référence, la panne l'emporte sur la reconstruction. Écart prudent : l'outil peut afficher « non pris en charge » un disque qui porte aussi le bit de panne (section 6 bis) et ne plus le compter perdu ; l'exporter le compte perdu. La liste des disques est lue complètement dans le même cycle ; l'information des disques est lue avant le calcul des états, et si elle échoue, les états sont calculés sans elle (son échec reste visible par `hwraid_collection_success{collector="disk_inventory"}`).
 
 ### État d'un conteneur
 
@@ -252,12 +252,15 @@ Toutes les lectures du cycle (liste des conteneurs, informations, liste des disq
 
 ### État d'un disque
 
-| État | Condition |
-|---|---|
-| en ligne | disque présent, membre d'un conteneur, sans drapeau |
-| en reconstruction | disque portant un membre dont le bit `0x2` est positionné, ni absent ni déclaré en panne |
-| en panne | disque désigné par un membre mais absent de la liste des disques présents, ou que son information (248) déclare en panne |
-| non publié | disque présent dont le membre porte le bit `0x4` ou un drapeau inconnu ; disque présent qui n'est membre d'aucun conteneur (secours, disponible : condition à établir) |
+L'exporter publie l'état de chaque disque présent selon les règles de l'outil de référence (section 6 bis, « État d'un disque »), appliquées dans le même ordre à partir de l'information du disque (248), des capacités de la carte (`SupportedOptions2` et `FeatureBits` de la 706, `SupportedOptions` de la 703) et des membres qui le désignent. Un disque désigné par un membre mais absent de la liste des disques est **en panne**. Le libellé de l'outil est publié dans `vendor_state`.
+
+Les états d'un disque ne dépendent pas des drapeaux de partition de ses membres, sauf « en reconstruction » : un disque présent dont la partition est marquée défaillante garde l'état du disque lui-même (par exemple « en ligne ») ; la perte est portée par l'état du volume. Si la 703 n'a pas été lue, la règle du mode HBA natif n'est pas appliquée. Les secours dédiés ne sont pas lus.
+
+Comme l'outil, l'exporter ne traite comme **disque** qu'un périphérique de type 0 (5 bits bas de l'octet 80 de la 248) dont le bit `0x80` de l'octet 81 est nul [probable : type de périphérique et bit « amovible » de la réponse SCSI `INQUIRY`]. La liste des disques présents peut contenir d'autres périphériques, par exemple le fond de panier d'une baie (type `0x0d`) : ils ne sont pas publiés (ni état de disque, ni inventaire, ni emplacement, ni périphérique Linux). Un membre de volume qui en désigne un est perdu, et le périphérique est publié **en panne**, comme s'il portait le bit de secours : l'outil affiche à sa place un disque « manquant » en panne, l'effet est le même.
+
+Une réponse 248 qui ne contient pas les octets 332-335 ne permet pas d'appliquer la règle « non pris en charge » : l'exporter applique alors, pour le cycle, le repli décrit ci-dessous plutôt que de publier « prêt ».
+
+Si l'information des disques n'a pas pu être lue entièrement pendant le cycle, seuls les disques membres ont un état, déduit des membres : **en ligne** (membre sans drapeau), **en reconstruction** (bit `0x2`), **en panne** (disque absent ; disque membre que l'information déclare en panne ou qui n'est pas un disque ; et, si l'information a été lue mais sans ses octets 332-335, tout disque qu'elle déclare en panne, membre ou non) ; un disque dont le membre porte le bit `0x4` ou un drapeau inconnu n'est alors pas publié. `vendor_state` est vide.
 
 ### État du module de protection du cache (ZMM) [interopérabilité]
 
@@ -284,7 +287,7 @@ Cette règle est celle de l'outil de référence (état de la batterie construit
 
 ## 6 bis. Règles de l'outil de référence pour tous les niveaux [interopérabilité]
 
-Cette section décrit les règles de l'outil de référence (versions 2.05 et 3.07) au-delà des types observés sur l'hôte de référence. **L'exporter applique ces règles avec les écarts indiqués en section 6** (état des volumes, numérotation ARCIO seulement) ; pour le niveau RAID, il suit la table ci-dessous (section 5). Il ne publie un état que pour les disques membres d'un volume (l'inventaire des disques présents est publié à part). Ses lectures au-delà de la 706 restent réservées aux couples modèle et firmware qualifiés (section 8).
+Cette section décrit les règles de l'outil de référence (versions 2.05 et 3.07) au-delà des types observés sur l'hôte de référence. **L'exporter applique ces règles avec les écarts indiqués en section 6** (état des volumes, numérotation ARCIO seulement) ; pour le niveau RAID, il suit la table ci-dessous (section 5). Il publie l'état de tous les disques présents selon ces règles (section 6). Ses lectures au-delà de la 706 restent réservées aux couples modèle et firmware qualifiés (section 8).
 
 ### Type d'un conteneur et niveau RAID
 
@@ -383,7 +386,7 @@ Positions relatives à la lecture 248 ; le tableau décrit le chemin de lecture 
 | 8 | en ligne | disque membre d'un volume, s'il est encore « prêt » (lignes 8 et 9 appliquées membre par membre, volume après volume : un disque peut déjà être « en reconstruction » quand un autre volume est traité) |
 | 9 | en reconstruction | disque portant une partition reconnue en reconstruction (membre de la liste dont le drapeau `0x2` est positionné, associé à ce disque), s'il n'est pas en panne |
 | 10 | secours | secours dédié à un volume (autre commande, non utilisée par l'exporter), si le disque n'est ni en panne, ni en reconstruction, ni partitionné |
-| — | en panne | disque désigné par un membre ou par la liste des secours globaux mais introuvable ; avec le basculement automatique désactivé, l'outil crée aussi un disque « en panne » pour un membre dont la partition est classée morte (bit `0x4` sans le bit `0x2`), même si le disque est présent |
+| — | en panne | disque désigné par un membre ou par la liste des secours globaux mais introuvable, ou qui n'est pas un disque (octets 80-81) ; avec le basculement automatique désactivé, l'outil crée aussi un disque « en panne » pour un membre dont la partition est classée morte (bit `0x4` sans le bit `0x2`), même si le disque est présent |
 
 Un disque est dit ici **présenté directement au système** (interprétation probable de l'effet observé dans l'outil) si la carte annonce l'une de deux capacités dans sa réponse 706 : le bit 16 de `SupportedOptions2` (octets 144-147), pour un disque sans le bit `0x1` de l'octet 68 et auquel manque au moins l'un des bits `0x10` et `0x40` ; ou le bit 27 de `FeatureBits` (octets 36-39, `AAC_FEATURE_JBOD` dans Linux `aacraid.h`), pour un disque dont les bits `0xe0` de l'octet 80 sont nuls. Seule la seconde condition peut mener à la ligne 4. Ce nom traduit l'effet sur l'état affiché [probable] ; la présentation effective du disque au système d'exploitation n'est pas vérifiée. Sur l'hôte de référence, le bit 16 de `SupportedOptions2` et le bit 25 de `SupportedOptions` sont nuls, le bit 27 de `FeatureBits` est positionné (`FeatureBits` = `0x0fff57df`) et l'octet 80 des huit disques est nul : ils remplissent la seconde condition, et la règle de la ligne 4 donne « en ligne ».
 

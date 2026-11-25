@@ -17,7 +17,7 @@ Les métriques sont **les mêmes quel que soit le pilote, le contrôleur ou le c
 | Label | Valeurs | Publiées par aacraid aujourd'hui |
 |---|---|---|
 | `hwraid_volume_state` / `state` | `optimal`, `degraded`, `degraded_rebuilding`, `reduced_redundancy` et `reduced_redundancy_rebuilding` (volume à double redondance privé d'un membre, qui tolère encore une panne ; un assemblage en hérite de son volume membre le plus touché, sans garantie de tolérance pour lui-même), `failed`, `unknown` | toutes ; règle : [aacraid-interface.md](aacraid-interface.md), section 6 |
-| `hwraid_disk_state` / `state` | `online`, `rebuilding`, `failed` | toutes |
+| `hwraid_disk_state` / `state` | `online`, `rebuilding`, `failed`, `ready` (disponible), `spare` (secours), `copyback` (copie de retour vers un disque remplacé), `passthrough` (disque « brut » pour la carte : JBOD, mode HBA ; sa présentation effective au système n'est pas vérifiée), `unsupported` (refusé par la carte) | toutes (observé sur matériel : `online`) ; règle : [aacraid-interface.md](aacraid-interface.md), section 6 bis |
 | `hwraid_cache_protection_state` / `state` | `optimal`, `charging`, `failed`, `unknown` | toutes (`charging` et `optimal` non encore observés sur matériel). Priorité : un module installé sans le bit « prêt » est `failed`, quels que soient ses autres bits (cas du module en panne de l'hôte de référence, `0x40000081`) ; parmi les autres mots, toute combinaison de bits non qualifiée est `unknown`, jamais publiée comme saine |
 | `hwraid_volume_info` / `raid_level` | `raid0`, `raid1`, `raid1e`, `raid5`, `raid6`, `raid10`, `raid50`, `raid60`, `concat` (concaténation de disques ou de volumes), `single` (volume posé sur un seul disque, sans découpage), `unknown` | toutes (observées sur matériel : `raid1`, `concat`) ; table de correspondance : [aacraid-interface.md](aacraid-interface.md), section 6 bis |
 | `hwraid_volume_write_cache_policy` / `policy` | `write_back_always` (cache actif même sans protection), `write_back_when_protected` (actif seulement si le module de protection est opérationnel), `write_through` (désactivé), `unknown` | toutes (les trois réglages connus observés sur matériel ; `unknown`, avec la valeur brute dans `vendor_policy`, pour toute autre valeur) |
@@ -25,7 +25,7 @@ Les métriques sont **les mêmes quel que soit le pilote, le contrôleur ou le c
 
 `unknown` signifie que la carte a répondu, mais que l'exporter ne sait pas interpréter la réponse avec certitude (niveau non établi, migration, drapeau inconnu, assemblage incohérent). C'est un état à surveiller, pas une panne.
 
-Valeurs réservées, non publiées aujourd'hui : pour les disques, `ready` (disponible), `spare` (secours), `copyback` (copie de retour vers un disque remplacé), `passthrough` (disque présenté directement au système, hors volume : JBOD, mode HBA) et `unsupported` (disque refusé par la carte). Les variantes propres à un constructeur se rattachent au terme commun le plus proche, leur nom restant dans `vendor_level` (par exemple RAID 5EE → `raid5`, RAID 6 Reed-Solomon → `raid6`).
+Les variantes propres à un constructeur se rattachent au terme commun le plus proche, leur nom restant dans `vendor_level` ou `vendor_state` (par exemple RAID 5EE → `raid5`, RAID 6 Reed-Solomon → `raid6`, « Raw (Smart HBA) » → `passthrough`).
 
 ## Métriques
 
@@ -80,8 +80,8 @@ Une grappe à plusieurs niveaux (par exemple quatre miroirs assemblés) publie u
 
 | Métrique | Labels | Valeur |
 |---|---|---|
-| `hwraid_disk_state` | `controller`, `disk`, `state` | 1, pour chaque disque membre d'un volume dont l'état est établi |
-| `hwraid_disk_info` | `controller`, `disk`, `vendor`, `model`, `firmware`, `serial`, `wwn` | 1, pour chaque disque présent sur la carte, membre ou non ; `wwn` au format `0x` suivi de 16 chiffres hexadécimaux, vide si la carte n'en donne pas |
+| `hwraid_disk_state` | `controller`, `disk`, `state`, `vendor_state` | 1, pour chaque disque présent et pour chaque disque désigné par un volume mais absent ; un périphérique qui n'est pas un disque n'a un état (`failed`) que s'il est désigné par un volume ou porte le bit de secours ; `vendor_state` : libellé de l'outil constructeur (`Online`, `Hot Spare`, `Raw (Pass Through)`…), vide quand l'information du disque n'a pas pu être lue |
+| `hwraid_disk_info` | `controller`, `disk`, `vendor`, `model`, `firmware`, `serial`, `wwn` | 1, pour chaque disque présent sur la carte, membre ou non (un périphérique qui n'est pas un disque, par exemple le fond de panier d'une baie, n'est pas publié) ; `wwn` au format `0x` suivi de 16 chiffres hexadécimaux, vide si la carte n'en donne pas |
 | `hwraid_disk_capacity_bytes` | `controller`, `disk` | capacité brute en octets, absente si la taille de bloc n'est pas reconnue |
 | `hwraid_disk_os_device` | `controller`, `disk`, `device`, `scsi_address` | 1, pour chaque disque que le pilote présente à Linux : nœud SCSI générique (`sg8`) et adresse SCSI Linux (`0:1:7:0`) |
 | `hwraid_disk_location` | `controller`, `disk`, `connector`, `connector_name`, `device`, `phy` | 1, pour chaque disque relié directement à la carte : numéro et nom du connecteur, position dans le connecteur, phy de la carte |
@@ -99,7 +99,7 @@ hwraid_disk_info{serial!=""} * on (host, serial) group_left (device)
 
 La jointure exige une seule série `smartctl_device` par couple `(host, serial)`. Si smartctl_exporter voit le même disque par deux nœuds, filtrer avant la jointure celui à garder (par exemple `smartctl_device{device=~"sg.*"}`) ; si le nœud n'est pas utile, joindre sur `max by (host, serial) (…)` et retirer `device` de `group_left`.
 
-Un disque présent qui n'est membre d'aucun volume (secours, disponible) figure dans `hwraid_disk_info`, mais n'a pas de `hwraid_disk_state` tant que son état n'est pas établi. La santé SMART des disques est hors périmètre : elle relève d'outils dédiés.
+L'état de tous les disques présents, membres ou non, s'appuie sur leur information (lecture 248). Si elle échoue pendant un cycle, seuls les disques membres d'un volume ont un état, déduit des drapeaux de leurs membres, avec un `vendor_state` vide. La santé SMART des disques est hors périmètre : elle relève d'outils dédiés.
 
 ### Protection du cache
 
@@ -132,7 +132,7 @@ hwraid_volume_state{controller="serial:XXXX",volume="1d000004",state="optimal"} 
 hwraid_volume_member{controller="serial:XXXX",volume="1d000004",member="d7"} 1
 hwraid_volume_write_cache_policy{controller="serial:XXXX",volume="1d000000",policy="write_back_when_protected",vendor_policy="On when protected by battery/ZMM"} 1
 hwraid_volume_write_cache_enabled{controller="serial:XXXX",volume="1d000000"} 0
-hwraid_disk_state{controller="serial:XXXX",disk="d7",state="online"} 1
+hwraid_disk_state{controller="serial:XXXX",disk="d7",state="online",vendor_state="Online"} 1
 hwraid_disk_info{controller="serial:XXXX",disk="d7",vendor="ATA",model="ST8000VN0022-2EL",firmware="SC61",serial="XXXXXXXX",wwn="0x5000c500xxxxxxxx"} 1
 hwraid_disk_capacity_bytes{controller="serial:XXXX",disk="d7"} 8001563222016
 hwraid_disk_location{controller="serial:XXXX",disk="d7",connector="1",connector_name="CN1",device="3",phy="4"} 1

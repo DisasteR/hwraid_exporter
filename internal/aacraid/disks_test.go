@@ -70,16 +70,16 @@ func TestDecodeDiskInfoEdges(t *testing.T) {
 // chaque position se retrouve dans le bon champ, et seulement là.
 func TestDecodeDiskInfoStatusOffsets(t *testing.T) {
 	d := fixture(t, "248-0")
-	d[0], d[68], d[69], d[70], d[80] = 0xa1, 0xa2, 0xa3, 0xa4, 0xa5
+	d[0], d[68], d[69], d[70], d[80], d[81] = 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xab
 	binary.LittleEndian.PutUint32(d[332:], 0xa6a7a8a9)
 	i, err := DecodeDiskInfo(d)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if i.Flags0 != 0xa1 || i.Status68 != 0xa2 || i.Status69 != 0xa3 || i.Status70 != 0xa4 || i.Qualifier != 0xa5 || i.Status332 != 0xa6a7a8a9 {
+	if i.Flags0 != 0xa1 || i.Status68 != 0xa2 || i.Status69 != 0xa3 || i.Status70 != 0xa4 || i.Qualifier != 0xa5 || i.Status81 != 0xab || i.Status332 != 0xa6a7a8a9 {
 		t.Fatalf("%+v", i)
 	}
-	// Réponse sans les octets 332-335 : inventaire et octets 0 à 80
+	// Réponse sans les octets 332-335 : inventaire et octets 0 à 81
 	// décodés (le bit de panne de l'octet 68 compris), pas l'octet 332.
 	short, err := DecodeDiskInfo(d[:335])
 	if err != nil || short.HasStatus332 || short.Status332 != 0 || short.Status68 != 0xa2 || short.Serial != i.Serial {

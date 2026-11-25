@@ -245,10 +245,11 @@ func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeR
 		r.Unsupported = append(append([]string(nil), StateCollectors...), DiskInventoryCollector, DiskLocationCollector)
 	}
 	collectCacheProtection(&r, d)
-	m.collectTemperature(&r, d, key)
+	ainfo, ainfoOK := m.collectTemperature(&r, d, key)
 	if sup.ArcIoReads() {
 		_, h, _ := hostOf(c)
-		m.collectVolumes(&r, d, key, h)
+		caps := aacraid.DiskCaps{DirectDisks: sup.DirectDisks(), JBOD: sup.JBOD(), NativeHBA: ainfo.NativeHBA(), NativeKnown: ainfoOK}
+		m.collectVolumes(&r, d, key, h, caps)
 	}
 	return r
 }
@@ -297,7 +298,7 @@ func hostOf(c module.Card) (int, sysfs.SCSIHost, error) {
 // jamais de configuration ni d'inventaire partiels. L'inventaire réutilise
 // la liste des disques présents : il n'est pas lu si la configuration ne
 // l'a pas été.
-func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.SCSIHost) {
+func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.SCSIHost, caps aacraid.DiskCaps) {
 	cs, present, err := readConfiguration(d)
 	for _, col := range StateCollectors {
 		r.Collected[col] = err == nil
@@ -315,28 +316,67 @@ func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.
 	// visible par son propre collecteur.
 	inv, err := readInventory(d, present)
 	var failed map[uint32]bool
+	complete := err == nil
 	if err == nil {
 		failed = map[uint32]bool{}
 		for _, i := range inv {
-			if i.Failed() {
+			// Un périphérique qui n'est pas un disque compte, pour un
+			// membre qui le désigne, comme un disque en panne (outil de
+			// référence).
+			if i.Failed() || !i.HardDrive() {
 				failed[i.Number] = true
 			}
+			complete = complete && i.HasStatus332
 		}
 	}
 	ev := aacraid.Evaluate(cs, present, failed)
 	r.Volumes, r.Disks = volumesOf(cs, ev), disksOf(ev)
+	if complete {
+		// Avec l'information complète de chaque disque (octets 332-335
+		// compris) : état de tous les disques présents, membres ou non
+		// (section 6 bis). Sans elle : états déduits des membres seulement,
+		// plutôt qu'un état « prêt » qui ignorerait « non pris en charge ».
+		byNum := make(map[uint32]aacraid.DiskInfo, len(inv))
+		for _, i := range inv {
+			byNum[i.Number] = i
+		}
+		r.Disks = diskStatesOf(aacraid.DiskStates(cs, present, byNum, caps))
+	} else if err == nil {
+		// Information lue mais incomplète : son bit de panne reste fiable ;
+		// un disque qu'elle déclare en panne est publié en panne, membre ou
+		// non (plus prudent que de ne rien publier pour lui).
+		st := map[uint32]aacraid.DiskStatus{}
+		for n, ds := range ev.Disks {
+			st[n] = aacraid.DiskStatus{State: ds}
+		}
+		for _, i := range inv {
+			if i.Failed() {
+				st[i.Number] = aacraid.DiskStatus{State: aacraid.DiskFailed}
+			}
+		}
+		r.Disks = diskStatesOf(st)
+	}
 	r.Collected[DiskInventoryCollector] = err == nil
 	if err != nil {
 		r.Collected[DiskLocationCollector] = false
 		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("disk inventory: %w; disk location not read", err))
 		return
 	}
+	// Inventaire, périphérique Linux et emplacement : disques seulement. Un
+	// autre périphérique de la liste (boîtier, support amovible) n'est pas
+	// publié, comme pour l'état (« disque » a le même sens partout).
+	hard := make([]aacraid.DiskInfo, 0, len(inv))
 	for _, i := range inv {
+		if i.HardDrive() {
+			hard = append(hard, i)
+		}
+	}
+	for _, i := range hard {
 		r.DiskInventory = append(r.DiskInventory, module.DiskInfo{ID: diskID(i.Number), Vendor: i.Vendor, Model: i.Model,
 			Firmware: i.Firmware, Serial: i.Serial, WWN: i.WWN, CapacityBytes: i.CapacityBytes()})
 	}
-	r.DiskOSDevices = osDevices(h, inv)
-	locs, err := m.locations(key, d, inv)
+	r.DiskOSDevices = osDevices(h, hard)
+	locs, err := m.locations(key, d, hard)
 	r.Collected[DiskLocationCollector] = err == nil
 	if err != nil {
 		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("disk location: %w", err))
@@ -589,6 +629,20 @@ func writeCacheEnabled(e uint32) *bool {
 	return nil
 }
 
+// diskStatesOf trie les états de disque par numéro.
+func diskStatesOf(st map[uint32]aacraid.DiskStatus) []module.Disk {
+	nums := make([]uint32, 0, len(st))
+	for n := range st {
+		nums = append(nums, n)
+	}
+	sort.Slice(nums, func(i, j int) bool { return nums[i] < nums[j] })
+	out := make([]module.Disk, 0, len(nums))
+	for _, n := range nums {
+		out = append(out, module.Disk{ID: diskID(n), State: string(st[n].State), VendorState: st[n].Vendor})
+	}
+	return out
+}
+
 func disksOf(ev aacraid.Evaluation) []module.Disk {
 	nums := make([]uint32, 0, len(ev.Disks))
 	for n := range ev.Disks {
@@ -629,25 +683,28 @@ func collectCacheProtection(r *module.Result, d reader) {
 // collectTemperature lit le capteur de température, comme l'outil de
 // référence, seulement si la carte l'annonce (AAC_SUPPORTED_HEAT_SENSOR de
 // RequestAdapterInfo) ; sinon le collecteur n'est pas pris en charge.
-func (m *Module) collectTemperature(r *module.Result, d reader, key string) {
+// collectTemperature rend aussi la réponse 703, réutilisée pour l'état des
+// disques (option HBA natif) ; ok faux si elle n'a pas été lue.
+func (m *Module) collectTemperature(r *module.Result, d reader, key string) (info aacraid.AdapterInfo, ok bool) {
 	info, err := m.adapterInfoFor(key, d)
 	if err != nil {
 		r.Collected[TemperatureCollector] = false
 		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("temperature: RequestAdapterInfo: %w", err))
-		return
+		return info, false
 	}
 	if !info.HeatSensor() {
 		r.Unsupported = append(r.Unsupported, TemperatureCollector)
-		return
+		return info, true
 	}
 	env, err := d.Environment()
 	r.Collected[TemperatureCollector] = err == nil
 	if err != nil {
 		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("temperature: %w", err))
-		return
+		return info, true
 	}
 	r.Temperature = &module.Temperature{Celsius: float64(env.TemperatureCelsius),
 		ThresholdLo: float64(env.ThresholdLoCelsius), ThresholdHi: float64(env.ThresholdHiCelsius)}
+	return info, true
 }
 
 // adapterInfoFor lit la réponse 703 une seule fois par carte et par nœud,

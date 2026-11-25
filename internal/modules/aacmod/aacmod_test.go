@@ -982,6 +982,25 @@ func TestCollectDiskOSDevices(t *testing.T) {
 		got["d0"] != (module.DiskOSDevice{ID: "d0", Device: "sg1", Address: "0:1:0:0"}) {
 		t.Fatalf("%+v", got)
 	}
+	// Le disque 7 n'est pas un disque (octet 81 bit 0x80) : pas de
+	// périphérique Linux publié pour lui.
+	c := card("0000:01:00.0", "0")
+	c.Hosts[0].Devices = devices()
+	r := withDev(&fakeDev{info: hba, sup: arcIo, paged: func(rd aacraid.PagedRead, p, size uint32) ([]byte, error) {
+		b, err := referencePaged(rd, p, size)
+		if err == nil && rd == aacraid.ReadDiskInfo && p == 7 {
+			b[81] = 0x80
+		}
+		return b, err
+	}}, nil).Collect(context.Background(), c, ref)
+	for _, o := range r.DiskOSDevices {
+		if o.ID == "d7" {
+			t.Fatalf("autre périphérique relié à Linux : %+v", o)
+		}
+	}
+	if len(r.DiskOSDevices) != 7 {
+		t.Fatalf("%+v", r.DiskOSDevices)
+	}
 	devs := devices()
 	devs[8].Serial = "AUTRE" // 0:1:7:0 : autre disque que d7
 	devs[1].Generic = ""     // 0:1:0:0 : pas de nœud générique
@@ -1423,5 +1442,197 @@ func TestCollectDiskDeclaredFailed(t *testing.T) {
 		if seen != 2 || len(res.Volumes) != 5 || res.Collected["disk_inventory"] != readable {
 			t.Errorf("248 lisible %v : %+v", readable, res)
 		}
+	}
+}
+
+// Bout en bout : trois disques hors volume ajoutés à la configuration de
+// référence (copies de la 248 du disque 0, renumérotées). Le disque 8
+// (octet 68 = 0x50, qualificateur nul) est en ligne parce que la carte
+// annonce AAC_FEATURE_JBOD ; le disque 9 (octet 68 = 0x74) est un secours ;
+// le disque 10 (octet 68 = 0x10) est brut.
+// Les membres gardent « Online ». Sans JBOD annoncé, le disque 8 est prêt.
+func TestCollectNonMemberDisks(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
+	paged := func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
+		switch {
+		case r == aacraid.ReadDiskList:
+			b, err := referencePaged(r, p, size)
+			if err != nil {
+				return nil, err
+			}
+			n := binary.LittleEndian.Uint32(b)
+			b = append([]byte(nil), b[:4+4*n]...)
+			for _, x := range []uint32{8, 9, 10} {
+				b = binary.LittleEndian.AppendUint32(b, x)
+			}
+			binary.LittleEndian.PutUint32(b, n+3)
+			return b, nil
+		case r == aacraid.ReadDiskInfo && p >= 8 && p <= 10:
+			b, err := referencePaged(r, 0, size)
+			if err != nil {
+				return nil, err
+			}
+			binary.LittleEndian.PutUint32(b[8:], p)
+			binary.LittleEndian.PutUint32(b[16:], p)
+			b[68] = map[uint32]byte{8: 0x50, 9: 0x74, 10: 0x10}[p]
+			b[116] = 'X' + byte(p) // numéro de série distinct
+			return b, nil
+		}
+		return referencePaged(r, p, size)
+	}
+	for _, jbod := range []bool{true, false} {
+		sup := arcIo
+		sup.FeatureBits = 0x0fff57df // valeur de la carte de référence (JBOD annoncé)
+		if !jbod {
+			sup.FeatureBits = 0
+		}
+		d := &fakeDev{info: hba, sup: sup, paged: paged}
+		res := withDev(d, nil).Collect(context.Background(), card("0000:01:00.0", "0"), ref)
+		got := map[string][2]string{}
+		for _, dk := range res.Disks {
+			got[dk.ID] = [2]string{dk.State, dk.VendorState}
+		}
+		// Le disque 10 (octet 68 = 0x10) est brut par JBOD ; sans JBOD, prêt
+		// (la carte n'annonce pas le bit 16 de SupportedOptions2).
+		want8, want10 := [2]string{"online", "Online"}, [2]string{"passthrough", "Raw (Pass Through)"}
+		if !jbod {
+			want8, want10 = [2]string{"ready", "Ready"}, [2]string{"ready", "Ready"}
+		}
+		if got["d8"] != want8 || got["d10"] != want10 || got["d9"] != [2]string{"spare", "Hot Spare"} || got["d0"] != [2]string{"online", "Online"} || len(got) != 11 {
+			t.Errorf("JBOD %v : %v", jbod, got)
+		}
+	}
+}
+
+// Bout en bout, cas particuliers de l'état des disques :
+//   - référence : huit disques online, vendor_state Online ;
+//   - 248 sans les octets 332-335 (300 octets) : repli par les membres,
+//     vendor_state vide ;
+//   - disque 7 qui n'est pas un disque (octet 81 bit 0x80) : membre perdu,
+//     disque en panne, miroir dégradé ;
+//   - option HBA natif annoncée par la 703 : un disque hors volume sans le bit
+//     0x40 de l'octet 68 est brut ; 703 illisible : la règle n'est pas
+//     appliquée.
+func TestCollectDiskStateCases(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
+	collect := func(d *fakeDev) module.Result {
+		return withDev(d, nil).Collect(context.Background(), card("0000:01:00.0", "0"), ref)
+	}
+	states := func(res module.Result) map[string][2]string {
+		out := map[string][2]string{}
+		for _, dk := range res.Disks {
+			out[dk.ID] = [2]string{dk.State, dk.VendorState}
+		}
+		return out
+	}
+	r := collect(&fakeDev{info: hba, sup: arcIo})
+	for n := 0; n < 8; n++ {
+		if got := states(r)[fmt.Sprintf("d%d", n)]; got != [2]string{"online", "Online"} {
+			t.Errorf("référence, d%d : %v", n, got)
+		}
+	}
+	r = collect(&fakeDev{info: hba, sup: arcIo, paged: func(rd aacraid.PagedRead, p, size uint32) ([]byte, error) {
+		b, err := referencePaged(rd, p, size)
+		if err == nil && rd == aacraid.ReadDiskInfo {
+			b = b[:300]
+		}
+		return b, err
+	}})
+	if got := states(r); got["d0"] != [2]string{"online", ""} || len(got) != 8 {
+		t.Errorf("248 incomplète : %v", got)
+	}
+	// 248 incomplète, disque 2 (membre) déclaré en panne : publié en panne
+	// (non-régression ; la branche du repli est prouvée par le disque 8 hors
+	// volume, plus bas).
+	r = collect(&fakeDev{info: hba, sup: arcIo, paged: func(rd aacraid.PagedRead, p, size uint32) ([]byte, error) {
+		b, err := referencePaged(rd, p, size)
+		if err == nil && rd == aacraid.ReadDiskInfo {
+			if p == 2 {
+				b[68] |= 0x01
+			}
+			b = b[:300]
+		}
+		return b, err
+	}})
+	if got := states(r); got["d2"] != [2]string{"failed", ""} || got["d0"] != [2]string{"online", ""} {
+		t.Errorf("248 incomplète, disque en panne : %v", got)
+	}
+	r = collect(&fakeDev{info: hba, sup: arcIo, paged: func(rd aacraid.PagedRead, p, size uint32) ([]byte, error) {
+		b, err := referencePaged(rd, p, size)
+		if err == nil && rd == aacraid.ReadDiskInfo && p == 7 {
+			b[81] = 0x80
+		}
+		return b, err
+	}})
+	vols := map[string]string{}
+	for _, v := range r.Volumes {
+		vols[v.ID] = v.State
+	}
+	if got := states(r); got["d7"] != [2]string{"failed", "Failed"} || vols["1d000004"] != "degraded" {
+		t.Errorf("autre périphérique membre : %v, volumes %v", got, vols)
+	}
+	// Ni inventaire, ni emplacement, ni périphérique Linux pour lui.
+	for _, i := range r.DiskInventory {
+		if i.ID == "d7" {
+			t.Errorf("autre périphérique dans l'inventaire : %+v", i)
+		}
+	}
+	for _, l := range r.DiskLocations {
+		if l.ID == "d7" {
+			t.Errorf("autre périphérique localisé : %+v", l)
+		}
+	}
+	if len(r.DiskInventory) != 7 || !r.Collected["disk_inventory"] {
+		t.Errorf("inventaire : %d disques, %v", len(r.DiskInventory), r.Collected)
+	}
+	// Disque 8 hors volume, octet 68 = 0x10 (sans 0x40), carte sans JBOD.
+	extra := func(rd aacraid.PagedRead, p, size uint32) ([]byte, error) {
+		switch {
+		case rd == aacraid.ReadDiskList:
+			b, err := referencePaged(rd, p, size)
+			if err != nil {
+				return nil, err
+			}
+			n := binary.LittleEndian.Uint32(b)
+			b = binary.LittleEndian.AppendUint32(append([]byte(nil), b[:4+4*n]...), 8)
+			binary.LittleEndian.PutUint32(b, n+1)
+			return b, nil
+		case rd == aacraid.ReadDiskInfo && p == 8:
+			b, err := referencePaged(rd, 0, size)
+			if err != nil {
+				return nil, err
+			}
+			binary.LittleEndian.PutUint32(b[8:], 8)
+			binary.LittleEndian.PutUint32(b[16:], 8)
+			b[68], b[116] = 0x10, 'Z'
+			return b, nil
+		}
+		return referencePaged(rd, p, size)
+	}
+	// 248 incomplète et disque 8 hors volume déclaré en panne : publié en
+	// panne malgré le repli.
+	r = collect(&fakeDev{info: hba, sup: arcIo, paged: func(rd aacraid.PagedRead, p, size uint32) ([]byte, error) {
+		b, err := extra(rd, p, size)
+		if err == nil && rd == aacraid.ReadDiskInfo {
+			if p == 8 {
+				b[68] = 0x11
+			}
+			b = b[:300]
+		}
+		return b, err
+	}})
+	if got := states(r)["d8"]; got != [2]string{"failed", ""} {
+		t.Errorf("248 incomplète, disque hors volume en panne : %v", got)
+	}
+	native := aacraid.AdapterInfo{SupportedOptions: 1 << 25}
+	r = collect(&fakeDev{info: hba, sup: arcIo, ai: &native, paged: extra})
+	if got := states(r)["d8"]; got != [2]string{"passthrough", "Raw (Pass Through)"} {
+		t.Errorf("HBA natif : %v", got)
+	}
+	r = collect(&fakeDev{info: hba, sup: arcIo, ai: &native, aiErr: errors.New("EIO"), paged: extra})
+	if got := states(r)["d8"]; got != [2]string{"ready", "Ready"} {
+		t.Errorf("703 illisible : %v", got)
 	}
 }

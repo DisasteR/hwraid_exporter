@@ -72,13 +72,15 @@ groups:
           description: "La carte a répondu mais l'état n'est pas interprétable avec certitude (niveau non établi, migration, drapeau de membre inconnu, assemblage incohérent). Vérifier les volumes membres et l'outil du constructeur."
 
       - alert: HwraidDiskFailed
-        expr: hwraid_disk_state{state="failed"} == 1
+        # Sans vendor_state : son passage à vide (lecture 248 en échec) ne
+        # doit pas créer une seconde alerte pour le même disque.
+        expr: max without (vendor_state) (hwraid_disk_state{state="failed"}) == 1
         keep_firing_for: 10m
         labels:
           severity: critical
         annotations:
           summary: "Disque {{ $labels.disk }} en panne ({{ $labels.controller }})"
-          description: "Disque membre d'un volume, absent de la carte ou déclaré en panne par elle."
+          description: "Disque déclaré en panne par la carte, membre d'un volume mais absent, ou périphérique qui n'est pas un disque désigné par un volume."
 
       - alert: HwraidVolumeDisappeared
         # Volume vu dans les dernières 24 h, absent alors que la lecture des
