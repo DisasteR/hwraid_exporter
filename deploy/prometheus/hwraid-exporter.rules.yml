@@ -38,8 +38,8 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "Volume RAID {{ $labels.volume }} dégradé, sans reconstruction ({{ $labels.controller }})"
-          description: "Le volume fonctionne sans redondance. Remplacer le disque en panne ; une seconde panne dans ce volume serait fatale."
+          summary: "Volume RAID {{ $labels.volume }} dégradé ({{ $labels.controller }})"
+          description: "Le volume fonctionne sans redondance : un membre est perdu, ou l'état d'un membre est inconnu. Identifier le disque concerné (états des disques, outil du constructeur) et le remplacer s'il est en panne ; une panne de plus dans ce volume serait fatale."
 
       - alert: HwraidVolumeRebuilding
         expr: hwraid_volume_state{state="degraded_rebuilding"} == 1
@@ -51,6 +51,16 @@ groups:
           summary: "Volume RAID {{ $labels.volume }} en reconstruction ({{ $labels.controller }})"
           description: "Redondance absente jusqu'à la fin de la reconstruction. Éviter toute intervention et toute coupure."
 
+      - alert: HwraidVolumeRedundancyReduced
+        expr: hwraid_volume_state{state=~"reduced_redundancy|reduced_redundancy_rebuilding"} == 1
+        keep_firing_for: 10m
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Volume RAID {{ $labels.volume }} à redondance réduite ({{ $labels.controller }})"
+          description: "Un volume à double redondance (RAID 6 ou 60) a perdu un membre ({{ $labels.state }}) ; ce RAID 6 ou 60 tolère encore une panne, mais si le volume alerté est un assemblage qui le contient, l'assemblage peut réunir des volumes moins redondants. En reduced_redundancy_rebuilding, laisser la reconstruction aboutir ; en reduced_redundancy, remplacer le disque en panne."
+
       - alert: HwraidVolumeStateUnknown
         expr: hwraid_volume_state{state="unknown"} == 1
         keep_firing_for: 10m
@@ -59,7 +69,7 @@ groups:
           severity: warning
         annotations:
           summary: "État du volume {{ $labels.volume }} non déterminé ({{ $labels.controller }})"
-          description: "La carte a répondu mais l'état n'est pas interprétable avec certitude (type non qualifié, membre non optimal sur un assemblage). Vérifier les volumes membres et l'outil du constructeur."
+          description: "La carte a répondu mais l'état n'est pas interprétable avec certitude (niveau non établi, migration, drapeau de membre inconnu, assemblage incohérent). Vérifier les volumes membres et l'outil du constructeur."
 
       - alert: HwraidDiskFailed
         expr: hwraid_disk_state{state="failed"} == 1
@@ -68,7 +78,7 @@ groups:
           severity: critical
         annotations:
           summary: "Disque {{ $labels.disk }} en panne ({{ $labels.controller }})"
-          description: "Disque membre d'un volume mais absent de la carte."
+          description: "Disque membre d'un volume, absent de la carte ou déclaré en panne par elle."
 
       - alert: HwraidVolumeDisappeared
         # Volume vu dans les dernières 24 h, absent alors que la lecture des

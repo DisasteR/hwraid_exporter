@@ -165,10 +165,10 @@ func TestDecodeSizeBounds(t *testing.T) {
 		t.Fatalf("234 de 312 octets : %v", err)
 	}
 	d := fixture(t, "248-0")
-	if i, err := DecodeDiskInfo(d[:336]); err != nil || !i.HasStatus || i.Status68 != 0x70 {
+	if i, err := DecodeDiskInfo(d[:336]); err != nil || !i.HasStatus332 || i.Status68 != 0x70 {
 		t.Fatalf("248 de 336 octets : %+v %v", i, err)
 	}
-	if i, err := DecodeDiskInfo(d[:296]); err != nil || i.HasStatus {
+	if i, err := DecodeDiskInfo(d[:296]); err != nil || i.HasStatus332 || i.Status68 != 0x70 {
 		t.Fatalf("248 de 296 octets : %+v %v", i, err)
 	}
 }

@@ -16,16 +16,16 @@ Les métriques sont **les mêmes quel que soit le pilote, le contrôleur ou le c
 
 | Label | Valeurs | Publiées par aacraid aujourd'hui |
 |---|---|---|
-| `hwraid_volume_state` / `state` | `optimal`, `degraded`, `degraded_rebuilding`, `failed`, `unknown` | toutes |
+| `hwraid_volume_state` / `state` | `optimal`, `degraded`, `degraded_rebuilding`, `reduced_redundancy` et `reduced_redundancy_rebuilding` (volume à double redondance privé d'un membre, qui tolère encore une panne ; un assemblage en hérite de son volume membre le plus touché, sans garantie de tolérance pour lui-même), `failed`, `unknown` | toutes ; règle : [aacraid-interface.md](aacraid-interface.md), section 6 |
 | `hwraid_disk_state` / `state` | `online`, `rebuilding`, `failed` | toutes |
 | `hwraid_cache_protection_state` / `state` | `optimal`, `charging`, `failed`, `unknown` | toutes (`charging` et `optimal` non encore observés sur matériel). Priorité : un module installé sans le bit « prêt » est `failed`, quels que soient ses autres bits (cas du module en panne de l'hôte de référence, `0x40000081`) ; parmi les autres mots, toute combinaison de bits non qualifiée est `unknown`, jamais publiée comme saine |
 | `hwraid_volume_info` / `raid_level` | `raid0`, `raid1`, `raid1e`, `raid5`, `raid6`, `raid10`, `raid50`, `raid60`, `concat` (concaténation de disques ou de volumes), `single` (volume posé sur un seul disque, sans découpage), `unknown` | toutes (observées sur matériel : `raid1`, `concat`) ; table de correspondance : [aacraid-interface.md](aacraid-interface.md), section 6 bis |
 | `hwraid_volume_write_cache_policy` / `policy` | `write_back_always` (cache actif même sans protection), `write_back_when_protected` (actif seulement si le module de protection est opérationnel), `write_through` (désactivé), `unknown` | toutes (les trois réglages connus observés sur matériel ; `unknown`, avec la valeur brute dans `vendor_policy`, pour toute autre valeur) |
 | `hwraid_cache_protection_present` / `type` | `flash_supercap` (supercondensateur et mémoire flash : ZMM/AFM, CacheVault, FBWC), `battery` (BBU) | `flash_supercap` |
 
-`unknown` signifie que la carte a répondu, mais que l'exporter ne sait pas interpréter la réponse avec certitude (type de volume non qualifié, drapeau inconnu, propagation non établie). C'est un état à surveiller, pas une panne.
+`unknown` signifie que la carte a répondu, mais que l'exporter ne sait pas interpréter la réponse avec certitude (niveau non établi, migration, drapeau inconnu, assemblage incohérent). C'est un état à surveiller, pas une panne.
 
-Valeurs réservées, non publiées aujourd'hui : `reduced_redundancy` et `reduced_redundancy_rebuilding` (perte d'un membre sur un RAID 6, la redondance restante tolère encore une panne) ; pour les disques, `ready` (disponible), `spare` (secours), `copyback` (copie de retour vers un disque remplacé), `passthrough` (disque présenté directement au système, hors volume : JBOD, mode HBA) et `unsupported` (disque refusé par la carte). Les variantes propres à un constructeur se rattachent au terme commun le plus proche, leur nom restant dans `vendor_level` (par exemple RAID 5EE → `raid5`, RAID 6 Reed-Solomon → `raid6`).
+Valeurs réservées, non publiées aujourd'hui : pour les disques, `ready` (disponible), `spare` (secours), `copyback` (copie de retour vers un disque remplacé), `passthrough` (disque présenté directement au système, hors volume : JBOD, mode HBA) et `unsupported` (disque refusé par la carte). Les variantes propres à un constructeur se rattachent au terme commun le plus proche, leur nom restant dans `vendor_level` (par exemple RAID 5EE → `raid5`, RAID 6 Reed-Solomon → `raid6`).
 
 ## Métriques
 
@@ -74,7 +74,7 @@ Collecteurs du module aacraid : `capabilities` (capacités de la carte), `volume
 
 Le réglage et l'état du cache d'écriture viennent de la même lecture que le reste du volume : aucune commande de plus. Le réglage dit ce que l'administrateur a demandé ; l'état dit ce que la carte fait, par exemple un cache coupé parce que le module de protection est en panne. Chaque volume, membres d'un assemblage compris, est lu et publié séparément ; sur l'hôte de référence, les volumes membres ont toujours eu le même réglage et le même état que leur volume de premier niveau, sans que rien ne le garantisse. Le cache de lecture n'est pas publié.
 
-Une grappe à plusieurs niveaux (par exemple quatre miroirs assemblés) publie un volume par niveau. L'état d'un volume de premier niveau vaut `unknown` quand l'un de ses volumes membres n'est pas optimal et que la propagation n'est pas établie pour ce type : la perte de redondance reste visible sur le volume membre.
+Une grappe à plusieurs niveaux (par exemple quatre miroirs assemblés) publie un volume par niveau. L'état d'un volume de premier niveau est le plus grave de ceux de ses volumes membres (un miroir dégradé rend l'assemblage dégradé, un miroir en échec le met en échec) ; la perte de redondance est aussi visible sur le volume membre.
 
 ### Disques
 

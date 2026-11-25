@@ -35,9 +35,10 @@ const (
 	diskStatus332 = 332
 )
 
-// DiskInventoryNeed est le nombre d'octets exigés (inventaire) ; les octets
-// d'état, jusqu'à DiskStatusNeed, sont décodés quand la réponse les contient
-// (HasStatus), ce qui est le cas dès le premier morceau de 432 octets.
+// DiskInventoryNeed est le nombre d'octets exigés (inventaire) ; il couvre
+// les octets d'état 0 à 80. Les octets 332-335 sont décodés quand la
+// réponse les contient (HasStatus332), ce qui est le cas dès le premier
+// morceau de 432 octets.
 const (
 	DiskInventoryNeed = diskWWN + 8
 	DiskStatusNeed    = diskStatus332 + 4
@@ -51,10 +52,10 @@ type DiskInfo struct {
 	Blocks                          uint64
 	BlockSize                       uint32
 	Phy                             uint8 // phy de la carte (contrôle de la carte des connecteurs)
-	// Octets bruts de la section 6 bis de docs/aacraid-interface.md, lus
-	// seulement si la réponse les contient (HasStatus).
-	HasStatus                                       bool
+	// Octets bruts de la section 6 bis de docs/aacraid-interface.md ;
+	// Status332 seulement si la réponse le contient (HasStatus332).
 	Flags0, Status68, Status69, Status70, Qualifier uint8
+	HasStatus332                                    bool
 	Status332                                       uint32
 }
 
@@ -73,17 +74,26 @@ func DecodeDiskInfo(d []byte) (DiskInfo, error) {
 		Blocks:    le.Uint64(d[diskBlocks:]),
 		BlockSize: le.Uint32(d[diskBlockSize:]),
 		Phy:       d[diskPhy],
+
+		Flags0:    d[diskFlags0],
+		Status68:  d[diskStatus68],
+		Status69:  d[diskStatus69],
+		Status70:  d[diskStatus70],
+		Qualifier: d[diskQualifier],
 	}
 	if len(d) >= DiskStatusNeed {
-		i.HasStatus = true
-		i.Flags0, i.Status68, i.Status69, i.Status70 = d[diskFlags0], d[diskStatus68], d[diskStatus69], d[diskStatus70]
-		i.Qualifier, i.Status332 = d[diskQualifier], le.Uint32(d[diskStatus332:])
+		i.HasStatus332, i.Status332 = true, le.Uint32(d[diskStatus332:])
 	}
 	if w := d[diskWWN : diskWWN+8]; !bytes.Equal(w, make([]byte, 8)) {
 		i.WWN = "0x" + hex.EncodeToString(w)
 	}
 	return i, nil
 }
+
+// Failed indique un disque que son information déclare en panne (bit 0x1
+// de l'octet 68, docs/aacraid-interface.md, section 6 bis), présent dans
+// toute réponse décodée.
+func (i DiskInfo) Failed() bool { return i.Status68&0x1 != 0 }
 
 // CapacityBytes renvoie la capacité brute en octets, 0 si la taille de bloc
 // n'est pas une valeur connue (512 ou 4 096 octets).

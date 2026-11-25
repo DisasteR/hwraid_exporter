@@ -17,10 +17,11 @@ Ces règles sont un point de départ : seuils, durées et gravités sont à adap
 | Alerte | Condition | Délai | Gravité | Action |
 |---|---|---|---|---|
 | `HwraidVolumeFailed` | volume `failed` | immédiat | critical | données inaccessibles ou perdues : restauration |
-| `HwraidVolumeDegraded` | volume `degraded` | 5 min | critical | remplacer le disque en panne ; une seconde panne dans ce volume serait fatale |
+| `HwraidVolumeDegraded` | volume `degraded` (membre perdu, ou membre inconnu à côté d'une perte ou d'une reconstruction) | 5 min | critical | identifier et remplacer le disque en panne ; une panne de plus dans ce volume serait fatale |
 | `HwraidVolumeRebuilding` | volume `degraded_rebuilding` | 5 min | warning | laisser la reconstruction aboutir, éviter toute coupure |
+| `HwraidVolumeRedundancyReduced` | volume `reduced_redundancy` ou `reduced_redundancy_rebuilding` (RAID 6 ou 60 privé d'un membre, ou assemblage qui en contient un) | 5 min | warning | remplacer le disque en panne, ou laisser aboutir la reconstruction en cours ; le RAID 6 ou 60 tolère encore une panne, pas forcément l'assemblage qui le contient |
 | `HwraidVolumeStateUnknown` | volume `unknown` | 30 min | warning | vérifier les volumes membres et l'outil du constructeur |
-| `HwraidDiskFailed` | disque `failed` (membre absent de la carte) | immédiat | critical | remplacer le disque |
+| `HwraidDiskFailed` | disque `failed` (membre absent de la carte, ou déclaré en panne par elle) | immédiat | critical | remplacer le disque |
 | `HwraidVolumeDisappeared` | volume vu dans les dernières 24 h, absent alors que la lecture réussit | immédiat, pendant 24 h | warning | suppression ou perte du volume ; mettre en silence après une suppression volontaire |
 | `HwraidCacheProtectionFailed` | protection du cache `failed` | 5 min | warning | remplacer le module ; en attendant, régler le cache d'écriture en mode « seulement si protégé » (Adaptec : `SETCACHE … wbb`) |
 | `HwraidControllerTemperatureHigh` | température du contrôleur ≥ 55 °C et < 60 °C | 10 min | warning | vérifier la ventilation du boîtier et le dissipateur ; seuils à adapter |
@@ -52,9 +53,13 @@ L'intervalle de collecte est configurable (`-interval`, 1 minute par défaut) et
 - `HwraidCollectionStale` s'y adapte d'elle-même : le seuil vaut trois intervalles.
 - Les alertes restent actives **10 minutes** sans leur condition (`keep_firing_for`), ce qui couvre au moins deux cycles tant que l'intervalle ne dépasse pas 5 minutes, à condition que le délai de collecte (`-collect-timeout`) et les intervalles de Prometheus restent courts devant eux. Au-delà, un seul cycle en échec retire les séries plus longtemps, et une alerte de panne pourrait s'éteindre. `keep_firing_for` n'accepte pas de durée calculée : il faut alors le porter à au moins deux fois l'intervalle. `HwraidCollectionIntervalTooLong` signale ce cas.
 
-## Cas particulier : volume `unknown`
+## Cas particulier : information des disques illisible
 
-Sur une grappe à plusieurs niveaux (par exemple quatre miroirs assemblés), le volume de premier niveau passe en `unknown` dès qu'un miroir n'est pas optimal, parce que la propagation de l'état n'est pas encore établie pour ce type d'assemblage. L'alerte utile est alors celle du **miroir** (`HwraidVolumeDegraded` ou `HwraidVolumeRebuilding`) ; `HwraidVolumeStateUnknown` sur le volume parent l'accompagne. Pour regrouper les deux dans une même notification, regrouper par `job`, `instance` et `controller` dans Alertmanager (deux hôtes peuvent publier le même identifiant de contrôleur).
+L'état d'un volume tient compte des disques que la carte déclare en panne dans leur information (lecture 248). Si cette lecture échoue pendant un cycle, les états sont calculés sans elle : un volume publié `degraded` ou `failed` à cause d'une panne visible seulement dans cette lecture peut repasser `optimal` et son alerte se résoudre. Avant de conclure à un rétablissement, vérifier `hwraid_collection_success{collector="disk_inventory"}`.
+
+## Cas particulier : grappe à plusieurs niveaux
+
+Sur une grappe à plusieurs niveaux (par exemple quatre miroirs assemblés), le volume de premier niveau prend l'état le plus grave de ses miroirs : un miroir dégradé déclenche `HwraidVolumeDegraded` à la fois sur le miroir et sur l'assemblage. Pour les regrouper dans une même notification, regrouper par `job`, `instance` et `controller` dans Alertmanager (deux hôtes peuvent publier le même identifiant de contrôleur). `HwraidVolumeStateUnknown` signale une réponse que l'exporter ne sait pas interpréter avec certitude (niveau non établi, migration, drapeau inconnu, assemblage incohérent).
 
 ## Cache d'écriture
 

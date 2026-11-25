@@ -30,8 +30,8 @@ tests:
         exp_alerts:
           - exp_labels: {severity: critical, controller: "serial:A", volume: "b3", state: degraded}
             exp_annotations:
-              summary: "Volume RAID b3 dégradé, sans reconstruction (serial:A)"
-              description: "Le volume fonctionne sans redondance. Remplacer le disque en panne ; une seconde panne dans ce volume serait fatale."
+              summary: "Volume RAID b3 dégradé (serial:A)"
+              description: "Le volume fonctionne sans redondance : un membre est perdu, ou l'état d'un membre est inconnu. Identifier le disque concerné (états des disques, outil du constructeur) et le remplacer s'il est en panne ; une panne de plus dans ce volume serait fatale."
       - eval_time: 17m
         alertname: HwraidCollectionNeverSucceeded
         exp_alerts: []
@@ -44,6 +44,46 @@ tests:
               description: "Redondance absente jusqu'à la fin de la reconstruction. Éviter toute intervention et toute coupure."
       - eval_time: 44m
         alertname: HwraidVolumeDegraded
+        exp_alerts: []
+
+  # RAID 6 privé d'un membre, puis en reconstruction : avertissement, jamais
+  # l'alerte critique d'un volume sans redondance.
+  - interval: 1m
+    input_series:
+      - series: 'hwraid_volume_state{controller="serial:A",volume="r6",state="reduced_redundancy"}'
+        values: '1x9 _x10'
+      - series: 'hwraid_volume_state{controller="serial:A",volume="r6",state="reduced_redundancy_rebuilding"}'
+        values: '_x10 1x20'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: HwraidVolumeRedundancyReduced
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: HwraidVolumeDegraded
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: HwraidVolumeRebuilding
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: HwraidVolumeRedundancyReduced
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: "serial:A", volume: "r6", state: reduced_redundancy}
+            exp_annotations:
+              summary: "Volume RAID r6 à redondance réduite (serial:A)"
+              description: "Un volume à double redondance (RAID 6 ou 60) a perdu un membre (reduced_redundancy) ; ce RAID 6 ou 60 tolère encore une panne, mais si le volume alerté est un assemblage qui le contient, l'assemblage peut réunir des volumes moins redondants. En reduced_redundancy_rebuilding, laisser la reconstruction aboutir ; en reduced_redundancy, remplacer le disque en panne."
+      # Après le maintien de 10 min de l'état précédent (keep_firing_for).
+      - eval_time: 25m
+        alertname: HwraidVolumeRedundancyReduced
+        exp_alerts:
+          - exp_labels: {severity: warning, controller: "serial:A", volume: "r6", state: reduced_redundancy_rebuilding}
+            exp_annotations:
+              summary: "Volume RAID r6 à redondance réduite (serial:A)"
+              description: "Un volume à double redondance (RAID 6 ou 60) a perdu un membre (reduced_redundancy_rebuilding) ; ce RAID 6 ou 60 tolère encore une panne, mais si le volume alerté est un assemblage qui le contient, l'assemblage peut réunir des volumes moins redondants. En reduced_redundancy_rebuilding, laisser la reconstruction aboutir ; en reduced_redundancy, remplacer le disque en panne."
+      - eval_time: 25m
+        alertname: HwraidVolumeDegraded
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: HwraidVolumeRebuilding
         exp_alerts: []
 
   # Disque absent, volume en échec : alertes immédiates.
@@ -60,7 +100,7 @@ tests:
           - exp_labels: {severity: critical, controller: "serial:A", disk: d7, state: failed}
             exp_annotations:
               summary: "Disque d7 en panne (serial:A)"
-              description: "Disque membre d'un volume mais absent de la carte."
+              description: "Disque membre d'un volume, absent de la carte ou déclaré en panne par elle."
       - eval_time: 1m
         alertname: HwraidVolumeFailed
         exp_alerts:
@@ -213,14 +253,14 @@ tests:
           - exp_labels: {severity: critical, controller: "serial:A", disk: d7, state: failed}
             exp_annotations:
               summary: "Disque d7 en panne (serial:A)"
-              description: "Disque membre d'un volume mais absent de la carte."
+              description: "Disque membre d'un volume, absent de la carte ou déclaré en panne par elle."
       - eval_time: 12m
         alertname: HwraidDiskFailed
         exp_alerts:
           - exp_labels: {severity: critical, controller: "serial:A", disk: d7, state: failed}
             exp_annotations:
               summary: "Disque d7 en panne (serial:A)"
-              description: "Disque membre d'un volume mais absent de la carte."
+              description: "Disque membre d'un volume, absent de la carte ou déclaré en panne par elle."
       - eval_time: 15m
         alertname: HwraidDiskFailed
         exp_alerts: []
@@ -256,8 +296,8 @@ tests:
         exp_alerts:
           - exp_labels: {severity: critical, job: hwraid, instance: "a:9799", controller: "pci:0000:01:00.0", volume: "1", state: degraded}
             exp_annotations:
-              summary: "Volume RAID 1 dégradé, sans reconstruction (pci:0000:01:00.0)"
-              description: "Le volume fonctionne sans redondance. Remplacer le disque en panne ; une seconde panne dans ce volume serait fatale."
+              summary: "Volume RAID 1 dégradé (pci:0000:01:00.0)"
+              description: "Le volume fonctionne sans redondance : un membre est perdu, ou l'état d'un membre est inconnu. Identifier le disque concerné (états des disques, outil du constructeur) et le remplacer s'il est en panne ; une panne de plus dans ce volume serait fatale."
 
   # Contrôleur disparu alors que la découverte réussit ; découverte en
   # échec ; collecte jamais publiée ; exporter injoignable.
@@ -381,7 +421,7 @@ tests:
           - exp_labels: {severity: warning, controller: "serial:A", volume: "1d000000", state: unknown}
             exp_annotations:
               summary: "État du volume 1d000000 non déterminé (serial:A)"
-              description: "La carte a répondu mais l'état n'est pas interprétable avec certitude (type non qualifié, membre non optimal sur un assemblage). Vérifier les volumes membres et l'outil du constructeur."
+              description: "La carte a répondu mais l'état n'est pas interprétable avec certitude (niveau non établi, migration, drapeau de membre inconnu, assemblage incohérent). Vérifier les volumes membres et l'outil du constructeur."
       - eval_time: 46m
         alertname: HwraidVolumeStateUnknown
         exp_alerts: []

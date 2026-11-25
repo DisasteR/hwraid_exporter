@@ -29,7 +29,7 @@ func TestDecodeDiskInfoReference(t *testing.T) {
 			Phy: uint8(4*(n/4) + 3 - n%4),
 			// Octets d'état identiques sur les huit disques, « Online » pour
 			// l'outil témoin (docs/aacraid-interface.md, section 6 bis).
-			HasStatus: true, Flags0: 0x03, Status68: 0x70, Status69: 0x10}
+			Flags0: 0x03, Status68: 0x70, Status69: 0x10, HasStatus332: true}
 		if i != exp {
 			t.Fatalf("disque %d :\n got %+v\nwant %+v", n, i, exp)
 		}
@@ -79,12 +79,28 @@ func TestDecodeDiskInfoStatusOffsets(t *testing.T) {
 	if i.Flags0 != 0xa1 || i.Status68 != 0xa2 || i.Status69 != 0xa3 || i.Status70 != 0xa4 || i.Qualifier != 0xa5 || i.Status332 != 0xa6a7a8a9 {
 		t.Fatalf("%+v", i)
 	}
-	// Réponse sans les octets 332-335 : inventaire décodé, sans état.
+	// Réponse sans les octets 332-335 : inventaire et octets 0 à 80
+	// décodés (le bit de panne de l'octet 68 compris), pas l'octet 332.
 	short, err := DecodeDiskInfo(d[:335])
-	if err != nil || short.HasStatus || short.Status68 != 0 || short.Serial != i.Serial {
+	if err != nil || short.HasStatus332 || short.Status332 != 0 || short.Status68 != 0xa2 || short.Serial != i.Serial {
 		t.Fatalf("réponse courte : %+v %v", short, err)
 	}
 	if _, err := DecodeDiskInfo(d[:295]); err == nil {
 		t.Fatal("réponse sans le WWN acceptée")
+	}
+}
+
+// Disque déclaré en panne : bit 0x1 de l'octet 68 (valeur écrite en dur).
+func TestDiskInfoFailed(t *testing.T) {
+	for v, want := range map[uint8]bool{0x70: false, 0x71: true, 0x01: true, 0x02: false, 0xfe: false} {
+		if got := (DiskInfo{Status68: v}).Failed(); got != want {
+			t.Errorf("octet 68 = %#x : %v", v, got)
+		}
+	}
+	// Bit de panne lu même sur une réponse limitée à l'inventaire.
+	d := fixture(t, "248-0")
+	d[68] = 0x71
+	if i, err := DecodeDiskInfo(d[:296]); err != nil || !i.Failed() {
+		t.Errorf("réponse de 296 octets : %+v %v", i, err)
 	}
 }

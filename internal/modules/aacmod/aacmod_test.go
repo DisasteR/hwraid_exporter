@@ -550,6 +550,25 @@ func TestCollectVolumesReference(t *testing.T) {
 			}
 			return b
 		}, "raid6", "6 Reed-Solomon", "unknown", "unknown"},
+		{"RAID 6 Reed-Solomon ARCIO, un membre mort", func(r aacraid.PagedRead, p uint32, b []byte) []byte {
+			switch {
+			case r == aacraid.ReadContainerInfo && p == 0xfc:
+				b[48], b[56] = 13, 4
+			case r == aacraid.ReadMemberList && p == 0x1d000004:
+				// Quatre membres disques (3, 7, 0, 4), rangs 0 à 3 ; le
+				// disque 3 (premier membre) marqué mort.
+				e := append([]byte(nil), b[8:8+64]...)
+				for i, dsk := range []uint32{0, 4} {
+					x := append([]byte(nil), b[8:8+32]...)
+					binary.LittleEndian.PutUint32(x[0:], dsk)
+					binary.LittleEndian.PutUint16(x[10:], uint16(2+i))
+					e = append(e, x...)
+				}
+				e[12] = 0x04
+				b = append(binary.LittleEndian.AppendUint32(binary.LittleEndian.AppendUint32(nil, 0), 4), e...)
+			}
+			return b
+		}, "raid6", "6 Reed-Solomon", "reduced_redundancy", "reduced_redundancy"},
 		{"miroir en migration", func(r aacraid.PagedRead, p uint32, b []byte) []byte {
 			if r == aacraid.ReadContainerInfo && p == 0xfc {
 				b[120] = 3
@@ -1349,5 +1368,60 @@ func TestCollectInvalidRank(t *testing.T) {
 	}
 	if !r.Collected[CapabilitiesCollector] {
 		t.Fatalf("capacités touchées : %+v", r.Collected)
+	}
+}
+
+// Bout en bout : la 248 du disque 7 le déclare en panne (bit 0x1 de
+// l'octet 68), les drapeaux de son membre restent nuls. Son miroir est
+// dégradé, l'assemblage aussi, le disque est publié en panne. Si la 248 ne
+// peut pas être lue entièrement, les états sont calculés sans elle : une
+// panne lue sur un disque précédent (le 3) ne compte pas non plus.
+func TestCollectDiskDeclaredFailed(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
+	for _, readable := range []bool{true, false} {
+		d := &fakeDev{info: hba, sup: arcIo, paged: func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
+			b, err := referencePaged(r, p, size)
+			if err == nil && r == aacraid.ReadDiskInfo && p == 3 && !readable {
+				b[68] |= 0x01 // lu avant l'échec : ne doit pas compter
+			}
+			if err == nil && r == aacraid.ReadDiskInfo && p == 7 {
+				if !readable {
+					return nil, errors.New("EIO")
+				}
+				b[68] |= 0x01
+			}
+			return b, err
+		}}
+		res := withDev(d, nil).Collect(context.Background(), card("0000:01:00.0", "0"), ref)
+		want := map[string]string{"1d000004": "degraded", "1d000000": "degraded"}
+		disk := "failed"
+		if !readable {
+			want = map[string]string{"1d000004": "optimal", "1d000000": "optimal"}
+			disk = "online"
+		}
+		for _, v := range res.Volumes {
+			if w, ok := want[v.ID]; ok && v.State != w {
+				t.Errorf("248 lisible %v : volume %s %s, attendu %s", readable, v.ID, v.State, w)
+			}
+		}
+		states := map[string]string{}
+		for _, dk := range res.Disks {
+			states[dk.ID] = dk.State
+		}
+		// d3 partage le miroir de d7 : en ligne dans les deux cas (sa panne
+		// injectée quand la 248 échoue ensuite ne compte pas).
+		if states["d7"] != disk || states["d3"] != "online" {
+			t.Errorf("248 lisible %v : disques %v", readable, states)
+		}
+		seen := 0
+		for _, v := range res.Volumes {
+			if _, ok := want[v.ID]; ok {
+				seen++
+			}
+		}
+		if seen != 2 || len(res.Volumes) != 5 || res.Collected["disk_inventory"] != readable {
+			t.Errorf("248 lisible %v : %+v", readable, res)
+		}
 	}
 }

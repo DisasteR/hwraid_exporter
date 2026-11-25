@@ -298,7 +298,7 @@ func hostOf(c module.Card) (int, sysfs.SCSIHost, error) {
 // la liste des disques présents : il n'est pas lu si la configuration ne
 // l'a pas été.
 func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.SCSIHost) {
-	vols, disks, present, err := readConfiguration(d)
+	cs, present, err := readConfiguration(d)
 	for _, col := range StateCollectors {
 		r.Collected[col] = err == nil
 	}
@@ -308,8 +308,23 @@ func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.
 		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("configuration: %w; disk inventory and location not read", err))
 		return
 	}
-	r.Volumes, r.Disks = vols, disks
+	// L'inventaire (248) est lu avant le calcul des états : un disque qu'il
+	// déclare en panne compte comme membre perdu, comme dans l'outil de
+	// référence. S'il n'a pas pu être lu, les états sont calculés sans lui
+	// (drapeaux des membres et liste des disques présents) ; son échec reste
+	// visible par son propre collecteur.
 	inv, err := readInventory(d, present)
+	var failed map[uint32]bool
+	if err == nil {
+		failed = map[uint32]bool{}
+		for _, i := range inv {
+			if i.Failed() {
+				failed[i.Number] = true
+			}
+		}
+	}
+	ev := aacraid.Evaluate(cs, present, failed)
+	r.Volumes, r.Disks = volumesOf(cs, ev), disksOf(ev)
 	r.Collected[DiskInventoryCollector] = err == nil
 	if err != nil {
 		r.Collected[DiskLocationCollector] = false
@@ -453,63 +468,62 @@ func readInventory(d reader, nums []uint32) ([]aacraid.DiskInfo, error) {
 	return out, nil
 }
 
-func readConfiguration(d reader) ([]module.Volume, []module.Disk, []uint32, error) {
+func readConfiguration(d reader) ([]aacraid.Container, []uint32, error) {
 	raw, err := d.ReadPaged(aacraid.ReadContainerList, 0, 0, aacraid.ContainerListNeed)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	nums, err := aacraid.DecodeContainerList(raw)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	var cs []aacraid.Container
 	for _, n := range nums {
 		raw, err := d.ReadPaged(aacraid.ReadContainerInfo, n, 0, func([]byte) int { return aacraid.ContainerInfoNeed })
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, err
 		}
 		info, err := aacraid.DecodeContainerInfo(raw)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, err
 		}
 		for _, prev := range cs {
 			if prev.Info.UID == info.UID {
-				return nil, nil, nil, fmt.Errorf("duplicate container UID %#x (containers %d and %d)", info.UID, prev.Number, n)
+				return nil, nil, fmt.Errorf("duplicate container UID %#x (containers %d and %d)", info.UID, prev.Number, n)
 			}
 		}
 		cs = append(cs, aacraid.Container{Number: n, Info: info})
 	}
 	raw, err = d.ReadPaged(aacraid.ReadDiskList, 0, 0, aacraid.DiskListNeed)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	disks, err := aacraid.DecodeDiskList(raw)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	for i := range cs {
 		size := aacraid.MemberListSize(cs[i].Info.Members)
 		raw, err := d.ReadPaged(aacraid.ReadMemberList, cs[i].Info.UID, size, func([]byte) int { return int(size) })
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, err
 		}
 		if cs[i].Members, err = aacraid.DecodeMemberList(raw); err != nil {
-			return nil, nil, nil, err
+			return nil, nil, err
 		}
 		if len(cs[i].Members) != cs[i].Info.Members {
-			return nil, nil, nil, fmt.Errorf("container %#x: %d members announced, %d listed", cs[i].Info.UID, cs[i].Info.Members, len(cs[i].Members))
+			return nil, nil, fmt.Errorf("container %#x: %d members announced, %d listed", cs[i].Info.UID, cs[i].Info.Members, len(cs[i].Members))
 		}
 		seen := map[[2]uint32]bool{}
 		for _, mb := range cs[i].Members {
 			k := [2]uint32{mb.Disk, mb.ChildUID}
 			if seen[k] {
-				return nil, nil, nil, fmt.Errorf("container %#x: member listed twice (disk %#x, container %#x)", cs[i].Info.UID, mb.Disk, mb.ChildUID)
+				return nil, nil, fmt.Errorf("container %#x: member listed twice (disk %#x, container %#x)", cs[i].Info.UID, mb.Disk, mb.ChildUID)
 			}
 			seen[k] = true
 		}
 	}
-	ev := aacraid.Evaluate(cs, disks)
-	return volumesOf(cs, ev), disksOf(ev), disks, nil
+	return cs, disks, nil
 }
 
 func uidID(uid uint32) string { return fmt.Sprintf("%08x", uid) }

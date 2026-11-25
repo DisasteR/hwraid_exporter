@@ -101,7 +101,7 @@ func TestDecodeReferenceConfiguration(t *testing.T) {
 			t.Fatalf("miroir %#x absent de l'assemblage", uid)
 		}
 	}
-	ev := Evaluate(cs, disks)
+	ev := Evaluate(cs, disks, nil)
 	for uid, st := range ev.Volumes {
 		if st != VolumeOptimal {
 			t.Fatalf("conteneur %#x : %s", uid, st)
@@ -147,15 +147,15 @@ func TestEvaluateBranches(t *testing.T) {
 		return out
 	}
 	cases := []tc{
-		{"disque 7 absent", func(cs []Container, d []uint32) []uint32 { return without(d, 7) }, VolumeDegraded, VolumeUnknown, DiskFailed},
-		{"membre 7 défaillant, disque présent", func(cs []Container, d []uint32) []uint32 { setFlags(cs, 7, MemberDead); return d }, VolumeDegraded, VolumeUnknown, ""},
-		{"membre 7 en reconstruction", func(cs []Container, d []uint32) []uint32 { setFlags(cs, 7, MemberRebuilding); return d }, VolumeDegradedRebuilding, VolumeUnknown, DiskRebuilding},
+		{"disque 7 absent", func(cs []Container, d []uint32) []uint32 { return without(d, 7) }, VolumeDegraded, VolumeDegraded, DiskFailed},
+		{"membre 7 défaillant, disque présent", func(cs []Container, d []uint32) []uint32 { setFlags(cs, 7, MemberDead); return d }, VolumeDegraded, VolumeDegraded, ""},
+		{"membre 7 en reconstruction", func(cs []Container, d []uint32) []uint32 { setFlags(cs, 7, MemberRebuilding); return d }, VolumeDegradedRebuilding, VolumeDegradedRebuilding, DiskRebuilding},
 		{"reconstruction prioritaire sur défaillance", func(cs []Container, d []uint32) []uint32 {
 			setFlags(cs, 7, MemberRebuilding|MemberDead)
 			return d
-		}, VolumeDegradedRebuilding, VolumeUnknown, DiskRebuilding},
+		}, VolumeDegradedRebuilding, VolumeDegradedRebuilding, DiskRebuilding},
 		{"drapeau inconnu", func(cs []Container, d []uint32) []uint32 { setFlags(cs, 7, 0x10); return d }, VolumeUnknown, VolumeUnknown, ""},
-		{"deux disques absents", func(cs []Container, d []uint32) []uint32 { return without(without(d, 7), 3) }, VolumeFailed, VolumeUnknown, DiskFailed},
+		{"deux disques absents", func(cs []Container, d []uint32) []uint32 { return without(without(d, 7), 3) }, VolumeFailed, VolumeFailed, DiskFailed},
 		{"liste des membres incomplète", func(cs []Container, d []uint32) []uint32 {
 			for i := range cs {
 				if cs[i].Info.UID == mirror {
@@ -168,7 +168,7 @@ func TestEvaluateBranches(t *testing.T) {
 	for _, c := range cases {
 		cs, disks := referenceContainers(t)
 		disks = c.mod(cs, disks)
-		ev := Evaluate(cs, disks)
+		ev := Evaluate(cs, disks, nil)
 		if ev.Volumes[mirror] != c.mirror || ev.Volumes[0x1d000000] != c.top || ev.Disks[7] != c.disk7 {
 			t.Fatalf("%s : miroir %s, volume %s, disque 7 %q", c.name, ev.Volumes[mirror], ev.Volumes[0x1d000000], ev.Disks[7])
 		}
@@ -181,7 +181,7 @@ func TestEvaluateBranches(t *testing.T) {
 	// Type sans niveau connu : indéterminé, jamais deviné.
 	cs, disks := referenceContainers(t)
 	cs[1].Info.Type = 6
-	if st := Evaluate(cs, disks).Volumes[cs[1].Info.UID]; st != VolumeUnknown {
+	if st := Evaluate(cs, disks, nil).Volumes[cs[1].Info.UID]; st != VolumeUnknown {
 		t.Fatalf("type 6 : %s", st)
 	}
 }
@@ -213,31 +213,31 @@ func TestEvaluateFollowsLevel(t *testing.T) {
 	}
 	cs, disks := referenceContainers(t)
 	cs[idx(cs)].Info.SelectA = 3 // type 3 classique : RAID 0
-	if st := Evaluate(cs, without7(disks)).Volumes[mirror]; st != VolumeUnknown {
+	if st := Evaluate(cs, without7(disks), nil).Volumes[mirror]; st != VolumeUnknown {
 		t.Fatalf("RAID 0 classique à un disque absent : %s", st)
 	}
 	cs, disks = referenceContainers(t)
 	cs[idx(cs)].Info.SelectB, cs[idx(cs)].Info.Type = 1, 2 // type 2 classique : miroir
-	if st := Evaluate(cs, without7(disks)).Volumes[mirror]; st != VolumeUnknown {
+	if st := Evaluate(cs, without7(disks), nil).Volumes[mirror]; st != VolumeUnknown {
 		t.Fatalf("miroir classique à un disque absent : %s", st)
 	}
 	cs, disks = referenceContainers(t)
 	for i := 1; i < len(cs); i++ {
 		cs[i].Info.SelectB, cs[i].Info.Type = 1, 2
 	}
-	ev := Evaluate(cs, disks)
+	ev := Evaluate(cs, disks, nil)
 	if ev.Volumes[0x1d000000] != VolumeUnknown || ev.Volumes[mirror] != VolumeUnknown {
 		t.Fatalf("assemblage de miroirs classiques : %s, miroir %s", ev.Volumes[0x1d000000], ev.Volumes[mirror])
 	}
 	// Miroir classique en migration propre : indéterminé aussi.
 	cs, disks = referenceContainers(t)
 	cs[idx(cs)].Info.SelectB, cs[idx(cs)].Info.Type, cs[idx(cs)].Info.Task = 1, 2, 3
-	if st := Evaluate(cs, disks).Volumes[mirror]; st != VolumeUnknown {
+	if st := Evaluate(cs, disks, nil).Volumes[mirror]; st != VolumeUnknown {
 		t.Fatalf("miroir classique en migration : %s", st)
 	}
 	cs, disks = referenceContainers(t)
 	cs[idx(cs)].Info.Task = 3
-	ev = Evaluate(cs, disks)
+	ev = Evaluate(cs, disks, nil)
 	if ev.Volumes[mirror] != VolumeUnknown || ev.Volumes[0x1d000000] != VolumeUnknown {
 		t.Fatalf("miroir en migration : %s, assemblage %s", ev.Volumes[mirror], ev.Volumes[0x1d000000])
 	}
@@ -295,7 +295,7 @@ func TestEvaluateInconsistent(t *testing.T) {
 	for name, mod := range cases {
 		cs, disks := referenceContainers(t)
 		mod(cs)
-		if st := Evaluate(cs, disks).Volumes[top]; st != VolumeUnknown {
+		if st := Evaluate(cs, disks, nil).Volumes[top]; st != VolumeUnknown {
 			t.Fatalf("%s : volume %s", name, st)
 		}
 	}
@@ -304,19 +304,10 @@ func TestEvaluateInconsistent(t *testing.T) {
 	for i, j := 0, len(cs)-1; i < j; i, j = i+1, j-1 {
 		cs[i], cs[j] = cs[j], cs[i]
 	}
-	if st := Evaluate(cs, disks).Volumes[top]; st != VolumeOptimal {
+	if st := Evaluate(cs, disks, nil).Volumes[top]; st != VolumeOptimal {
 		t.Fatalf("ordre inversé : %s", st)
 	}
-	// Assemblage imbriqué : indéterminé, même si l'assemblage enfant est optimal.
-	cs, disks = referenceContainers(t)
-	inner := cs[0]
-	inner.Info.UID, inner.Info.Parent = 0x99, top
-	outer := Container{Info: ContainerInfo{UID: 0x98, Type: TypeAssembly, Parent: NoUID, Members: 1},
-		Members: []Member{{Disk: NoUID, ChildUID: 0x99}}}
-	ev := Evaluate(append(append([]Container{outer}, cs[1:]...), inner), disks)
-	if ev.Volumes[0x98] != VolumeUnknown {
-		t.Fatalf("assemblage imbriqué : %s", ev.Volumes[0x98])
-	}
+	// Assemblages imbriqués : TestEvaluateNestedAssembly (state_test.go).
 }
 
 func TestContainerNamePrintable(t *testing.T) {
