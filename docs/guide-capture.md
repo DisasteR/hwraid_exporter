@@ -12,7 +12,7 @@ Ce guide s'adresse à une personne qui dispose d'une carte RAID que l'exporter n
 | Situation | Signe dans les métriques de l'exporter |
 |---|---|
 | La carte n'est pas prise en charge pour une fonction | `hwraid_collector_supported{collector="…"} 0` |
-| Le modèle ou le firmware n'a jamais été qualifié | Le couple des labels `model` et `firmware` de `hwraid_controller_info` est absent de la liste des couples qualifiés |
+| Le modèle n'a jamais été qualifié, ou le firmware n'a jamais été validé | `hwraid_controller_qualified 0`, ou un firmware (label `firmware` de `hwraid_controller_info`) absent de la [table des modèles qualifiés](aacraid-interface.md#modèles-qualifiés) |
 | Un état n'a jamais été observé : volume dégradé, reconstruction, disque de secours, protection du cache en panne | — |
 
 ## 2. Principe
@@ -44,6 +44,6 @@ Pour chaque lecture, les mainteneurs associent les octets de la réponse aux val
 
 - ajoutent la requête à la liste blanche du module si elle est une lecture, si sa partie significative est identique à la capture et si les autres octets sont démontrés résiduels (exigence S4) ;
 - écrivent le décodage et ses tests à partir des réponses anonymisées ;
-- complètent la description de l'interface du pilote et la liste des couples modèle et firmware qualifiés.
+- complètent la description de l'interface du pilote et la table des modèles qualifiés et de leurs firmwares validés.
 
-Une carte n'est déclarée prise en charge qu'après une recette sur ce matériel, faite par la personne qui a fourni les captures.
+Un modèle n'est déclaré qualifié, et un firmware validé, qu'après une recette sur ce matériel, faite par la personne qui a fourni les captures. La lecture d'une carte non qualifiée autorisée par `-allow-unqualified` n'en tient pas lieu.

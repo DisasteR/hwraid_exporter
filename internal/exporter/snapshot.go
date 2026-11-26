@@ -25,8 +25,11 @@ type Controller struct {
 	PCIAddress     string
 	Driver         string
 	Backend        string // module de collecte, vide si aucun
-	Model          string
-	Firmware       string
+	// Qualified : modèle qualifié par son module ; nil si le module ne
+	// qualifie pas ses cartes (ou s'il n'y a pas de module).
+	Qualified *bool
+	Model     string
+	Firmware  string
 	// NodeChecked indique qu'une vérification du nœud a été tentée ;
 	// NodeValid en donne le résultat.
 	NodeChecked, NodeValid bool
@@ -131,6 +134,10 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 		}
 		if pc.Module != nil {
 			c.Backend = pc.Module.Name()
+			if q, ok := pc.Module.(module.Qualifier); ok {
+				v := q.Qualified(pc.Card)
+				c.Qualified = &v
+			}
 			c.CloseUnconfirmed = hist.Closes(addr)
 			c.NodeChecked = true
 			if lr, ok := results[addr]; ok && lr.LateErr != nil {
@@ -264,6 +271,12 @@ func Render(s Snapshot) string {
 	gauge("hwraid_controller_backend_supported", "1 if a module can collect this card.")
 	for _, c := range s.Controllers {
 		fmt.Fprintf(&b, "hwraid_controller_backend_supported{%s} %d\n", labels("controller", c.Label), b2i(c.Backend != ""))
+	}
+	gauge("hwraid_controller_qualified", "1 if the card model is qualified by its module, 0 otherwise; only for modules that qualify their cards.")
+	for _, c := range s.Controllers {
+		if c.Qualified != nil {
+			fmt.Fprintf(&b, "hwraid_controller_qualified{%s} %d\n", labels("controller", c.Label), b2i(*c.Qualified))
+		}
 	}
 	gauge("hwraid_management_node_valid", "1 if the dedicated management node matches the card, 0 otherwise.")
 	for _, c := range s.Controllers {

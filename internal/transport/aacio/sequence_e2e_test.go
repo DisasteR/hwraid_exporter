@@ -9,7 +9,10 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"github.com/DisasteR/hwraid_exporter/internal/module"
+	"github.com/DisasteR/hwraid_exporter/internal/sysfs"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -44,8 +47,26 @@ type cardFirmware struct {
 	clearFeatureBits               uint32
 	fail703                        bool
 	payloads                       map[string][]byte
-	// transfert en cours
-	payload []byte
+	// fail706 : la 706 échoue (EIO).
+	fail706 bool
+	// Ouverture : paused, carte en pause (704) ; revBuild, build annoncé par
+	// la 701 (0 : 19204, carte de référence) ; noSupplement, 703 sans le
+	// bit 16 (706 non annoncée).
+	paused       bool
+	revBuild     uint32
+	noSupplement bool
+	// subsystem : identifiant de sous-système annoncé par GET_HBA_INFO
+	// (0 : 0x0301, carte de référence).
+	subsystem uint32
+	// totals : taille annoncée à chaque ouverture, dans l'ordre.
+	totals []uint32
+	// pairs : requête et réponse de chaque VM_ContainerConfig de
+	// transfert (comptage exclu), dans l'ordre.
+	pairs [][2][]byte
+	// transfert en cours : contenu, taille et identifiant tenus par le faux
+	// firmware, indépendamment des requêtes reçues
+	payload        []byte
+	curTotal, curX uint32
 }
 
 func (f *cardFirmware) fixture(name string) []byte {
@@ -67,7 +88,11 @@ func (f *cardFirmware) ioctl(req uint32, buf []byte) error {
 	switch req {
 	case aacraid.IoctlGetHBAInfo:
 		buf[50], buf[51], buf[52] = 0, 1, 0
-		for off, v := range map[int]uint32{60: 0x9005, 64: 0x028b, 68: 0x9005, 72: 0x0301} {
+		sub := f.subsystem
+		if sub == 0 {
+			sub = 0x0301
+		}
+		for off, v := range map[int]uint32{60: 0x9005, 64: 0x028b, 68: 0x9005, 72: sub} {
 			le.PutUint32(buf[off:], v)
 		}
 		return nil
@@ -80,7 +105,26 @@ func (f *cardFirmware) ioctl(req uint32, buf []byte) error {
 	}
 	d := buf[aacraid.FIBHeaderSize:]
 	switch cmd := le.Uint16(buf[4:]); cmd {
+	case aacraid.CmdIsAdapterPaused: // réponse capturée : 4 octets de données
+		le.PutUint32(buf[0:], 0)
+		le.PutUint16(buf[8:], aacraid.FIBHeaderSize+4)
+		if f.paused {
+			d[0] = 1
+		}
+	case aacraid.CmdCheckRevision: // réponse capturée
+		le.PutUint32(buf[0:], 0)
+		le.PutUint16(buf[8:], aacraid.FIBHeaderSize+12)
+		build := f.revBuild
+		if build == 0 {
+			build = 19204
+		}
+		for i, w := range []uint32{1, 0x05030400, build, 0xffffffff} {
+			le.PutUint32(d[4*i:], w)
+		}
 	case aacraid.CmdRequestSupplementAdapterInfo:
+		if f.fail706 {
+			return unix.EIO
+		}
 		le.PutUint16(buf[8:], aacraid.FIBSize)
 		le.PutUint32(d[0x20:], 15)                                                // Version
 		le.PutUint32(d[0x24:], 0x0fff57df&^f.clearFeatureBits|f.extraFeatureBits) // FeatureBits capturé : bits 8 et 9, sans bit 13
@@ -90,7 +134,11 @@ func (f *cardFirmware) ioctl(req uint32, buf []byte) error {
 			return unix.EIO
 		}
 		le.PutUint16(buf[8:], aacraid.FIBSize)
-		le.PutUint32(d[80:], 0x141f1d7c|f.extraOptions) // SupportedOptions capturé : capteur, sans bit 15
+		opts := 0x141f1d7c | f.extraOptions // SupportedOptions capturé : capteur, bit 16, sans bit 15
+		if f.noSupplement {
+			opts = 0x141e1d7c | f.extraOptions // valeur capturée sans le bit 16 (0x10000), écrite en clair
+		}
+		le.PutUint32(d[80:], opts)
 	case aacraid.CmdAdapterEnvironmentInfo:
 		le.PutUint16(buf[8:], aacraid.FIBSize)
 		le.PutUint32(d[0:], 0)
@@ -132,15 +180,20 @@ func (f *cardFirmware) ioctl(req uint32, buf []byte) error {
 }
 
 func (f *cardFirmware) paged(buf []byte) {
+	req := append([]byte(nil), buf...)
+	defer func() { f.pairs = append(f.pairs, [2][]byte{req, append([]byte(nil), buf...)}) }()
 	le := binary.LittleEndian
 	d := buf[aacraid.FIBHeaderSize:]
 	le.PutUint16(buf[8:], aacraid.ChunkRspSize)
 	sub := le.Uint32(d[4:])
 	switch sub {
-	case 83: // morceau
+	case 83: // morceau : mots de réponse écrits depuis l'état du transfert
 		n := le.Uint32(d[24:])
 		le.PutUint32(d[0:], 0)
 		le.PutUint32(d[8:], aacraid.MarkChunk)
+		for off, v := range map[int]uint32{12: f.curTotal, 16: aacraid.CodeOK, 20: f.curX, 24: n, 28: f.curTotal} {
+			le.PutUint32(d[off:], v)
+		}
 		chunk := make([]byte, aacraid.ChunkData)
 		if off := int(n) * aacraid.ChunkData; off < len(f.payload) {
 			copy(chunk, f.payload[off:])
@@ -158,6 +211,8 @@ func (f *cardFirmware) paged(buf []byte) {
 		}
 		f.xfer++
 		total := uint32(len(f.payload))
+		f.totals = append(f.totals, total)
+		f.curTotal, f.curX = total, 0x00060200+f.xfer
 		le.PutUint32(d[0:], 0)
 		le.PutUint32(d[8:], 0xc9)
 		le.PutUint32(d[12:], total)
@@ -182,12 +237,15 @@ func containerCountRequest() string {
 
 // expectedSequence est la séquence de référence de la v0.2.0
 // (testdata/sequence-6805.txt, enregistrée sur le transport avant toute
-// modification) avec les seules évolutions attendues depuis : la requête
-// CT_GET_CONTAINER_COUNT avant la première ouverture de la 229 du premier
-// cycle (réponse gardée au second).
+// modification) avec les seules évolutions attendues depuis : l'ouverture
+// de la carte comme l'outil (704 à chaque cycle, puis au premier cycle 701,
+// et la 703 avant la 706) ; la protection du cache (0x30000 puis 0x700000)
+// lue après la 703 et la 803 de chaque cycle, et non plus juste après la
+// 706 ; la requête CT_GET_CONTAINER_COUNT avant la première ouverture de la
+// 229 du premier cycle (réponse gardée au second).
 func expectedSequence(t *testing.T, golden []byte) []byte {
 	t.Helper()
-	lines := strings.SplitAfter(string(golden), "\n")
+	lines := openAsTool(t, moveCacheAfter803(t, strings.SplitAfter(string(golden), "\n")))
 	// Ouverture de la 229 : en-tête des requêtes paginées, puis [2, 229, …].
 	open229 := fmt.Sprintf("%#x 01001000f4010100e0010002%s02000000e5000000", aacraid.IoctlSendFIB, strings.Repeat("00", aacraid.FIBHeaderSize-12))
 	for i, l := range lines {
@@ -198,6 +256,87 @@ func expectedSequence(t *testing.T, golden []byte) []byte {
 	}
 	t.Fatal("ouverture de la 229 absente de la séquence de référence")
 	return nil
+}
+
+// capturedRequest écrit une requête de l'outil telle que capturée (en-tête
+// sans les octets d'adresse, données significatives), le reste à zéro.
+func capturedRequest(head, data string) string {
+	b := make([]byte, aacraid.FIBSize)
+	h, _ := hex.DecodeString(head)
+	d, _ := hex.DecodeString(data)
+	copy(b, h)
+	copy(b[aacraid.FIBHeaderSize:], d)
+	return fmt.Sprintf("%#x %s\n", aacraid.IoctlSendFIB, hex.EncodeToString(b))
+}
+
+// openAsTool applique l'ouverture de l'outil à la séquence de la v0.2.0 :
+// après GET_HBA_INFO, la 704 à chaque cycle ; au premier cycle, la 701 puis
+// la 703 avant la 706 (la 701 acceptée est gardée au second).
+func openAsTool(t *testing.T, lines []string) []string {
+	t.Helper()
+	paused := capturedRequest("01001000c002010004000002", "")
+	revision := capturedRequest("01001000bd0201000c000002", "04000000000404070a510000")
+	send := fmt.Sprintf("%#x ", aacraid.IoctlSendFIB)
+	hba := fmt.Sprintf("%#x ", aacraid.IoctlGetHBAInfo)
+	var out []string
+	cycle := 0
+	for i := 0; i < len(lines); i++ {
+		l := lines[i]
+		switch {
+		case strings.HasPrefix(l, "# cycle"):
+			cycle++
+			out = append(out, l)
+		case strings.HasPrefix(l, hba):
+			out = append(out, l, paused)
+			if cycle == 1 {
+				// v0.2.0 : 706 puis 703 juste après GET_HBA_INFO.
+				if i+2 >= len(lines) || !strings.HasPrefix(lines[i+1], send+"01000000c2020100") || !strings.HasPrefix(lines[i+2], send+"01000000bf020100") {
+					t.Fatal("cycle 1 : 706 puis 703 attendues après GET_HBA_INFO dans la séquence de référence")
+				}
+				out = append(out, revision, lines[i+2], lines[i+1])
+				i += 2
+			}
+		default:
+			out = append(out, l)
+		}
+	}
+	if cycle != 2 {
+		t.Fatalf("%d cycles dans la séquence de référence", cycle)
+	}
+	return out
+}
+
+// moveCacheAfter803 déplace, dans chaque cycle, les deux requêtes de la
+// protection du cache juste après la requête 803. Préfixes écrits ici en
+// clair (en-tête FIB et premier mot) plutôt que construits par le code testé.
+func moveCacheAfter803(t *testing.T, lines []string) []string {
+	t.Helper()
+	send := fmt.Sprintf("%#x ", aacraid.IoctlSendFIB)
+	cache := []string{send + "01001000f40101002c000002", send + "01001000f40101004c000002"}
+	env := send + "010010002303010004000002"
+	var out, held []string
+	moved := 0
+	for _, l := range lines {
+		switch {
+		case strings.HasPrefix(l, "# cycle"):
+			if len(held) != 0 {
+				t.Fatal("protection du cache sans 803 dans le cycle précédent")
+			}
+			out = append(out, l)
+		case len(held) < 2 && strings.HasPrefix(l, cache[len(held)]):
+			held = append(held, l)
+		case strings.HasPrefix(l, env):
+			out = append(append(out, l), held...)
+			moved += len(held)
+			held = nil
+		default:
+			out = append(out, l)
+		}
+	}
+	if moved != 4 || len(held) != 0 {
+		t.Fatalf("protection du cache : %d requêtes déplacées, 4 attendues", moved)
+	}
+	return out
 }
 
 // Séquence de référence de la carte qualifiée (CDC, section 6.11,
@@ -335,11 +474,27 @@ func TestCapabilityRefusalsSendNothing(t *testing.T) {
 		if len(fw.log) == 0 || r.Collected["volumes"] {
 			t.Errorf("%s : %d ioctl, collecteurs %v", name, len(fw.log), r.Collected)
 		}
+		// 703 en échec : l'ouverture s'arrête, rien après la 703.
+		if fw.fail703 {
+			want := []string{fmt.Sprintf("%#x", aacraid.IoctlGetHBAInfo)}
+			for _, cmd := range []int{aacraid.CmdIsAdapterPaused, aacraid.CmdCheckRevision, aacraid.CmdRequestAdapterInfo} {
+				want = append(want, fmt.Sprintf("%#x/%d", aacraid.IoctlSendFIB, cmd))
+			}
+			if got := fibCommands(t, fw.log); !slices.Equal(got, want) {
+				t.Errorf("703 en échec : ioctl %v, attendu %v", got, want)
+			}
+		}
+		// Protection du cache : jamais sans 703 valide ; lue sinon, les
+		// refus par capacité ne concernant que les transferts paginés.
+		if n, want := cacheProtectionSent(t, fw.log), !fw.fail703; (n != 0) != want {
+			t.Errorf("%s : protection du cache envoyée %d fois", name, n)
+		}
 	}
 }
 
 // Liste des conteneurs annonçant plus d'entrées que MaxContainers : seul le
-// premier morceau est demandé (ioctl émis), puis le transfert est clos.
+// premier morceau est demandé (ioctl émis), puis le transfert est abandonné
+// sans clôture (règle 2).
 func TestOversizedContainerListStopsAfterFirstChunk(t *testing.T) {
 	list, err := aacraid.NewAllowlist()
 	if err != nil {
@@ -363,12 +518,10 @@ func TestOversizedContainerListStopsAfterFirstChunk(t *testing.T) {
 			break
 		}
 	}
-	// Ouverture et morceau 0 seulement pour la 229. La requête qui suit est
-	// aujourd'hui une clôture (le transport clôture après toute erreur de
-	// morceau) ; le CDC prévoit l'abandon sans clôture avec le point 19 : ce
-	// test n'en fait pas un attendu, il exige seulement qu'aucun autre
-	// morceau de ce transfert ne soit demandé.
-	if len(after229) != 3 || after229[1] != [2]uint32{83, 0} || after229[2][0] == 83 {
+	// Ouverture et morceau 0 seulement pour la 229, puis la lecture
+	// suivante (ouverture de la 247, chaîne des disques) : ni morceau ni
+	// clôture pour ce transfert.
+	if len(after229) != 3 || after229[1] != [2]uint32{83, 0} || after229[2][0] != 247 {
 		t.Fatalf("requêtes après l'ouverture de la 229 : %v", subs)
 	}
 	// Aucune autre lecture de la carte de référence ne dépasse un morceau
@@ -419,9 +572,9 @@ func TestFeatureBitsGateReads(t *testing.T) {
 }
 
 // Verrou de qualification (exigence S4), vérifié sur les ioctl émis : une
-// carte d'un autre firmware, qui annonce pourtant toutes les lectures, ne
-// reçoit que GET_HBA_INFO puis la 706.
-func TestUnqualifiedCardReceivesOnly706(t *testing.T) {
+// carte d'un modèle non qualifié et non désignée, qui annonce pourtant
+// toutes les lectures, ne reçoit que GET_HBA_INFO (réponse du pilote).
+func TestUnqualifiedCardReceivesNoFirmwareCommand(t *testing.T) {
 	list, err := aacraid.NewAllowlist()
 	if err != nil {
 		t.Fatal(err)
@@ -430,7 +583,9 @@ func TestUnqualifiedCardReceivesOnly706(t *testing.T) {
 	aacio.ReplaceIoctl(t, fw.ioctl)
 	c, refs := e2eCard()
 	c.Hosts[0].SerialNumber, c.Hosts[0].Model = "TEST0001", "ASR6805"
-	c.Hosts[0].Firmware = "5.2-0[19109]"
+	// Modèle non qualifié (sous-système), firmware de la carte de
+	// référence : le firmware seul ne qualifie pas.
+	c.PCI.SubsystemDevice, fw.subsystem = "0x0300", 0x0300
 	m := aacmod.New(list)
 	for cycle := 1; cycle <= 2; cycle++ {
 		fw.log = nil
@@ -447,12 +602,314 @@ func TestUnqualifiedCardReceivesOnly706(t *testing.T) {
 			}
 			cmds = append(cmds, req)
 		}
-		want := fmt.Sprintf("%#x %#x/706", aacraid.IoctlGetHBAInfo, aacraid.IoctlSendFIB)
-		if cycle == 2 {
-			want = fmt.Sprintf("%#x", aacraid.IoctlGetHBAInfo) // 706 gardée
+		want := fmt.Sprintf("%#x", aacraid.IoctlGetHBAInfo) // réponse du pilote, aucune FIB
+		{
 		}
 		if got := strings.Join(cmds, " "); got != want {
 			t.Fatalf("cycle %d : ioctl %s, attendu %s", cycle, got, want)
 		}
+	}
+}
+
+// toolSequence vérifie que chaque transfert paginé suit la suite de
+// commandes de l'outil de référence : ouverture, morceaux 0 à n-1 sans
+// interruption (n : taille annoncée divisée par 432, valeur littérale,
+// arrondie au-dessus), puis clôture. Rend le nombre de transferts.
+func toolSequence(t *testing.T, subs [][2]uint32, totals []uint32) int {
+	t.Helper()
+	opens := 0
+	for i := 0; i < len(subs); {
+		if subs[i][0] == 4 { // CT_GET_CONTAINER_COUNT, sans transfert
+			i++
+			continue
+		}
+		if opens >= len(totals) {
+			t.Fatalf("ouverture %d sans taille enregistrée : %v", opens, subs)
+		}
+		n := int((totals[opens] + 431) / 432)
+		want := [][2]uint32{{subs[i][0], 0}}
+		for k := 0; k < n; k++ {
+			want = append(want, [2]uint32{83, uint32(k)})
+		}
+		if i+n+2 > len(subs) || !slices.Equal(subs[i+1:i+1+n], want[1:]) || subs[i+1+n][0] != 84 {
+			t.Fatalf("transfert %d (lecture %d, %d octets, %d morceaux attendus) : %v", opens, subs[i][0], totals[opens], n, subs[i:min(len(subs), i+n+3)])
+		}
+		opens++
+		i += n + 2
+	}
+	if opens != len(totals) {
+		t.Fatalf("%d transferts suivis, %d ouverts", opens, len(totals))
+	}
+	return opens
+}
+
+// cacheProtectionSent compte les lectures de la protection du cache
+// (VM_Ioctl, mot 0 = 3) parmi les ioctl émis.
+func cacheProtectionSent(t *testing.T, log []string) int {
+	t.Helper()
+	n := 0
+	for _, l := range log {
+		req, h, _ := strings.Cut(l, " ")
+		b, err := hex.DecodeString(h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if req == fmt.Sprintf("%#x", aacraid.IoctlSendFIB) && binary.LittleEndian.Uint16(b[4:]) == 500 && binary.LittleEndian.Uint32(b[aacraid.FIBHeaderSize:]) == 3 {
+			n++
+		}
+	}
+	return n
+}
+
+// Hors du couple validé, les ioctl émis suivent la suite de l'outil : tous
+// les morceaux de chaque transfert, puis la clôture (sans l'écart E1), et la
+// protection du cache est lue comme sur la carte de référence (CDC,
+// sections 6.11 et 6.12).
+// Deux cas : modèle qualifié avec un autre firmware (lu par défaut), et
+// modèle non qualifié désigné par -allow-unqualified=aacraid. Sur la carte
+// de référence, chaque transfert s'arrête au morceau 0 (E1), et la
+// protection du cache est lue.
+func TestOutsideValidatedPairFollowsToolSequence(t *testing.T) {
+	list, err := aacraid.NewAllowlist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]struct {
+		mod   func(c *module.Card, fw *cardFirmware)
+		allow bool
+	}{
+		"modèle qualifié, autre firmware": {mod: func(c *module.Card, _ *cardFirmware) { c.Hosts[0].Firmware = "5.2-0[19109]" }},
+		"modèle non qualifié, option": {mod: func(c *module.Card, fw *cardFirmware) {
+			c.PCI.SubsystemDevice, fw.subsystem = "0x0300", 0x0300
+		}, allow: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			fw := &cardFirmware{t: t}
+			aacio.ReplaceIoctl(t, fw.ioctl)
+			c, refs := e2eCard()
+			c.Hosts[0].SerialNumber, c.Hosts[0].Model = "TEST0001", "ASR6805"
+			tc.mod(&c, fw)
+			m := aacmod.New(list)
+			if tc.allow {
+				m.AllowUnqualified()
+			}
+			r := m.Collect(context.Background(), c, refs)
+			if !r.Collected["volumes"] || !r.Collected["disks"] || !r.Collected[aacmod.DiskInventoryCollector] {
+				t.Fatalf("carte non lue : %+v", r)
+			}
+			subs, _ := containerConfigSent(t, fw.log)
+			// Au moins un transfert de plusieurs morceaux, pour que la
+			// différence avec l'arrêt anticipé soit observable.
+			multi := false
+			for _, total := range fw.totals {
+				multi = multi || total > 432
+			}
+			if !multi || toolSequence(t, subs, fw.totals) == 0 {
+				t.Fatalf("aucun transfert de plusieurs morceaux : %v", fw.totals)
+			}
+			toolWords(t, fw.pairs)
+			if n := cacheProtectionSent(t, fw.log); n == 0 || len(r.Unsupported) != 0 || !r.Collected[aacmod.CacheProtectionCollector] {
+				t.Fatalf("protection du cache : %d lectures, non pris en charge %v", n, r.Unsupported)
+			}
+		})
+	}
+	t.Run("carte de référence", func(t *testing.T) {
+		fw := &cardFirmware{t: t}
+		aacio.ReplaceIoctl(t, fw.ioctl)
+		c, refs := e2eCard()
+		c.Hosts[0].SerialNumber, c.Hosts[0].Model = "TEST0001", "ASR6805"
+		aacmod.New(list).Collect(context.Background(), c, refs)
+		subs, _ := containerConfigSent(t, fw.log)
+		for _, s := range subs {
+			if s == ([2]uint32{83, 1}) {
+				t.Fatalf("morceau 1 demandé sur le couple validé : %v", subs)
+			}
+		}
+		if cacheProtectionSent(t, fw.log) == 0 {
+			t.Fatal("protection du cache non lue sur le couple validé")
+		}
+		toolWords(t, fw.pairs)
+	})
+}
+
+// toolWords vérifie, sur les requêtes et réponses enregistrées, que chaque
+// requête de morceau ou de clôture est celle que l'outil de référence
+// construit à partir de la réponse précédente : il réécrit les mots 0, 1,
+// 5 et 6 (morceau) ou 0, 1 et 5 (clôture) et reprend les autres mots de la
+// réponse (preuve : analyse de l'outil, versions 2.05 et 3.07). Vérification
+// indépendante des constructeurs de requêtes de l'exporter.
+func toolWords(t *testing.T, pairs [][2][]byte) {
+	t.Helper()
+	le := binary.LittleEndian
+	w := func(b []byte, i int) uint32 { return le.Uint32(b[aacraid.FIBHeaderSize+4*i:]) }
+	var xfer uint32
+	checked := 0
+	for i, p := range pairs {
+		req, rsp := p[0], p[1]
+		switch sub := w(req, 1); sub {
+		case 83, 84:
+			if i == 0 {
+				t.Fatal("morceau sans ouverture")
+			}
+			prev := pairs[i-1][1]
+			keep := []int{2, 3, 4, 7}
+			if sub == 84 {
+				keep = append(keep, 6)
+			}
+			for _, k := range keep {
+				if w(req, k) != w(prev, k) {
+					t.Fatalf("requête %d (sous-commande %d) : mot %d = %#x, réponse précédente %#x", i, sub, k, w(req, k), w(prev, k))
+				}
+			}
+			if w(req, 0) != 2 || w(req, 5) != xfer {
+				t.Fatalf("requête %d : mots 0 et 5 = %#x, %#x (transfert %#x)", i, w(req, 0), w(req, 5), xfer)
+			}
+			// Requête entière : en-tête des requêtes paginées de l'outil
+			// (capture), le reste de l'en-tête et du tampon à zéro.
+			if hex.EncodeToString(req[:12]) != "01001000f4010100e0010002" {
+				t.Fatalf("requête %d : en-tête %x", i, req[:12])
+			}
+			for j, b := range req {
+				if (j >= 12 && j < aacraid.FIBHeaderSize || j >= aacraid.FIBHeaderSize+32) && b != 0 {
+					t.Fatalf("requête %d : octet %d non nul (%#x)", i, j, b)
+				}
+			}
+			checked++
+		default: // ouverture : identifiant rendu au mot 5
+			xfer = w(rsp, 5)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("aucune requête de morceau vérifiée")
+	}
+}
+
+// fibCommands rend la suite des ioctl émis (FIB : ioctl/commande).
+func fibCommands(t *testing.T, log []string) []string {
+	t.Helper()
+	var cmds []string
+	for _, l := range log {
+		req, h, _ := strings.Cut(l, " ")
+		b, err := hex.DecodeString(h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if req == fmt.Sprintf("%#x", aacraid.IoctlSendFIB) {
+			req += fmt.Sprintf("/%d", binary.LittleEndian.Uint16(b[4:]))
+		}
+		cmds = append(cmds, req)
+	}
+	return cmds
+}
+
+// Carte non qualifiée autorisée par l'option, 706 en échec : seuls
+// GET_HBA_INFO, l'ouverture (704, 701, 703) et la 706 atteignent le noyau.
+func TestAllowedUnqualifiedSupplementFailureIoctls(t *testing.T) {
+	list, err := aacraid.NewAllowlist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := &cardFirmware{t: t, fail706: true, subsystem: 0x0300}
+	aacio.ReplaceIoctl(t, fw.ioctl)
+	c, refs := e2eCard()
+	c.Hosts[0].SerialNumber, c.Hosts[0].Model = "TEST0001", "ASR6805"
+	c.PCI.SubsystemDevice = "0x0300"
+	m := aacmod.New(list)
+	m.AllowUnqualified()
+	m.Collect(context.Background(), c, refs)
+	want := []string{fmt.Sprintf("%#x", aacraid.IoctlGetHBAInfo)}
+	for _, cmd := range []int{aacraid.CmdIsAdapterPaused, aacraid.CmdCheckRevision, aacraid.CmdRequestAdapterInfo, aacraid.CmdRequestSupplementAdapterInfo} {
+		want = append(want, fmt.Sprintf("%#x/%d", aacraid.IoctlSendFIB, cmd))
+	}
+	if got := fibCommands(t, fw.log); !slices.Equal(got, want) {
+		t.Fatalf("ioctl %v, attendu %v", got, want)
+	}
+}
+
+// Même module, firmware mis à jour entre deux cycles : au premier cycle
+// (couple validé), arrêt au morceau 0 ; au second (autre firmware), suite
+// de l'outil ; protection du cache lue aux deux.
+func TestFirmwareChangeIoctls(t *testing.T) {
+	list, err := aacraid.NewAllowlist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := &cardFirmware{t: t}
+	aacio.ReplaceIoctl(t, fw.ioctl)
+	c, refs := e2eCard()
+	c.Hosts[0].SerialNumber, c.Hosts[0].Model = "TEST0001", "ASR6805"
+	m := aacmod.New(list)
+	m.Collect(context.Background(), c, refs)
+	subs, _ := containerConfigSent(t, fw.log)
+	if cacheProtectionSent(t, fw.log) == 0 || slices.Contains(subs, [2]uint32{83, 1}) {
+		t.Fatalf("premier cycle : protection du cache %d, morceaux %v", cacheProtectionSent(t, fw.log), subs)
+	}
+	fw.log, fw.totals, fw.pairs = nil, nil, nil
+	c.Hosts = append([]sysfs.SCSIHost(nil), c.Hosts...)
+	c.Hosts[0].Firmware = "5.3-0[19205]"
+	r := m.Collect(context.Background(), c, refs)
+	if r.CollectErr != nil || !r.Collected["volumes"] || !r.Collected["disks"] {
+		t.Fatalf("second cycle : carte non lue après la mise à jour : %v, %v", r.CollectErr, r.Collected)
+	}
+	// Identité changée : l'ouverture complète est relue (aucune réponse
+	// gardée sous l'ancien firmware n'est réutilisée).
+	open := []string{fmt.Sprintf("%#x", aacraid.IoctlGetHBAInfo)}
+	for _, cmd := range []int{aacraid.CmdIsAdapterPaused, aacraid.CmdCheckRevision, aacraid.CmdRequestAdapterInfo, aacraid.CmdRequestSupplementAdapterInfo} {
+		open = append(open, fmt.Sprintf("%#x/%d", aacraid.IoctlSendFIB, cmd))
+	}
+	if got := fibCommands(t, fw.log); len(got) < len(open) || !slices.Equal(got[:len(open)], open) {
+		t.Fatalf("second cycle : ouverture %v, attendu %v", got, open)
+	}
+	subs, _ = containerConfigSent(t, fw.log)
+	if n := cacheProtectionSent(t, fw.log); n == 0 {
+		t.Fatal("second cycle : protection du cache non lue")
+	}
+	toolSequence(t, subs, fw.totals)
+	toolWords(t, fw.pairs)
+}
+
+// Ouverture comme l'outil, vérifiée sur les ioctl émis : carte en pause
+// (704) ou révision refusée (701) : rien après ; 703 sans le bit 16 : pas de
+// 706, ni comptage ni lecture paginée, protection du cache lue.
+func TestOpeningIoctls(t *testing.T) {
+	list, err := aacraid.NewAllowlist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fib := func(cmds ...int) []string {
+		out := []string{fmt.Sprintf("%#x", aacraid.IoctlGetHBAInfo)}
+		for _, c := range cmds {
+			out = append(out, fmt.Sprintf("%#x/%d", aacraid.IoctlSendFIB, c))
+		}
+		return out
+	}
+	for name, tc := range map[string]struct {
+		fw   *cardFirmware
+		want []string
+	}{
+		"carte en pause":   {&cardFirmware{paused: true}, fib(aacraid.CmdIsAdapterPaused)},
+		"révision refusée": {&cardFirmware{revBuild: aacraid.MinFirmwareBuild - 1}, fib(aacraid.CmdIsAdapterPaused, aacraid.CmdCheckRevision)},
+	} {
+		tc.fw.t = t
+		aacio.ReplaceIoctl(t, tc.fw.ioctl)
+		c, refs := e2eCard()
+		c.Hosts[0].SerialNumber, c.Hosts[0].Model = "TEST0001", "ASR6805"
+		r := aacmod.New(list).Collect(context.Background(), c, refs)
+		if got := fibCommands(t, tc.fw.log); !slices.Equal(got, tc.want) || r.CollectErr == nil {
+			t.Errorf("%s : ioctl %v, attendu %v ; erreur %v", name, got, tc.want, r.CollectErr)
+		}
+	}
+	fw := &cardFirmware{t: t, noSupplement: true}
+	aacio.ReplaceIoctl(t, fw.ioctl)
+	c, refs := e2eCard()
+	c.Hosts[0].SerialNumber, c.Hosts[0].Model = "TEST0001", "ASR6805"
+	aacmod.New(list).Collect(context.Background(), c, refs)
+	got := fibCommands(t, fw.log)
+	if slices.Contains(got, fmt.Sprintf("%#x/%d", aacraid.IoctlSendFIB, aacraid.CmdRequestSupplementAdapterInfo)) {
+		t.Errorf("sans bit 16 : 706 envoyée : %v", got)
+	}
+	if subs, cm := containerConfigSent(t, fw.log); len(subs) != 0 || cm || cacheProtectionSent(t, fw.log) == 0 {
+		t.Errorf("sans bit 16 : VM_ContainerConfig %v, 708 %v, cache %d", subs, cm, cacheProtectionSent(t, fw.log))
 	}
 }

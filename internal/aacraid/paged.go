@@ -45,6 +45,9 @@ const (
 	// statut CT_OK) : l'exporter la rejette aussi et la refait une fois.
 	MarkClosedOther = 0xc5
 	markDA          = 0xda
+	// XferNone : identifiant de transfert sentinelle (mot 5 d'une
+	// ouverture) ; jamais un transfert établi.
+	XferNone = 0xffffffff
 )
 
 // PagedRead décrit une lecture paginée qualifiée.
@@ -168,7 +171,7 @@ func checkPagedRequest(b []byte) bool {
 		return w(2) == 0 && w(3) == 0 && w(4) == 0 && w(5) == 0xffffffff && w(6) == 0 && w(7) == 0
 	case ctContinueData, ctStopData:
 		total, n := w(3), w(6)
-		if total == 0 || total > 0x1004 || w(7) != total || w(4) != markDA || n >= chunks(total) {
+		if total == 0 || total > 0x1004 || w(7) != total || w(4) != markDA || w(5) == XferNone || n >= chunks(total) {
 			return false
 		}
 		mark := w(2)
@@ -198,6 +201,12 @@ type PagedResponse struct {
 	Mark, Total, Xfer, Chunk uint32
 	// Code : mot 4 de la réponse ; 0xda (CT_OK) à l'ouverture.
 	Code uint32
+	// Size : mot 7 de la réponse, égal au total sur les réponses
+	// d'ouverture et de morceau capturées pour les lectures de l'exporter.
+	// L'outil de référence reprend les mots 2, 3, 4 et 7 de la réponse
+	// précédente dans la requête suivante : le transport exige ici les
+	// valeurs que ses requêtes portent.
+	Size uint32
 	Data []byte // données du morceau (CT_CONTINUE_DATA)
 }
 
@@ -227,7 +236,7 @@ func DecodePagedResponse(req, rsp []byte) (PagedResponse, error) {
 	if sz := le.Uint16(rsp[fibSize:]); sz != ChunkRspSize {
 		return PagedResponse{}, fmt.Errorf("paged response: size field %d, expected %d", sz, ChunkRspSize)
 	}
-	r := PagedResponse{Mark: le.Uint32(d[8:]), Total: le.Uint32(d[12:]), Code: le.Uint32(d[16:]), Xfer: le.Uint32(d[20:]), Chunk: le.Uint32(d[24:])}
+	r := PagedResponse{Mark: le.Uint32(d[8:]), Total: le.Uint32(d[12:]), Code: le.Uint32(d[16:]), Xfer: le.Uint32(d[20:]), Chunk: le.Uint32(d[24:]), Size: le.Uint32(d[28:])}
 	if le.Uint32(q[4:]) == ctContinueData {
 		// Données du morceau : jusqu'à la fin annoncée par Size, jamais
 		// au-delà (octets non écrits par la carte).

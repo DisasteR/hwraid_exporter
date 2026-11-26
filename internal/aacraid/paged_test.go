@@ -149,6 +149,20 @@ func TestPagedAllowlistMutations(t *testing.T) {
 	if check(b) {
 		t.Fatal("marque de premier morceau sur le morceau 1 acceptée")
 	}
+	// Identifiant sentinelle : jamais un transfert établi (morceau 0, morceau
+	// suivant, clôture) ; la valeur voisine reste admise.
+	for name, b := range map[string][]byte{
+		"morceau 0": ChunkRequest(0x1000, XferNone, 0),
+		"morceau 1": ChunkRequest(0x1000, XferNone, 1),
+		"clôture":   StopRequest(0x1000, XferNone, 0),
+	} {
+		if check(b) {
+			t.Fatalf("%s sur l'identifiant 0xffffffff accepté", name)
+		}
+	}
+	if !check(ChunkRequest(0x1000, XferNone-1, 0)) || !check(StopRequest(0x1000, XferNone-1, 0)) {
+		t.Fatal("identifiant 0xfffffffe refusé")
+	}
 	if !check(ChunkRequest(0x1004, 0x12345, 9)) || !check(StopRequest(0x1004, 0x12345, 9)) {
 		t.Fatal("dernier morceau d'un transfert de 4 100 octets refusé")
 	}

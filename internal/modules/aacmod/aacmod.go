@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,6 +34,8 @@ type device interface {
 	HBAInfo(ctx context.Context) (aacraid.HBAInfo, error)
 	SupplementInfo(ctx context.Context) (aacraid.SupplementInfo, error)
 	AdapterInfo(ctx context.Context) (aacraid.AdapterInfo, error)
+	Paused(ctx context.Context) (bool, error)
+	Revision(ctx context.Context) (aacraid.Revision, error)
 	Environment(ctx context.Context) (aacraid.Environment, error)
 	CacheProtection(ctx context.Context) (bool, aacraid.ZMMStatus, error)
 	ContainerCount(ctx context.Context) (aacraid.ContainerCount, error)
@@ -40,6 +43,7 @@ type device interface {
 	ReadPaged(ctx context.Context, r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error)
 	ConnectorMap(ctx context.Context) (aacraid.ConnectorMap, error)
 	CloseUnconfirmed() int
+	SetValidatedCouple(v bool)
 	Close() error
 }
 
@@ -48,6 +52,8 @@ type reader interface {
 	HBAInfo() (aacraid.HBAInfo, error)
 	SupplementInfo() (aacraid.SupplementInfo, error)
 	AdapterInfo() (aacraid.AdapterInfo, error)
+	Paused() (bool, error)
+	Revision() (aacraid.Revision, error)
 	Environment() (aacraid.Environment, error)
 	CacheProtection() (bool, aacraid.ZMMStatus, error)
 	ContainerCount() (aacraid.ContainerCount, error)
@@ -90,8 +96,11 @@ type Module struct {
 	// de la carte, qui change aussi le nœud. Une lecture en échec n'est pas
 	// gardée et sera retentée au cycle suivant.
 	supplement map[string]aacraid.SupplementInfo
-	// adapterInfo garde de même la réponse à RequestAdapterInfo (703).
+	// adapterInfo garde de même la réponse à RequestAdapterInfo (703), et
+	// revision la réponse acceptée à CheckRevision (701). IsAdapterPaused
+	// (704) est envoyée à chaque cycle.
 	adapterInfo map[string]aacraid.AdapterInfo
+	revision    map[string]aacraid.Revision
 	// maxContainers garde de même MaxContainers (CT_GET_CONTAINER_COUNT),
 	// qui fixe la taille de la liste des conteneurs.
 	maxContainers map[string]aacraid.ContainerCount
@@ -103,7 +112,19 @@ type Module struct {
 	// sont oubliées, pour qu'un retour à une identité antérieure (firmware
 	// rétrogradé, carte remise) les relise.
 	keyOf map[string]string
+	// allowAll : option -allow-unqualified=aacraid, toutes les cartes du
+	// module lues au-delà de la 706 quel que soit leur modèle.
+	allowAll bool
 }
+
+// Qualified implémente module.Qualifier : modèle qualifié (QualifiedModel).
+func (*Module) Qualified(c module.Card) bool { return QualifiedModel(c) }
+
+// AllowUnqualified active l'option -allow-unqualified=aacraid (CDC, section
+// 6.12) : une carte dont le modèle n'est pas qualifié est lue comme les
+// autres, selon la règle de conduite (suite de commandes de l'outil, sans
+// les écarts E1 et E2). À appeler avant la première collecte.
+func (m *Module) AllowUnqualified() { m.allowAll = true }
 
 // New construit le module avec le transport réel et la liste blanche aacraid.
 func New(list *allowlist.List) *Module {
@@ -162,6 +183,8 @@ func (b bound) SupplementInfo() (aacraid.SupplementInfo, error) {
 	return b.dev.SupplementInfo(b.ctx)
 }
 func (b bound) AdapterInfo() (aacraid.AdapterInfo, error) { return b.dev.AdapterInfo(b.ctx) }
+func (b bound) Paused() (bool, error)                     { return b.dev.Paused(b.ctx) }
+func (b bound) Revision() (aacraid.Revision, error)       { return b.dev.Revision(b.ctx) }
 func (b bound) Environment() (aacraid.Environment, error) { return b.dev.Environment(b.ctx) }
 func (b bound) CacheProtection() (bool, aacraid.ZMMStatus, error) {
 	return b.dev.CacheProtection(b.ctx)
@@ -176,10 +199,11 @@ func (b bound) ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]by
 func (b bound) ConnectorMap() (aacraid.ConnectorMap, error) { return b.dev.ConnectorMap(b.ctx) }
 
 // Collect ouvre le nœud préparé, lit FSACTL_GET_HBA_INFO (réponse du pilote,
-// sans commande firmware) et vérifie qu'il désigne bien cette carte. Il lit
-// ensuite, une fois par carte, RequestSupplementAdapterInfo : si la carte
-// n'annonce pas l'interface des lectures d'état, les collecteurs d'état sont
-// déclarés non pris en charge et aucune autre lecture n'est tentée. Une fois
+// sans commande firmware) et vérifie qu'il désigne bien cette carte. Sur un
+// modèle qualifié ou une carte désignée par -allow-unqualified, il ouvre
+// ensuite la carte comme l'outil de référence (704, 701, 703, puis 706 si
+// la 703 l'annonce) ; si la carte n'annonce pas l'interface des lectures
+// d'état, les collecteurs d'état sont déclarés non pris en charge. Une fois
 // ctx terminé, aucune nouvelle commande firmware n'est envoyée ; les
 // collecteurs non lus sont en échec (aacio.ErrStopped).
 func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeRef) (res module.Result) {
@@ -214,6 +238,9 @@ func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeR
 			info.AdapterNumber, info.Bus, info.Device, info.Function, info.VendorID, info.DeviceID, info.SubVendorID, info.SubSystemID)}
 	}
 	r := module.Result{NodeValid: true}
+	// Écarts E1 et E2 : seulement sur un couple modèle et firmware validé.
+	validated := ValidatedCouple(c)
+	raw.SetValidatedCouple(validated)
 	// Réponses gardées (706, 708) : rattachées à l'adresse, au nœud et à
 	// l'identité matérielle de la carte (module.Card.Identity : numéro de
 	// série, identifiants PCI, modèle, firmware). Une carte remplacée ou un
@@ -226,42 +253,69 @@ func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeR
 		key = strings.Join(append([]string{c.PCI.Address, strconv.FormatUint(refs[0].Dev, 10)}, fields...), "|")
 	}
 	m.forgetOtherKeys(c.PCI.Address, key)
-	sup, err := m.supplementInfo(key, d)
-	r.Collected = map[string]bool{CapabilitiesCollector: err == nil}
-	// Réponse 706 gardée en mémoire : pas de date de dernier succès.
-	if key != "" {
-		r.Cached = []string{CapabilitiesCollector}
+	// Toute commande firmware : seulement vers un modèle qualifié (exigence
+	// S4) ou une carte désignée par -allow-unqualified (S4 bis). Toute autre
+	// carte ne reçoit rien au-delà de GET_HBA_INFO (réponse du pilote) ; ses
+	// collecteurs sont publiés non pris en charge. Ce classement ne dépend
+	// que de sysfs et de l'option.
+	all := append([]string{CapabilitiesCollector}, append(append([]string(nil), StateCollectors...), DiskInventoryCollector, DiskLocationCollector, CacheProtectionCollector, TemperatureCollector)...)
+	if !QualifiedModel(c) && !m.allowAll {
+		r.Unsupported = all
+		return r
 	}
-	// Lectures firmware au-delà de 706 : seulement vers un couple modèle et
-	// firmware qualifié (exigence S4) ; toute autre carte est publiée avec
-	// ces collecteurs non pris en charge. Ce classement ne dépend que de
-	// sysfs : il est publié même si la 706 échoue.
-	after := append(append([]string(nil), StateCollectors...), DiskInventoryCollector, DiskLocationCollector, CacheProtectionCollector, TemperatureCollector)
-	if !Qualified(c) {
-		r.Unsupported = after
-	}
-	if err != nil {
-		r.CollectErr = fmt.Errorf("RequestSupplementAdapterInfo: %w; no other card read attempted this cycle", err)
-		// Carte qualifiée : les lectures que la 706 conditionne n'ont pas
-		// pu être tentées ; elles sont publiées en échec.
-		if r.Unsupported == nil {
-			for _, col := range after {
-				r.Collected[col] = false
-			}
+	r.Collected = map[string]bool{}
+	// Ouverture comme l'outil de référence : 704 (carte en pause : l'outil
+	// ne l'ouvre pas), 701 (révision refusée : idem), 703, puis 706 si la
+	// 703 l'annonce. Un échec arrête la collecte de la carte pour ce cycle :
+	// aucune autre commande, tous les collecteurs en échec.
+	fail := func(err error) module.Result {
+		r.CollectErr = fmt.Errorf("%w; no other card read attempted this cycle", err)
+		for _, col := range all {
+			r.Collected[col] = false
 		}
 		return r
 	}
-	if r.Unsupported != nil {
-		return r
+	if paused, err := d.Paused(); err != nil {
+		return fail(fmt.Errorf("IsAdapterPaused: %w", err))
+	} else if paused {
+		return fail(aacraid.ErrAdapterPaused)
+	}
+	if rev, err := m.revisionFor(key, d); err != nil {
+		return fail(fmt.Errorf("CheckRevision: %w", err))
+	} else if !rev.Accepted() {
+		return fail(fmt.Errorf("%w: compatible %v, firmware build %d", aacraid.ErrRevisionRefused, rev.Compatible, rev.FirmwareBuild))
+	}
+	ainfo, err := m.adapterInfoFor(key, d)
+	if err != nil {
+		return fail(fmt.Errorf("RequestAdapterInfo: %w", err))
+	}
+	// Réponses gardées en mémoire : pas de date de dernier succès.
+	if key != "" {
+		r.Cached = []string{CapabilitiesCollector}
+	}
+	var sup aacraid.SupplementInfo
+	if ainfo.SupplementInfo() {
+		sup, err = m.supplementInfo(key, d)
+		if err != nil {
+			return fail(fmt.Errorf("RequestSupplementAdapterInfo: %w", err))
+		}
+		r.Collected[CapabilitiesCollector] = true
+	} else {
+		// 706 non annoncée : ni l'outil ni le pilote ne l'envoient ; les
+		// lectures d'état, qu'elle seule annonce, ne sont pas prises en charge.
+		r.Unsupported = append(r.Unsupported, CapabilitiesCollector)
+		r.Cached = nil
 	}
 	if !sup.ArcIoReads() {
-		r.Unsupported = append(append([]string(nil), StateCollectors...), DiskInventoryCollector, DiskLocationCollector)
+		r.Unsupported = append(append(r.Unsupported, StateCollectors...), DiskInventoryCollector, DiskLocationCollector)
 	}
+	m.collectTemperature(&r, d, ainfo)
+	// L'outil de référence lit la protection du cache sur une carte qu'il a
+	// ouverte, après ses informations générales (CDC, section 6.11).
 	collectCacheProtection(&r, d)
-	ainfo, ainfoOK := m.collectTemperature(&r, d, key)
 	if sup.ArcIoReads() {
 		_, h, _ := hostOf(c)
-		m.collectArcIo(&r, d, key, h, sup, ainfo, ainfoOK)
+		m.collectArcIo(&r, d, key, h, sup, ainfo)
 	}
 	return r
 }
@@ -276,34 +330,12 @@ func pagedCollectors() []string {
 // collectArcIo applique les prérequis des transferts paginés (CDC, section
 // 6.11), puis lit volumes et disques. Formes à bit de poids fort (bit 13 de
 // FeatureBits) ou en blocs de 2 048 octets (bit 15 de SupportedOptions) :
-// non implémentées, collecteurs non pris en charge, rien n'est envoyé. 703
-// en échec : format des blocs indéterminé, aucune lecture paginée, collecteurs
-// en échec (relus au cycle suivant).
-func (m *Module) collectArcIo(r *module.Result, d reader, key string, h sysfs.SCSIHost, sup aacraid.SupplementInfo, ainfo aacraid.AdapterInfo, ainfoOK bool) {
+// non implémentées, collecteurs non pris en charge, rien n'est envoyé. La
+// 703 est toujours lue à ce stade (ouverture de la carte).
+func (m *Module) collectArcIo(r *module.Result, d reader, key string, h sysfs.SCSIHost, sup aacraid.SupplementInfo, ainfo aacraid.AdapterInfo) {
 	switch {
 	case sup.PagedHighBit():
 		r.Unsupported = append(r.Unsupported, pagedCollectors()...)
-		return
-	case !ainfoOK:
-		// Les capacités que la 706 refuse restent non prises en charge ; les
-		// autres collecteurs sont en échec.
-		gated := map[string]bool{}
-		if !sup.ContainerReads() {
-			for _, col := range StateCollectors {
-				gated[col] = true
-			}
-		}
-		if !sup.ConnectorMapRead() {
-			gated[DiskLocationCollector] = true
-		}
-		for _, col := range pagedCollectors() {
-			if gated[col] {
-				r.Unsupported = append(r.Unsupported, col)
-			} else {
-				r.Collected[col] = false
-			}
-		}
-		r.CollectErr = errors.Join(r.CollectErr, errors.New("RequestAdapterInfo failed: transfer format undetermined, no volume or disk read"))
 		return
 	case ainfo.LargeTransfers():
 		r.Unsupported = append(r.Unsupported, pagedCollectors()...)
@@ -313,33 +345,50 @@ func (m *Module) collectArcIo(r *module.Result, d reader, key string, h sysfs.SC
 	m.collectVolumes(r, d, key, h, sup.ContainerReads(), sup.ConnectorMapRead(), caps)
 }
 
-// Qualification est un couple modèle et firmware sur lequel les lectures
-// (volumes, membres, disques, protection du cache) ont été vérifiées contre
-// l'outil de référence (docs/aacraid-interface.md, section 8).
+// Qualification est un modèle (quatre identifiants PCI) dont les lectures
+// ont été vérifiées contre l'outil de référence (exigence S4 ;
+// docs/aacraid-interface.md, section 8). Firmwares liste les versions de ce
+// modèle validées sur matériel : seul un couple modèle et firmware validé
+// reçoit les écarts E1 et E2.
 type Qualification struct {
-	Vendor, Device, SubsystemVendor, SubsystemDevice string // tels que publiés par sysfs
-	Firmware                                         string // hba_kernel_version
+	Model                                            string   // nom commercial (documentation)
+	Vendor, Device, SubsystemVendor, SubsystemDevice string   // tels que publiés par sysfs
+	Firmwares                                        []string // hba_kernel_version validés
 }
 
-// Qualifications liste les couples qualifiés.
+// Qualifications liste les modèles qualifiés ; docs/aacraid-interface.md
+// (section 8) en reprend chaque entrée (vérifié par un test).
 var Qualifications = []Qualification{
-	// Adaptec 6805, firmware 5.3-0 build 19204 (hôte de référence, 2026-11-23).
-	{Vendor: "0x9005", Device: "0x028b", SubsystemVendor: "0x9005", SubsystemDevice: "0x0301", Firmware: "5.3-0[19204]"},
+	// Hôte de référence, 2026-11-23.
+	{Model: "Adaptec 6805", Vendor: "0x9005", Device: "0x028b", SubsystemVendor: "0x9005", SubsystemDevice: "0x0301", Firmwares: []string{"5.3-0[19204]"}},
 }
 
-// Qualified indique si la carte correspond à un couple qualifié.
-func Qualified(c module.Card) bool {
-	_, h, err := hostOf(c)
-	if err != nil {
-		return false
-	}
+// qualification rend l'entrée du modèle de la carte.
+func qualification(c module.Card) (Qualification, bool) {
 	for _, q := range Qualifications {
-		if c.PCI.Vendor == q.Vendor && c.PCI.Device == q.Device && c.PCI.SubsystemVendor == q.SubsystemVendor &&
-			c.PCI.SubsystemDevice == q.SubsystemDevice && h.Firmware == q.Firmware {
-			return true
+		if c.PCI.Vendor == q.Vendor && c.PCI.Device == q.Device && c.PCI.SubsystemVendor == q.SubsystemVendor && c.PCI.SubsystemDevice == q.SubsystemDevice {
+			return q, true
 		}
 	}
-	return false
+	return Qualification{}, false
+}
+
+// QualifiedModel indique si le modèle de la carte est qualifié (identifiants
+// PCI ; le firmware n'est pas une condition de lecture).
+func QualifiedModel(c module.Card) bool {
+	_, ok := qualification(c)
+	return ok
+}
+
+// ValidatedCouple indique si la carte est un couple modèle et firmware
+// validé sur matériel.
+func ValidatedCouple(c module.Card) bool {
+	q, ok := qualification(c)
+	if !ok {
+		return false
+	}
+	_, h, err := hostOf(c)
+	return err == nil && h.Firmware != "" && slices.Contains(q.Firmwares, h.Firmware)
 }
 
 // hostOf renvoie l'hôte SCSI aacraid de la carte.
@@ -830,28 +879,41 @@ func collectCacheProtection(r *module.Result, d reader) {
 // collectTemperature lit le capteur de température, comme l'outil de
 // référence, seulement si la carte l'annonce (AAC_SUPPORTED_HEAT_SENSOR de
 // RequestAdapterInfo) ; sinon le collecteur n'est pas pris en charge.
-// collectTemperature rend aussi la réponse 703, réutilisée pour l'état des
-// disques (option HBA natif) ; ok faux si elle n'a pas été lue.
-func (m *Module) collectTemperature(r *module.Result, d reader, key string) (info aacraid.AdapterInfo, ok bool) {
-	info, err := m.adapterInfoFor(key, d)
-	if err != nil {
-		r.Collected[TemperatureCollector] = false
-		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("temperature: RequestAdapterInfo: %w", err))
-		return info, false
-	}
+func (m *Module) collectTemperature(r *module.Result, d reader, info aacraid.AdapterInfo) {
 	if !info.HeatSensor() {
 		r.Unsupported = append(r.Unsupported, TemperatureCollector)
-		return info, true
+		return
 	}
 	env, err := d.Environment()
 	r.Collected[TemperatureCollector] = err == nil
 	if err != nil {
 		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("temperature: %w", err))
-		return info, true
+		return
 	}
 	r.Temperature = &module.Temperature{Celsius: float64(env.TemperatureCelsius),
 		ThresholdLo: float64(env.ThresholdLoCelsius), ThresholdHi: float64(env.ThresholdHiCelsius)}
-	return info, true
+}
+
+// revisionFor lit la réponse 701 une seule fois par carte et par nœud, sous
+// la même clé que la 703 ; seule une révision acceptée est gardée.
+func (m *Module) revisionFor(key string, d reader) (aacraid.Revision, error) {
+	m.mu.Lock()
+	rv, ok := m.revision[key]
+	m.mu.Unlock()
+	if ok {
+		return rv, nil
+	}
+	rv, err := d.Revision()
+	if err != nil || key == "" || !rv.Accepted() {
+		return rv, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.revision == nil {
+		m.revision = map[string]aacraid.Revision{}
+	}
+	m.revision[key] = rv
+	return rv, nil
 }
 
 // adapterInfoFor lit la réponse 703 une seule fois par carte et par nœud,
@@ -889,6 +951,7 @@ func (m *Module) forgetOtherKeys(addr, key string) {
 	if old, ok := m.keyOf[addr]; ok && old != key {
 		delete(m.supplement, old)
 		delete(m.adapterInfo, old)
+		delete(m.revision, old)
 		delete(m.maxContainers, old)
 		delete(m.connectors, old)
 	}

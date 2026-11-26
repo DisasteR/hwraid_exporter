@@ -69,6 +69,8 @@ func SupplementInfoRequest() []byte {
 // qualifiedRequests liste les seules FIB que l'exporter peut envoyer.
 func qualifiedRequests() [][]byte {
 	return [][]byte{
+		PausedRequest(),
+		RevisionRequest(),
 		SupplementInfoRequest(),
 		AdapterInfoRequest(),
 		EnvironmentRequest(),

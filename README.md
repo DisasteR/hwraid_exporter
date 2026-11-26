@@ -2,7 +2,7 @@
 
 Prometheus exporter for hardware RAID controllers. It talks directly to the Linux drivers and needs no vendor tool (ARCCONF, StorCLI, ssacli) at runtime.
 
-> **Status: v0.2.0.** One driver module so far: `aacraid`. The only qualified model and firmware is the Adaptec 6805 with firmware 5.3-0[19204]. What is validated on hardware and what is only tested is detailed [below](#what-it-monitors).
+> **Status: v0.2.0.** One driver module so far: `aacraid`. The only qualified model is the Adaptec 6805, validated with firmware 5.3-0[19204]. What is validated on hardware and what is only tested is detailed [below](#what-it-monitors).
 
 ## Why another exporter
 
@@ -29,7 +29,7 @@ Surveyed in November 2026. The examples are representative, not exhaustive.
 
 The cost of this approach:
 - Each driver family needs its own module, written and qualified on real hardware, where a vendor tool usually covers many models at once.
-- For `aacraid`, the management interface is not publicly documented. A firmware change can break the module, so each card is qualified by model and firmware, and other cards are not read beyond a few identification commands (see below).
+- For `aacraid`, the management interface is not publicly documented. Each model is qualified on real hardware; cards of other models are not read beyond a few identification commands unless the operator allows it (`-allow-unqualified`, see below).
 - Today only one card is qualified.
 
 ## What it monitors
@@ -46,7 +46,12 @@ The cost of this approach:
 
 Not yet observed on hardware: the write cache turning on again under `wbb` once the ZMM is optimal. Not yet available: background task progress (rebuild, verification), overall controller state and controller statistics.
 
-Another card handled by the `aacraid` driver is listed with its identity. The module only checks that its device node designates the card and reads its capabilities; volumes, disks, cache protection and temperature are published as not supported (`hwraid_collector_supported 0`) until its model and firmware are qualified. The [capture guide](docs/guide-capture.md) explains how to record the exchanges needed to qualify it.
+Reading levels ([details](docs/aacraid-interface.md#niveaux-de-lecture-dune-carte)):
+- **Validated model and firmware** (Adaptec 6805, 5.3-0[19204]): everything above, with two differences from the vendor tool kept for this card only: reading only the chunks it needs (accepted by this card's firmware) and one re-read after a rejected close.
+- **Qualified model, other firmware**: read with the vendor tool's command sequence.
+- **Another model**: listed with its identity; the module only checks that its device node designates the card and reads its capabilities, and the other collectors are published as not supported (`hwraid_collector_supported 0`). With `-allow-unqualified=aacraid` (off by default), it is read like the previous case. The commands are then those of the vendor tool, checked only against constructed answers on such a model: the operator accepts that risk ([deployment](docs/deploiement.md#cartes-non-qualifiées)). `hwraid_controller_qualified` tells whether the model is qualified; the `firmware` label of `hwraid_controller_info`, compared with the table of qualified models, tells whether the pair is validated.
+
+The [capture guide](docs/guide-capture.md) explains how to record the exchanges needed to qualify a model.
 
 ## Architecture
 

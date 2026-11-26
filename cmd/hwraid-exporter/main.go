@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 
@@ -104,6 +105,11 @@ func serve(args []string) int {
 	gid := fs.Uint("gid", 65534, "group ID after the privilege drop")
 	interval := fs.Duration("interval", time.Minute, "collection interval")
 	timeout := fs.Duration("collect-timeout", 0, "maximum time to wait for one card in a cycle (default: the smaller of 30s and -interval)")
+	var allow []string
+	fs.Func("allow-unqualified", "also read the cards of this module whose model is not qualified, with the vendor tool's command sequence (risks: docs/deploiement.md); repeatable; value: a module name (aacraid)", func(v string) error {
+		allow = append(allow, v)
+		return nil
+	})
 	_ = fs.Parse(args)
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	exporter.Version, exporter.Revision = version, revision
@@ -148,6 +154,14 @@ func serve(args []string) int {
 	}
 	// Chaque module déclare ses nœuds et ses capacités ; le cœur crée seul.
 	registry := []module.Module{aacmod.New(list)}
+	allowed, err := allowUnqualified(allow, registry)
+	if err != nil {
+		log.Error("invalid -allow-unqualified", "err", err)
+		return 2
+	}
+	for _, name := range allowed {
+		log.Warn("cards of an unqualified model will be read: commands the vendor does not document, checked only against constructed answers on such a model", "module", name)
+	}
 	plan := module.Build(hosts, registry)
 	specs := plan.Specs(majors)
 	complete := len(herrs) == 0
@@ -386,4 +400,34 @@ func readMajors() (map[string]uint32, error) {
 	}
 	defer f.Close()
 	return nodes.CharMajors(f)
+}
+
+// allowUnqualified applique les valeurs de -allow-unqualified (CDC, section
+// 6.12) : chacune nomme un module du registre qui qualifie ses cartes. Une
+// valeur inconnue fait échouer le démarrage. Rend les modules autorisés.
+func allowUnqualified(values []string, registry []module.Module) ([]string, error) {
+	var allowed []string
+	for _, v := range values {
+		if strings.HasPrefix(v, "serial:") {
+			return nil, fmt.Errorf("%q: the serial:<number> form is not available yet", v)
+		}
+		var found module.Module
+		for _, m := range registry {
+			if m.Name() == v {
+				found = m
+			}
+		}
+		q, ok := found.(module.Qualifier)
+		switch {
+		case found == nil:
+			return nil, fmt.Errorf("%q: unknown module", v)
+		case !ok:
+			return nil, fmt.Errorf("%q: module does not qualify its cards", v)
+		}
+		if !slices.Contains(allowed, v) {
+			q.AllowUnqualified()
+			allowed = append(allowed, v)
+		}
+	}
+	return allowed, nil
 }

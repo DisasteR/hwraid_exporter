@@ -52,6 +52,15 @@ type AdapterInfo struct {
 // HeatSensor indique si la carte annonce un capteur de température.
 func (a AdapterInfo) HeatSensor() bool { return a.SupportedOptions&SupportedHeatSensor != 0 }
 
+// SupportedSupplementInfo est le bit 16 de SupportedOptions
+// (AAC_OPT_SUPPLEMENT_ADAPTER_INFO, Linux aacraid.h) : la carte répond à
+// RequestSupplementAdapterInfo (706). Le pilote Linux et l'outil de
+// référence n'envoient la 706 que si ce bit est annoncé.
+const SupportedSupplementInfo = 0x10000
+
+// SupplementInfo indique si la carte annonce la 706.
+func (a AdapterInfo) SupplementInfo() bool { return a.SupportedOptions&SupportedSupplementInfo != 0 }
+
 // SupportedNativeHBA est le bit 25 de SupportedOptions : option HBA natif
 // annoncée (docs/aacraid-interface.md, section 6 bis ; le mode courant de la
 // carte n'est pas testé).

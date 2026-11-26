@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -46,6 +47,10 @@ var ErrDriverNoMemory = errors.New("the driver refused a management command for 
 // queued, si non nil, est appelé juste avant qu'une commande soit confiée au
 // thread dédié ; réservé aux tests (synchronisation).
 var queued func()
+
+// admitting, si non nil, est appelé sur le thread dédié juste avant
+// l'admission d'une commande (tests).
+var admitting func()
 
 // ErrStopped : la collecte est arrêtée (échéance du cycle ou arrêt du
 // service) ; aucune nouvelle commande n'est envoyée à la carte.
@@ -83,6 +88,10 @@ type Device struct {
 	// containerListSize : seule taille de liste des conteneurs admise pendant
 	// le cycle (0 : aucune ; ExpectContainerList).
 	containerListSize uint32
+	// validated : la carte est un couple modèle et firmware validé (CDC,
+	// section 6.11, écarts E1 et E2). Faux par défaut : suite de commandes
+	// de l'outil de référence.
+	validated bool
 }
 
 // CloseUnconfirmed renvoie le nombre de lectures paginées rejetées depuis
@@ -162,6 +171,9 @@ func (d *Device) do(ctx context.Context, req allowlist.Request) error {
 		queued()
 	}
 	d.thread.run(func() {
+		if admitting != nil {
+			admitting()
+		}
 		if ctx != nil {
 			if refused = admit(ctx); refused != nil {
 				return
@@ -193,6 +205,31 @@ func (d *Device) HBAInfo(ctx context.Context) (aacraid.HBAInfo, error) {
 		return aacraid.HBAInfo{}, err
 	}
 	return aacraid.DecodeHBAInfo(buf)
+}
+
+// Paused envoie IsAdapterPaused (704) : vrai si la carte est en pause.
+// Soumise à ctx.
+func (d *Device) Paused(ctx context.Context) (bool, error) {
+	if err := admit(ctx); err != nil {
+		return false, err
+	}
+	buf := aacraid.PausedRequest()
+	if err := d.do(ctx, allowlist.Request{Ioctl: aacraid.IoctlSendFIB, Buf: buf}); err != nil {
+		return false, err
+	}
+	return aacraid.DecodePaused(buf)
+}
+
+// Revision envoie CheckRevision (701). Soumise à ctx.
+func (d *Device) Revision(ctx context.Context) (aacraid.Revision, error) {
+	if err := admit(ctx); err != nil {
+		return aacraid.Revision{}, err
+	}
+	buf := aacraid.RevisionRequest()
+	if err := d.do(ctx, allowlist.Request{Ioctl: aacraid.IoctlSendFIB, Buf: buf}); err != nil {
+		return aacraid.Revision{}, err
+	}
+	return aacraid.DecodeRevision(buf)
 }
 
 // SupplementInfo envoie RequestSupplementAdapterInfo (706) au firmware et
@@ -310,9 +347,11 @@ func (d *Device) CacheProtection(ctx context.Context) (present bool, st aacraid.
 // autre outil interroge la carte en même temps) : le transfert est clos
 // mais la lecture n'est pas valide (l'outil de référence la rejette) ;
 // rejected le signale. Toute autre réponse est une erreur.
-func (d *Device) stop(r aacraid.PagedRead, head aacraid.PagedResponse, n uint32) (rejected bool, err error) {
+// window : nil sur le couple validé (clôture engagée, toujours envoyée) ;
+// ailleurs, fenêtre d'arrêt de readOnce, admise sur le thread dédié.
+func (d *Device) stop(window context.Context, r aacraid.PagedRead, head aacraid.PagedResponse, n uint32) (rejected bool, err error) {
 	req := aacraid.StopRequest(head.Total, head.Xfer, n)
-	rsp, err := d.fib(nil, append([]byte(nil), req...)) // clôture : toujours envoyée
+	rsp, err := d.fib(window, append([]byte(nil), req...))
 	if err != nil {
 		return false, fmt.Errorf("read %d: stop: %w", r, err)
 	}
@@ -330,15 +369,24 @@ func (d *Device) stop(r aacraid.PagedRead, head aacraid.PagedResponse, n uint32)
 	return false, nil
 }
 
-// pagedAttempts : une lecture rejetée à la clôture (0xc5) est refaite une
-// fois dans le même cycle ; un second rejet est une erreur.
+// SetValidatedCouple indique si la carte est un couple modèle et firmware
+// validé, seul à recevoir les écarts E1 (arrêt anticipé des morceaux, et
+// séquence abrégée à l'arrêt) et E2 (relecture après 0xc5). Sinon, le
+// transport envoie la suite de commandes de l'outil de référence : tous les
+// morceaux, puis la clôture, sans relecture (CDC, section 6.11, règle de
+// conduite). Par défaut : non validé.
+func (d *Device) SetValidatedCouple(v bool) { d.validated = v }
+
+// pagedAttempts : sur un couple validé (E2), une lecture rejetée à la
+// clôture (0xc5) est refaite une fois dans le même cycle ; un second rejet
+// est une erreur.
 const pagedAttempts = 2
 
 // ReadPaged effectue une lecture paginée qualifiée (readOnce). Une lecture
 // dont la clôture est confirmée par 0xc5 est rejetée, comme le fait l'outil
 // de référence, puis refaite une seule fois. ctx est vérifié avant chaque
 // ouverture de transfert, y compris celle de la seconde tentative, et avant
-// chaque morceau ; un transfert ouvert est toujours clos.
+// chaque morceau.
 func (d *Device) ReadPaged(ctx context.Context, r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error) {
 	for attempt := 1; ; attempt++ {
 		if err := admit(ctx); err != nil {
@@ -351,27 +399,109 @@ func (d *Device) ReadPaged(ctx context.Context, r aacraid.PagedRead, param, size
 		if err != nil || !rejected {
 			return data, err
 		}
+		if !d.validated {
+			// Comme l'outil de référence : la lecture rejetée n'est pas
+			// refaite.
+			return nil, fmt.Errorf("read %d: data rejected (close status %#x), not read again on a card outside the validated pair", r, aacraid.MarkClosedOther)
+		}
 		if attempt == pagedAttempts {
 			return nil, fmt.Errorf("read %d: close status %#x on %d attempts, data rejected", r, aacraid.MarkClosedOther, attempt)
 		}
 	}
 }
 
+// stopGrace borne, hors du couple validé, la durée pendant laquelle de
+// nouvelles commandes d'un transfert engagé partent encore après l'arrêt
+// demandé (suite de l'outil : morceaux restants, puis clôture). Comptée
+// depuis l'arrêt lui-même ; au-delà, le transfert est abandonné sans
+// clôture (règle 2). Une commande déjà partie n'est jamais interrompue.
+// Dix morceaux et une clôture prennent bien moins d'une seconde en
+// fonctionnement normal.
+var stopGrace = 2 * time.Second
+
+// errGraceExceeded : cause d'un refus d'admission par la fenêtre d'arrêt
+// (stopGrace écoulé depuis l'arrêt) pendant un transfert hors du couple
+// validé ; abandon sans clôture.
+var errGraceExceeded = errors.New("stop grace exceeded during the transfer: abandoned without stop")
+
+// stopWindow est la fenêtre d'arrêt d'un transfert hors du couple validé :
+// un contexte d'admission dont Err devient errGraceExceeded quand stopGrace
+// s'est écoulé depuis l'arrêt de stop. L'instant de l'arrêt est l'échéance
+// de stop si elle est passée (exacte), sinon le premier constat de son
+// annulation (rappel d'annulation, ou première admission qui la voit).
+// Aucun minuteur : la comparaison a lieu à l'admission, sur le thread
+// dédié, en temps monotone.
+type stopWindow struct {
+	stop  context.Context
+	grace time.Duration
+	at    atomic.Pointer[time.Time]
+}
+
+// mark enregistre l'instant de l'arrêt s'il ne l'est pas déjà.
+func (w *stopWindow) mark() {
+	now := time.Now()
+	w.at.CompareAndSwap(nil, &now)
+}
+
+func (w *stopWindow) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (w *stopWindow) Done() <-chan struct{}       { return nil }
+func (w *stopWindow) Value(any) any               { return nil }
+
+// Err : nil tant que la fenêtre est ouverte, errGraceExceeded ensuite.
+func (w *stopWindow) Err() error {
+	if w.stop.Err() == nil {
+		if dl, ok := w.stop.Deadline(); !ok || time.Now().Before(dl) {
+			return nil
+		}
+	}
+	at := time.Now()
+	if dl, ok := w.stop.Deadline(); ok && !at.Before(dl) {
+		at = dl
+	}
+	w.at.CompareAndSwap(nil, &at)
+	start := *w.at.Load()
+	if dl, ok := w.stop.Deadline(); ok && dl.Before(start) {
+		start = dl
+	}
+	if time.Since(start) > w.grace {
+		return errGraceExceeded
+	}
+	return nil
+}
+
 // maxPagedTotal borne la taille d'un transfert accepté (plus grande taille
 // qualifiée : liste des disques, 4 100 octets).
 const maxPagedTotal = 0x1004
 
-// ReadPaged effectue une lecture paginée qualifiée et renvoie au moins
-// need(données lues) octets, ou tout le transfert. Le transfert est clôturé
-// dès que les données suffisent, et dans tous les cas après son ouverture,
-// même en cas d'erreur : le firmware ne garde pas de transfert ouvert. Si
-// ctx se termine pendant le transfert, la séquence qualifiée la plus courte
-// est menée à son terme (morceau 0, puis clôture), aucun autre morceau n'est
-// demandé, et la lecture est en échec.
+// readOnce effectue une lecture paginée qualifiée et renvoie au moins
+// need(données lues) octets, ou tout le transfert (CDC, section 6.11,
+// déroulement d'un transfert). Sur un couple validé (E1), le transfert est
+// clôturé dès que les données suffisent ; si ctx se termine pendant le
+// transfert, la séquence qualifiée la plus courte est menée à son terme
+// (morceau 0, puis clôture), aucun autre morceau n'est demandé, et la
+// lecture est en échec. Sur une autre carte, tous les morceaux sont lus
+// puis le transfert est clôturé, comme l'outil de référence, y compris si
+// ctx se termine après l'ouverture (au plus 10 morceaux, borne de taille) ;
+// la lecture est alors en échec. Toute autre
+// erreur après l'ouverture (ioctl en échec, réponse de morceau invalide ou
+// incohérente, données rejetées par need) abandonne le transfert sans
+// clôture, comme l'outil de référence sur une erreur de morceau : aucune
+// commande de ce transfert ne suit (règle 2).
 func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, bool, error) {
 	open, err := aacraid.OpenRequest(r, param, size)
 	if err != nil {
 		return nil, false, err
+	}
+	// Hors couple validé : fenêtre d'arrêt, close stopGrace après la fin de
+	// ctx (comptée depuis l'arrêt lui-même : installée avant l'ouverture).
+	// Chaque morceau et la clôture y sont admis sur le thread dédié, juste
+	// avant l'ioctl ; une fenêtre close abandonne le transfert sans clôture.
+	var window context.Context
+	if !d.validated {
+		w := &stopWindow{stop: ctx, grace: stopGrace}
+		release := context.AfterFunc(ctx, w.mark)
+		defer release()
+		window = w
 	}
 	rsp, err := d.fib(ctx, append([]byte(nil), open...))
 	if err != nil {
@@ -382,11 +512,12 @@ func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size 
 		// Statut d'échec ou écho incorrect : aucun transfert établi.
 		return nil, false, err
 	}
-	if head.Mark != 0xc9 || head.Code != aacraid.CodeOK || head.Total == 0 || head.Total > maxPagedTotal {
-		// Ouverture non conforme : rien ne prouve qu'un transfert existe
-		// sous cet identifiant. Aucune clôture n'est envoyée, plutôt que de
-		// clore un transfert peut-être étranger ; le firmware garde au plus
-		// un transfert ouvert, que l'erreur signale.
+	if head.Xfer == aacraid.XferNone || head.Mark != 0xc9 || head.Code != aacraid.CodeOK || head.Total == 0 || head.Total > maxPagedTotal || head.Size != head.Total {
+		// Ouverture hors du parcours nominal : aucune commande n'est
+		// envoyée pour ce transfert (lignes 1 à 4, 6 et 7 du déroulement ;
+		// les clôtures de l'outil sur 0xe2 et sur total nul sont des formes
+		// non activées). L'effet sur la carte d'un transfert laissé ouvert
+		// n'est pas établi ; l'erreur le signale.
 		return nil, false, fmt.Errorf("read %d: open refused (mark %#x, code %#x, size %d); transfer %#x not stopped", r, head.Mark, head.Code, head.Total, head.Xfer)
 	}
 	var data []byte
@@ -394,18 +525,23 @@ func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size 
 	readErr := func() error {
 		for n := uint32(0); n < (head.Total+aacraid.ChunkData-1)/aacraid.ChunkData; n++ {
 			// Le morceau 0 est toujours lu : la clôture n'a été observée,
-			// chez l'outil de référence, qu'après au moins un morceau.
-			if n > 0 {
+			// chez l'outil de référence, qu'après au moins un morceau. Sur
+			// un couple validé, les suivants sont soumis à ctx ; ailleurs,
+			// la suite de l'outil est menée à son terme.
+			abridged := n > 0 && d.validated
+			if abridged {
 				if err := admit(ctx); err != nil {
 					return fmt.Errorf("read %d: %w", r, err)
 				}
 			}
 			req := aacraid.ChunkRequest(head.Total, head.Xfer, n)
-			// Morceau 0 : toujours envoyé une fois le transfert ouvert ;
-			// les suivants sont soumis à ctx.
-			var engaged context.Context
-			if n > 0 {
+			// Couple validé : morceau 0 engagé (nil), suivants soumis à
+			// ctx ; ailleurs, tous soumis à la fenêtre d'arrêt.
+			engaged := window
+			if d.validated && abridged {
 				engaged = ctx
+			} else if d.validated {
+				engaged = nil
 			}
 			rsp, err := d.fib(engaged, append([]byte(nil), req...))
 			if err != nil {
@@ -415,8 +551,11 @@ func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size 
 			if err != nil {
 				return err
 			}
-			if c.Mark != aacraid.MarkChunk || c.Xfer != head.Xfer || c.Chunk != n || c.Total != head.Total {
-				return fmt.Errorf("read %d: inconsistent chunk %d (mark %#x, transfer %#x, chunk %d)", r, n, c.Mark, c.Xfer, c.Chunk)
+			// Mots que l'outil de référence reprend dans la requête suivante
+			// (2, 3, 4, 7) : seules les valeurs que porte la requête de
+			// l'exporter sont admises, pour qu'elle reste celle de l'outil.
+			if c.Mark != aacraid.MarkChunk || c.Xfer != head.Xfer || c.Chunk != n || c.Total != head.Total || c.Code != aacraid.CodeOK || c.Size != head.Total {
+				return fmt.Errorf("read %d: inconsistent chunk %d (mark %#x, transfer %#x, chunk %d, code %#x, size %d)", r, n, c.Mark, c.Xfer, c.Chunk, c.Code, c.Size)
 			}
 			last = n
 			data = append(data, c.Data...)
@@ -427,7 +566,7 @@ func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size 
 				}
 				return nil
 			}
-			if want := need(data); want <= len(data) {
+			if want := need(data); want <= len(data) && d.validated {
 				return nil
 			} else if want > int(head.Total) {
 				return fmt.Errorf("read %d: %d bytes requested for a transfer of %d", r, want, head.Total)
@@ -435,7 +574,19 @@ func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size 
 		}
 		return nil
 	}()
-	rejected, stopErr := d.stop(r, head, last)
+	if readErr != nil && (!errors.Is(readErr, ErrStopped) || errors.Is(readErr, errGraceExceeded)) {
+		// Erreur ou rejet en cours de transfert : abandon sans clôture.
+		return nil, false, fmt.Errorf("%w; transfer %#x abandoned without stop", readErr, head.Xfer)
+	}
+	// Données suffisantes, ou arrêt demandé après un morceau conforme
+	// (ErrStopped : le morceau suivant n'est pas parti) : clôture. Hors
+	// couple validé, elle passe par la fenêtre d'arrêt : refusée sur le
+	// thread dédié si la fenêtre est close (abandon sans clôture).
+	rejected, stopErr := d.stop(window, r, head, last)
+	if errors.Is(stopErr, errGraceExceeded) {
+		// Clôture refusée à l'admission (non partie) : abandon sans clôture.
+		return nil, false, fmt.Errorf("%w; transfer %#x abandoned without stop", stopErr, head.Xfer)
+	}
 	if err := errors.Join(readErr, stopErr); err != nil {
 		return nil, false, err
 	}

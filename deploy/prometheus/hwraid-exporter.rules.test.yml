@@ -631,7 +631,7 @@ tests:
           - exp_labels: {severity: warning, controller: "serial:A", collector: volumes}
             exp_annotations:
               summary: "État des volumes non surveillé (serial:A)"
-              description: "Le module reconnaît la carte, mais ne lit pas ses volumes : couple modèle et firmware non qualifié, ou carte qui n'annonce pas les lectures d'état dans sa réponse de capacités (706). Une panne de volume ne déclenchera aucune alerte. Vérifier le firmware de la carte et la liste des couples qualifiés (docs/aacraid-interface.md) ; surveiller la carte avec l'outil du constructeur en attendant."
+              description: "Le module reconnaît la carte, mais ne lit pas ses volumes : modèle non qualifié sans l'option -allow-unqualified (hwraid_controller_qualified 0), carte qui n'annonce pas les lectures d'état dans sa réponse de capacités (706), ou forme de transfert non implémentée. Une panne de volume ne déclenchera aucune alerte. Vérifier hwraid_controller_qualified et la table des modèles qualifiés (docs/aacraid-interface.md, section 8) ; surveiller la carte avec l'outil du constructeur en attendant."
       - eval_time: 61m
         alertname: HwraidControllerUnsupported
         exp_alerts: []

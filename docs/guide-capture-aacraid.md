@@ -5,7 +5,7 @@ Cette annexe donne les commandes du [guide de capture](guide-capture.md) pour un
 ## 1. Cas propres à aacraid
 
 - La carte n'annonce pas l'interface des lectures d'état ([aacraid-interface.md](aacraid-interface.md), section 7) : `hwraid_collector_supported{collector="volumes"} 0`.
-- La carte annonce cette interface, avec un modèle ou un firmware jamais qualifié.
+- La carte annonce cette interface, avec un modèle jamais qualifié ou un firmware jamais validé.
 
 ## 2. Prérequis
 

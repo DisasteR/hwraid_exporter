@@ -10,6 +10,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"syscall"
 	"testing"
@@ -416,6 +417,11 @@ type fakeFirmware struct {
 	openCode  uint32   // mot 4 de la réponse d'ouverture (0 : 0xda)
 	openSize  uint16   // champ Size de la réponse d'ouverture (0 : 496)
 	stopSize  uint16   // champ Size de la réponse de clôture (0 : 496)
+	failErr   error    // erreur du morceau failAt (nil : EIO)
+	// chunkHook modifie la réponse au morceau n une fois construite.
+	chunkHook func(n uint32, d []byte)
+	// openHook modifie la réponse d'ouverture une fois construite.
+	openHook func(d []byte)
 }
 
 func (f *fakeFirmware) ioctl(t *testing.T) {
@@ -435,6 +441,9 @@ func (f *fakeFirmware) ioctl(t *testing.T) {
 				f.onChunk()
 			}
 			if int(n) == f.failAt {
+				if f.failErr != nil {
+					return f.failErr
+				}
 				return syscall.EIO
 			}
 			mark, size := uint32(0xc8), uint16(496)
@@ -458,6 +467,9 @@ func (f *fakeFirmware) ioctl(t *testing.T) {
 			copy(d[32:], chunk)
 			for i := 32 + perChunk; i < len(d); i++ {
 				d[i] = 0xee
+			}
+			if f.chunkHook != nil {
+				f.chunkHook(n, d)
 			}
 		case 84:
 			if f.onStop != nil {
@@ -504,6 +516,9 @@ func (f *fakeFirmware) ioctl(t *testing.T) {
 			le.PutUint32(d[16:], code)
 			le.PutUint32(d[20:], f.xfer)
 			le.PutUint32(d[28:], total)
+			if f.openHook != nil {
+				f.openHook(d)
+			}
 		}
 		return nil
 	})
@@ -531,6 +546,7 @@ func TestReadPagedStopsWhenEnough(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
+	d.SetValidatedCouple(true) // écarts E1 et E2 du couple validé
 	data, err := d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return aacraid.ContainerInfoNeed })
 	if err != nil {
 		t.Fatal(err)
@@ -550,9 +566,10 @@ func TestReadPagedStopsWhenEnough(t *testing.T) {
 	}
 }
 
-// Une erreur au milieu du transfert est remontée, et la clôture est envoyée
-// malgré tout.
-func TestReadPagedClosesOnError(t *testing.T) {
+// Une erreur d'ioctl au milieu du transfert est remontée et le transfert
+// est abandonné sans clôture (CDC, section 6.11, abandon sans clôture) :
+// aucune commande de ce transfert ne suit le morceau en échec.
+func TestReadPagedAbandonsOnChunkError(t *testing.T) {
 	f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 7, failAt: 1}
 	f.ioctl(t)
 	d, err := Open("/dev/null", devNull, list(t))
@@ -560,17 +577,13 @@ func TestReadPagedClosesOnError(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	if _, err := d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return 0x1000 }); err == nil {
-		t.Fatal("erreur de morceau non remontée")
+	_, err = d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return 0x1000 })
+	if err == nil || !errors.Is(err, syscall.EIO) {
+		t.Fatalf("erreur de morceau non remontée : %v", err)
 	}
-	got := f.subs()
-	if got[len(got)-1] != 84 {
-		t.Fatalf("pas de clôture après l'erreur : %v", got)
-	}
-	// Clôture du même transfert (identifiant 7, total annoncé), après le
-	// dernier morceau lu sans erreur (0) : requête entière comparée.
-	if last, want := f.requests[len(f.requests)-1], aacraid.StopRequest(0x1000, 7, 0); !bytes.Equal(last, want) {
-		t.Fatalf("clôture inattendue :\n%x\nattendu :\n%x", last, want)
+	// Ouverture, morceau 0, morceau 1 (en échec) : rien d'autre.
+	if got := f.subs(); !slices.Equal(got, []uint32{234, 83, 83}) {
+		t.Fatalf("séquence %v, attendu [234 83 83] sans clôture", got)
 	}
 }
 
@@ -599,7 +612,7 @@ func TestReadPagedRejectedOpenAndShortData(t *testing.T) {
 	}
 
 	// Morceau de marque inattendue, ou réponse incomplète (Size) : refusé,
-	// puis transfert clos.
+	// transfert abandonné sans clôture.
 	for name, ff := range map[string]*fakeFirmware{
 		"marque": {payload: make([]byte, 0x1000), xfer: 9, failAt: -1, chunkMark: 0xc9},
 		"taille": {payload: make([]byte, 0x1000), xfer: 9, failAt: -1, chunkSize: 100},
@@ -608,8 +621,8 @@ func TestReadPagedRejectedOpenAndShortData(t *testing.T) {
 		if _, err := open(t).ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, need); err == nil {
 			t.Fatalf("morceau anormal (%s) accepté", name)
 		}
-		if got := ff.subs(); len(got) != 3 || got[2] != 84 {
-			t.Fatalf("%s : séquence %v, attendu ouverture, morceau, clôture", name, got)
+		if got := ff.subs(); !slices.Equal(got, []uint32{234, 83}) {
+			t.Fatalf("%s : séquence %v, attendu ouverture et morceau, sans clôture", name, got)
 		}
 	}
 
@@ -622,14 +635,298 @@ func TestReadPagedRejectedOpenAndShortData(t *testing.T) {
 		t.Fatalf("requête envoyée après une taille hors bornes : %v", got)
 	}
 
-	// Transfert complet plus court que les champs demandés.
+	// Transfert complet plus court que les champs demandés : données
+	// rejetées, abandon sans clôture.
 	f = &fakeFirmware{payload: make([]byte, 100), xfer: 9, failAt: -1}
 	f.ioctl(t)
 	if _, err := open(t).ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, need); err == nil {
 		t.Fatal("données insuffisantes acceptées")
 	}
-	if got := f.subs(); got[len(got)-1] != 84 {
-		t.Fatalf("pas de clôture : %v", got)
+	if got := f.subs(); !slices.Equal(got, []uint32{234, 83}) {
+		t.Fatalf("séquence %v, attendu ouverture et morceau, sans clôture", got)
+	}
+}
+
+// Chaque écart sur un morceau, après un morceau 0 conforme, abandonne le
+// transfert sans clôture (CDC, section 6.11, événements en cours de
+// transfert) : un cas par contrôle du transport, mots de réponse aux
+// positions de la capture (statut 0, écho 4, total 12, identifiant 20,
+// numéro 24).
+func TestReadPagedAbandonsOnEachChunkFault(t *testing.T) {
+	le := binary.LittleEndian
+	at1 := func(off int, v func(uint32) uint32) func(uint32, []byte) {
+		return func(n uint32, d []byte) {
+			if n == 1 {
+				le.PutUint32(d[off:], v(le.Uint32(d[off:])))
+			}
+		}
+	}
+	for name, f := range map[string]*fakeFirmware{
+		"EINTR":       {failAt: 1, failErr: syscall.EINTR},
+		"statut":      {failAt: -1, chunkHook: at1(0, func(uint32) uint32 { return 1 })},
+		"écho":        {failAt: -1, chunkHook: at1(4, func(uint32) uint32 { return 82 })},
+		"total":       {failAt: -1, chunkHook: at1(12, func(v uint32) uint32 { return v - 4 })},
+		"identifiant": {failAt: -1, chunkHook: at1(20, func(v uint32) uint32 { return v + 1 })},
+		"numéro":      {failAt: -1, chunkHook: at1(24, func(v uint32) uint32 { return v + 1 })},
+		"marque":      {failAt: -1, chunkHook: at1(8, func(uint32) uint32 { return 0xc9 })},
+		// Mots repris par l'outil dans la requête suivante : valeurs
+		// observées sur d'autres lectures de l'outil (0xc0, mot 7 nul).
+		"code":  {failAt: -1, chunkHook: at1(16, func(uint32) uint32 { return 0xc0 })},
+		"mot 7": {failAt: -1, chunkHook: at1(28, func(uint32) uint32 { return 0 })},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f.payload, f.xfer = make([]byte, 0x1000), 9
+			f.ioctl(t)
+			d, err := Open("/dev/null", devNull, list(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			// Tout le transfert est demandé : sans l'écart, 10 morceaux.
+			data, err := d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return 0x1000 })
+			if err == nil || data != nil || errors.Is(err, ErrStopped) {
+				t.Fatalf("err=%v, données=%v", err, data != nil)
+			}
+			if got := f.subs(); !slices.Equal(got, []uint32{234, 83, 83}) {
+				t.Fatalf("séquence %v, attendu [234 83 83] sans clôture", got)
+			}
+		})
+	}
+}
+
+// Ouvertures des lignes 2, 4 et 6 du déroulement (code 0xe2, total nul,
+// code atypique) : l'outil y clôture ou poursuit, avec des formes de
+// requête non activées ; l'exporter n'envoie aucune commande.
+func TestReadPagedInactiveOpenCasesSendNothing(t *testing.T) {
+	for name, f := range map[string]*fakeFirmware{
+		"ligne 2, 0xe2":      {payload: make([]byte, 0x1000), openCode: 0xe2},
+		"ligne 4, total nul": {payload: []byte{}},
+		"ligne 6, code 0xdb": {payload: make([]byte, 0x1000), openCode: 0xdb},
+		"mot 7 différent du total": {payload: make([]byte, 0x1000), openHook: func(d []byte) {
+			binary.LittleEndian.PutUint32(d[28:], 0x800)
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f.xfer, f.failAt = 9, -1
+			f.ioctl(t)
+			d, err := Open("/dev/null", devNull, list(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			if _, err := d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return aacraid.ContainerInfoNeed }); err == nil || errors.Is(err, allowlist.ErrDenied) {
+				t.Fatalf("ouverture acceptée ou refusée trop tard : %v", err)
+			}
+			if got := f.subs(); !slices.Equal(got, []uint32{234}) {
+				t.Fatalf("séquence %v, attendu l'ouverture seule", got)
+			}
+		})
+	}
+}
+
+// Hors du couple validé (réglage par défaut), le transport suit l'outil de
+// référence (CDC, section 6.11, colonne « autre couple ») : tous les
+// morceaux puis la clôture même si les données suffisent (pas d'E1) ; à
+// l'arrêt après l'ouverture, morceaux restants puis clôture, lecture en
+// échec ; clôture 0xc5 : lecture rejetée, non refaite (pas d'E2).
+func TestReadPagedOutsideValidatedPair(t *testing.T) {
+	ten := append(append([]uint32{234}, slices.Repeat([]uint32{83}, 10)...), 84)
+	t.Run("données suffisantes", func(t *testing.T) {
+		f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: -1}
+		f.ioctl(t)
+		d, err := Open("/dev/null", devNull, list(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer d.Close()
+		data, err := d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return aacraid.ContainerInfoNeed })
+		if err != nil || len(data) != 0x1000 {
+			t.Fatalf("err=%v, %d octets", err, len(data))
+		}
+		if got := f.subs(); !slices.Equal(got, ten) {
+			t.Fatalf("séquence %v, attendu les 10 morceaux puis la clôture", got)
+		}
+	})
+	t.Run("arrêt après l'ouverture", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: -1, onOpen: cancel}
+		f.ioctl(t)
+		d, err := Open("/dev/null", devNull, list(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer d.Close()
+		data, err := d.ReadPaged(ctx, aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return aacraid.ContainerInfoNeed })
+		if !errors.Is(err, ErrStopped) || data != nil {
+			t.Fatalf("err=%v, données=%v", err, data != nil)
+		}
+		if got := f.subs(); !slices.Equal(got, ten) {
+			t.Fatalf("séquence %v, attendu les 10 morceaux puis la clôture", got)
+		}
+	})
+	// Arrêt après le morceau 1 (déjà reçu) : la suite de l'outil va au
+	// bout dans la borne stopGrace ; un morceau qui rend la main après la
+	// borne arrête tout nouvel envoi, sans clôture.
+	for name, slow := range map[string]time.Duration{"arrêt après un morceau": 0, "borne dépassée": 60 * time.Millisecond} {
+		t.Run(name, func(t *testing.T) {
+			old := stopGrace
+			stopGrace = 20 * time.Millisecond
+			defer func() { stopGrace = old }()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			chunks := 0
+			f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: -1, onChunk: func() {
+				if chunks++; chunks == 2 {
+					cancel()
+					time.Sleep(slow)
+				}
+			}}
+			f.ioctl(t)
+			d, err := Open("/dev/null", devNull, list(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			data, err := d.ReadPaged(ctx, aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return aacraid.ContainerInfoNeed })
+			if err == nil || data != nil {
+				t.Fatalf("err=%v, données=%v", err, data != nil)
+			}
+			want := ten
+			if slow > 0 {
+				want = []uint32{234, 83, 83}
+			}
+			if got := f.subs(); !slices.Equal(got, want) {
+				t.Fatalf("séquence %v, attendu %v", got, want)
+			}
+		})
+	}
+	// Fenêtre d'arrêt (stopGrace) comptée depuis l'arrêt et vérifiée à
+	// l'admission, sur le thread dédié : ouverture qui rend la main après la
+	// fenêtre, arrêt par signal ou par échéance (aucun morceau) ; thread
+	// dédié occupé au-delà de la fenêtre avant l'admission d'un morceau
+	// (refusé, même si l'appelant l'a confié à temps) ; clôture après la
+	// fenêtre (refusée). Chaque refus porte errGraceExceeded et abandonne
+	// sans tentative de clôture.
+	for name, tc := range map[string]struct {
+		payload  int
+		deadline bool
+		setup    func(f *fakeFirmware, cancel func())
+		want     []uint32
+	}{
+		"ouverture tardive, signal": {0x1000, false, func(f *fakeFirmware, cancel func()) {
+			f.onOpen = func() { cancel(); time.Sleep(60 * time.Millisecond) }
+		}, []uint32{234}},
+		"ouverture tardive, échéance": {0x1000, true, func(f *fakeFirmware, _ func()) {
+			f.onOpen = func() { time.Sleep(90 * time.Millisecond) }
+		}, []uint32{234}},
+		"admission tardive sur le thread": {0x1000, false, func(f *fakeFirmware, cancel func()) {
+			chunks := 0
+			f.onChunk = func() {
+				if chunks++; chunks == 2 {
+					cancel()
+					armed := true
+					admitting = func() {
+						if armed {
+							armed = false
+							time.Sleep(60 * time.Millisecond)
+						}
+					}
+				}
+			}
+		}, []uint32{234, 83, 83}},
+		"clôture tardive": {100, false, func(f *fakeFirmware, cancel func()) {
+			f.onChunk = func() { cancel(); time.Sleep(60 * time.Millisecond) }
+		}, []uint32{234, 83}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			old := stopGrace
+			stopGrace = 20 * time.Millisecond
+			defer func() { stopGrace, admitting = old, nil }()
+			ctx, cancel := context.WithCancel(context.Background())
+			if tc.deadline {
+				ctx, cancel = context.WithTimeout(context.Background(), 10*time.Millisecond)
+			}
+			defer cancel()
+			f := &fakeFirmware{payload: make([]byte, tc.payload), xfer: 9, failAt: -1}
+			tc.setup(f, cancel)
+			f.ioctl(t)
+			d, err := Open("/dev/null", devNull, list(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			data, err := d.ReadPaged(ctx, aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return 100 })
+			if !errors.Is(err, errGraceExceeded) || data != nil {
+				t.Fatalf("err=%v, données=%v", err, data != nil)
+			}
+			if got := f.subs(); !slices.Equal(got, tc.want) {
+				t.Fatalf("séquence %v, attendu %v", got, tc.want)
+			}
+		})
+	}
+	// Clôture admise dans la fenêtre, qui rend EIO après sa fin : la
+	// clôture est partie, son erreur est rendue telle quelle.
+	t.Run("clôture admise, EIO tardif", func(t *testing.T) {
+		old := stopGrace
+		stopGrace = 20 * time.Millisecond
+		defer func() { stopGrace = old }()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		f := &fakeFirmware{payload: make([]byte, 100), xfer: 9, failAt: -1, onChunk: cancel}
+		f.onStop = func() { time.Sleep(60 * time.Millisecond) }
+		f.ioctl(t)
+		fakeStopErr(t, f)
+		d, err := Open("/dev/null", devNull, list(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer d.Close()
+		_, err = d.ReadPaged(ctx, aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return 100 })
+		if !errors.Is(err, syscall.EIO) || errors.Is(err, errGraceExceeded) {
+			t.Fatalf("err=%v, attendu EIO de la clôture", err)
+		}
+		if got := f.subs(); !slices.Equal(got, []uint32{234, 83, 84}) {
+			t.Fatalf("séquence %v", got)
+		}
+	})
+	t.Run("clôture 0xc5", func(t *testing.T) {
+		f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: -1, stopMarks: []uint32{0xc5, 0xc6}}
+		f.ioctl(t)
+		d, err := Open("/dev/null", devNull, list(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer d.Close()
+		data, err := d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return aacraid.ContainerInfoNeed })
+		if err == nil || data != nil || d.CloseUnconfirmed() != 1 {
+			t.Fatalf("err=%v, données=%v, rejets %d", err, data != nil, d.CloseUnconfirmed())
+		}
+		if got := f.subs(); !slices.Equal(got, ten) {
+			t.Fatalf("séquence %v, attendu une seule lecture", got)
+		}
+	})
+}
+
+// Ouverture nominale (0xc9, 0xda, total valide) portant l'identifiant
+// sentinelle 0xffffffff : aucun transfert établi, aucune commande ensuite
+// (ligne 1 du déroulement).
+func TestReadPagedSentinelTransferSendsNothing(t *testing.T) {
+	f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: aacraid.XferNone, failAt: -1}
+	f.ioctl(t)
+	d, err := Open("/dev/null", devNull, list(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	// Refus par le transport dès l'ouverture, pas seulement par la liste
+	// blanche au morceau suivant.
+	_, err = d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return aacraid.ContainerInfoNeed })
+	if err == nil || errors.Is(err, allowlist.ErrDenied) {
+		t.Fatalf("ouverture sur l'identifiant sentinelle : %v", err)
+	}
+	if got := f.subs(); !slices.Equal(got, []uint32{234}) {
+		t.Fatalf("séquence %v, attendu l'ouverture seule", got)
 	}
 }
 
@@ -680,6 +977,7 @@ func TestReadPagedCloseOtherMark(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		d.SetValidatedCouple(true) // relecture après 0xc5 (E2)
 		data, err := d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, need)
 		if (err == nil) != c.ok || (c.ok && data[5] != 0x42) || (!c.ok && data != nil) {
 			t.Fatalf("%s : err=%v, données=%v", c.name, err, data != nil)
@@ -703,6 +1001,7 @@ func TestReadPagedNoRetryAfterStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
+	d.SetValidatedCouple(true) // écarts E1 et E2 du couple validé
 	data, err := d.ReadPaged(ctx, aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return aacraid.ContainerInfoNeed })
 	if !errors.Is(err, ErrStopped) || data != nil {
 		t.Fatalf("err=%v, données=%v", err, data != nil)
@@ -729,7 +1028,9 @@ func TestStoppedContextSendsNothing(t *testing.T) {
 	_, e4 := d.ReadPaged(ctx, aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return aacraid.ContainerInfoNeed })
 	_, e5 := d.AdapterInfo(ctx)
 	_, e6 := d.Environment(ctx)
-	for i, e := range []error{e1, e2, e3, e4, e5, e6} {
+	_, e7 := d.Paused(ctx)
+	_, e8 := d.Revision(ctx)
+	for i, e := range []error{e1, e2, e3, e4, e5, e6, e7, e8} {
 		if !errors.Is(e, ErrStopped) {
 			t.Fatalf("lecture %d : ErrStopped attendu, obtenu %v", i+1, e)
 		}
@@ -778,6 +1079,7 @@ func TestReadPagedStopsMidTransfer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
+	d.SetValidatedCouple(true) // écarts E1 et E2 du couple validé
 	// Toute la charge est demandée : sans arrêt, 10 morceaux seraient lus.
 	data, err := d.ReadPaged(ctx, aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return 0x1000 })
 	if !errors.Is(err, ErrStopped) || data != nil {
@@ -801,6 +1103,7 @@ func TestReadPagedStopDuringOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
+	d.SetValidatedCouple(true) // écarts E1 et E2 du couple validé
 	data, err := d.ReadPaged(ctx, aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return aacraid.ContainerInfoNeed })
 	if !errors.Is(err, ErrStopped) || data != nil {
 		t.Fatalf("err=%v, données=%v", err, data != nil)
@@ -957,11 +1260,9 @@ func TestReadPagedTruncatedResponses(t *testing.T) {
 	})
 }
 
-// Morceau en échec puis clôture confirmée par 0xc5 : la lecture est en
-// échec, sans nouvel essai. Seule une lecture dont les morceaux sont
-// conformes est refaite après 0xc5 ; l'outil de référence ne refait aucune
-// lecture, et rien ne justifie d'envoyer davantage de commandes à une carte
-// qui vient de refuser un morceau. Le rejet 0xc5 est compté.
+// Morceau en échec : abandon sans clôture, donc ni réponse 0xc5 ni nouvel
+// essai, même si la carte confirmerait une clôture par 0xc5. Seule une
+// lecture dont les morceaux sont conformes est refaite après 0xc5 (E2).
 func TestReadPagedNoRetryAfterChunkError(t *testing.T) {
 	need := func([]byte) int { return 0x1000 }
 	f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: 1, stopMarks: []uint32{0xc5, 0xc5}}
@@ -981,8 +1282,8 @@ func TestReadPagedNoRetryAfterChunkError(t *testing.T) {
 			opens++
 		}
 	}
-	if opens != 1 || d.CloseUnconfirmed() != 1 {
-		t.Fatalf("%d ouverture(s), %d rejet(s) : une seule ouverture et un rejet compté attendus", opens, d.CloseUnconfirmed())
+	if got := f.subs(); opens != 1 || !slices.Equal(got, []uint32{234, 83, 83}) || d.CloseUnconfirmed() != 0 {
+		t.Fatalf("séquence %v, %d rejet(s) : une ouverture, deux morceaux, aucune clôture attendus", got, d.CloseUnconfirmed())
 	}
 }
 
@@ -1091,5 +1392,46 @@ func TestContainerListNeedsDecodedCount(t *testing.T) {
 		if err := d.Do(allowlist.Request{Ioctl: aacraid.IoctlSendFIB, Buf: open}); !errors.Is(err, allowlist.ErrDenied) || *calls != 0 {
 			t.Fatalf("liste de %d octets sans comptage : %v, %d ioctl", aacraid.ContainerListSize(n), err, *calls)
 		}
+	}
+}
+
+// fakeStopErr fait rendre EIO à la clôture du faux firmware f, après son
+// rappel onStop.
+func fakeStopErr(t *testing.T, f *fakeFirmware) {
+	t.Helper()
+	inner := ioctlFn
+	ioctlFn = func(fd int, req uint32, buf []byte) error {
+		err := inner(fd, req, buf)
+		if binary.LittleEndian.Uint32(buf[aacraid.FIBHeaderSize+4:]) == 84 {
+			return syscall.EIO
+		}
+		return err
+	}
+	t.Cleanup(func() { ioctlFn = inner })
+}
+
+// Fenêtre d'arrêt : rappel d'annulation retardé (instant enregistré après
+// l'échéance) ; la fenêtre compte depuis l'échéance, pas depuis le rappel.
+// Arrêt par signal : depuis son premier constat. Contexte actif : ouverte.
+func TestStopWindowCountsFromStop(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-30*time.Millisecond))
+	defer cancel()
+	w := &stopWindow{stop: ctx, grace: 20 * time.Millisecond}
+	w.mark() // rappel tardif : 30 ms après l'échéance
+	if err := w.Err(); !errors.Is(err, errGraceExceeded) {
+		t.Fatalf("échéance passée de 30 ms, fenêtre de 20 ms : %v", err)
+	}
+	live, stop := context.WithCancel(context.Background())
+	w = &stopWindow{stop: live, grace: 20 * time.Millisecond}
+	if err := w.Err(); err != nil {
+		t.Fatalf("contexte actif : %v", err)
+	}
+	stop()
+	if err := w.Err(); err != nil {
+		t.Fatalf("arrêt à l'instant : %v", err)
+	}
+	time.Sleep(30 * time.Millisecond)
+	if err := w.Err(); !errors.Is(err, errGraceExceeded) {
+		t.Fatalf("arrêt depuis 30 ms : %v", err)
 	}
 }

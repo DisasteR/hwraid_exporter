@@ -507,3 +507,29 @@ func TestCloseUnconfirmedCounter(t *testing.T) {
 		t.Fatal("cumul conservé après le retrait de la carte")
 	}
 }
+
+// qualMod qualifie ses cartes par sous-système PCI (module.Qualifier).
+type qualMod struct{ fakeMod }
+
+func (qualMod) Qualified(c module.Card) bool { return c.PCI.SubsystemDevice == "0x0301" }
+func (qualMod) AllowUnqualified()            {}
+
+// hwraid_controller_qualified : publiée pour chaque carte d'un module qui
+// qualifie ses cartes (1 ou 0, selon le modèle), absente sinon.
+func TestControllerQualified(t *testing.T) {
+	other := aacHost("host1", "0000:02:00.0", "BBB")
+	other.PCI.SubsystemDevice = "0x0300"
+	p := module.Build([]sysfs.SCSIHost{aacHost("host0", "0000:01:00.0", "AAA"), other}, []module.Module{qualMod{}})
+	out := Render(Build(p, true, valid(p), nil, 0))
+	for _, want := range []string{
+		`hwraid_controller_qualified{controller="serial:AAA"} 1` + "\n",
+		`hwraid_controller_qualified{controller="serial:BBB"} 0` + "\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("%q absent :\n%s", want, out)
+		}
+	}
+	if out := Render(Build(plan(aacHost("host0", "0000:01:00.0", "AAA")), true, nil, nil, 0)); strings.Contains(out, "hwraid_controller_qualified{") {
+		t.Fatalf("qualification publiée pour un module qui ne qualifie pas ses cartes :\n%s", out)
+	}
+}

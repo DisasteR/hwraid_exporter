@@ -218,9 +218,23 @@ type Module interface {
 	// différentes : l'état partagé du module doit être protégé, sans tenir
 	// de verrou pendant un appel au firmware. Une fois ctx terminé (échéance
 	// du cycle ou arrêt du service), le module n'envoie plus de nouvelle
-	// commande ; une commande en cours n'est jamais interrompue et un
-	// transfert ouvert est clos.
+	// commande ; une commande en cours n'est jamais interrompue, et un
+	// transfert ouvert suit la séquence engagée que le module prévoit à
+	// l'arrêt.
 	Collect(ctx context.Context, c Card, refs []NodeRef) Result
+}
+
+// Qualifier est implémenté par un module qui qualifie ses cartes par
+// modèle (exigence S4) : une carte d'un modèle non qualifié n'est lue
+// au-delà de son identification que si l'opérateur l'autorise
+// (-allow-unqualified, exigence S4 bis).
+type Qualifier interface {
+	// Qualified indique si le modèle de la carte est qualifié. Fonction
+	// pure, tirée de sysfs.
+	Qualified(c Card) bool
+	// AllowUnqualified autorise la lecture de toutes les cartes du module,
+	// qualifiées ou non. Appelé avant la première collecte.
+	AllowUnqualified()
 }
 
 // Planned associe une carte à son module.

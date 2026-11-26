@@ -67,22 +67,24 @@ func TestNodesFollowUniqueID(t *testing.T) {
 }
 
 type fakeDev struct {
-	info       aacraid.HBAInfo
-	err        error
-	sup        aacraid.SupplementInfo
-	supErr     error
-	supCall    int
-	supWait    chan struct{} // si non nil, SupplementInfo attend sa fermeture
-	started    atomic.Int32  // appels à SupplementInfo commencés (lecture concurrente)
-	closed     bool
-	cp         *cpAnswer
-	cpCall     int
-	paged      func(r aacraid.PagedRead, param, size uint32) ([]byte, error)
-	reads      []string
-	cmap       func() (aacraid.ConnectorMap, error) // nil : réponse de référence
-	cmCall     int
-	closeOther int // clôtures 0xc5 simulées
-	refused    int // commandes refusées après la fin du contexte
+	// validated : dernière valeur reçue par SetValidatedCouple.
+	validated, validatedSet bool
+	info                    aacraid.HBAInfo
+	err                     error
+	sup                     aacraid.SupplementInfo
+	supErr                  error
+	supCall                 int
+	supWait                 chan struct{} // si non nil, SupplementInfo attend sa fermeture
+	started                 atomic.Int32  // appels à SupplementInfo commencés (lecture concurrente)
+	closed                  bool
+	cp                      *cpAnswer
+	cpCall                  int
+	paged                   func(r aacraid.PagedRead, param, size uint32) ([]byte, error)
+	reads                   []string
+	cmap                    func() (aacraid.ConnectorMap, error) // nil : réponse de référence
+	cmCall                  int
+	closeOther              int // clôtures 0xc5 simulées
+	refused                 int // commandes refusées après la fin du contexte
 	// ai : réponse 703 (nil : capteur annoncé, comme la 6805 de référence) ;
 	// env : réponse 803 (nil : 49 °C, seuils 95 et 100, valeurs capturées).
 	ai      *aacraid.AdapterInfo
@@ -97,6 +99,33 @@ type fakeDev struct {
 	countCall int
 	expected  aacraid.ContainerCount // comptage fixé par ExpectContainerList
 	chunks    map[string]int         // morceaux servis (432 octets), par lecture
+	// Ouverture : 704 (paused, pausedErr) et 701 (rev : nil, réponse de la
+	// carte de référence, compatible, build 19204).
+	paused     bool
+	pausedErr  error
+	pausedCall int
+	rev        *aacraid.Revision
+	revErr     error
+	revCall    int
+}
+
+func (f *fakeDev) Paused(ctx context.Context) (bool, error) {
+	if f.stopped(ctx) {
+		return false, aacio.ErrStopped
+	}
+	f.pausedCall++
+	return f.paused, f.pausedErr
+}
+
+func (f *fakeDev) Revision(ctx context.Context) (aacraid.Revision, error) {
+	if f.stopped(ctx) {
+		return aacraid.Revision{}, aacio.ErrStopped
+	}
+	f.revCall++
+	if f.rev != nil {
+		return *f.rev, f.revErr
+	}
+	return aacraid.Revision{Compatible: true, FirmwareBuild: 19204}, f.revErr
 }
 
 func (f *fakeDev) maxContainers() uint32 {
@@ -207,8 +236,9 @@ func (f *fakeDev) SupplementInfo(ctx context.Context) (aacraid.SupplementInfo, e
 	}
 	return f.sup, f.supErr
 }
-func (f *fakeDev) Close() error          { f.closed = true; return nil }
-func (f *fakeDev) CloseUnconfirmed() int { return f.closeOther }
+func (f *fakeDev) Close() error              { f.closed = true; return nil }
+func (f *fakeDev) CloseUnconfirmed() int     { return f.closeOther }
+func (f *fakeDev) SetValidatedCouple(v bool) { f.validated, f.validatedSet = v, true }
 
 func (f *fakeDev) CacheProtection(ctx context.Context) (bool, aacraid.ZMMStatus, error) {
 	if f.stopped(ctx) {
@@ -386,10 +416,10 @@ func TestCollectSupplementGate(t *testing.T) {
 	if d.supCall != 4 {
 		t.Fatalf("ancienne réponse 706 réutilisée au retour à l'identité d'origine (%d lectures)", d.supCall)
 	}
-	// Même règle pour la 703 : lue pour c puis pour c3 (le firmware de c2
-	// n'est pas qualifié, aucune 703 ne lui est envoyée), relue au retour.
-	if d.aiCall != 3 {
-		t.Fatalf("703 lue %d fois (attendu 3 : c, c3, puis c de nouveau, l'ancienne réponse étant oubliée)", d.aiCall)
+	// Même règle pour la 703 : lue pour c, c2 (modèle qualifié, autre
+	// firmware), c3, puis relue au retour.
+	if d.aiCall != 4 {
+		t.Fatalf("703 lue %d fois (attendu 4 : c, c2, c3, puis c de nouveau, l'ancienne réponse étant oubliée)", d.aiCall)
 	}
 
 	for name, sup := range map[string]aacraid.SupplementInfo{
@@ -425,19 +455,21 @@ func TestCollectSupplementGate(t *testing.T) {
 // chaque cycle (1 si la valeur est connue, 0 si la lecture vient d'échouer),
 // et n'est pas rapportée si elle n'a pas été tentée (nœud d'une autre carte).
 // Quand elle échoue, une carte qualifiée publie en échec les lectures
-// qu'elle conditionne ; une carte non qualifiée publie quand même ses
-// collecteurs non pris en charge (classement tiré de sysfs seul).
+// qu'elle conditionne ; une carte non qualifiée ne reçoit aucune commande
+// firmware et publie tous ses collecteurs non pris en charge (classement
+// tiré de sysfs seul).
 func TestCollectReportsCapabilitiesCollection(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
 	c := card("0000:01:00.0", "0")
 	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
 	after := []string{"volumes", "disks", DiskInventoryCollector, DiskLocationCollector, CacheProtectionCollector, TemperatureCollector}
 
-	unq := card("0000:01:00.0", "0")
-	unq.Hosts[0].Firmware = "5.2-0[19109]"
-	if r := withDev(&fakeDev{info: hba, supErr: errors.New("EIO")}, nil).Collect(context.Background(), unq, ref); len(r.Collected) != 1 ||
-		r.Collected[CapabilitiesCollector] || len(r.Unsupported) != len(after) {
-		t.Fatalf("non qualifiée, 706 en échec : %+v / non pris en charge %v", r.Collected, r.Unsupported)
+	unq, unqHBA := otherModel(hba)
+	fu := &fakeDev{info: unqHBA, supErr: errors.New("EIO")}
+	if r := withDev(fu, nil).Collect(context.Background(), unq, ref); len(r.Collected) != 0 ||
+		len(r.Unsupported) != 1+len(after) || !slices.Contains(r.Unsupported, CapabilitiesCollector) ||
+		fu.pausedCall+fu.revCall+fu.aiCall+fu.supCall != 0 {
+		t.Fatalf("non qualifiée : %+v / non pris en charge %v ; 704 %d, 701 %d, 703 %d, 706 %d", r.Collected, r.Unsupported, fu.pausedCall, fu.revCall, fu.aiCall, fu.supCall)
 	}
 
 	f := &fakeDev{info: hba, supErr: errors.New("EIO")}
@@ -835,11 +867,12 @@ func TestCollectVolumesFailureAndGate(t *testing.T) {
 func TestCollectRequiresQualification(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
 	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
+	// Modèle non qualifié : rien au-delà de la 706 (les variantes de
+	// firmware d'un modèle qualifié sont traitées par
+	// TestQualifiedModelOtherFirmware).
 	variants := map[string]func(c *module.Card){
-		"autre modèle":        func(c *module.Card) { c.PCI.SubsystemDevice = "0x0300" },
-		"autre puce":          func(c *module.Card) { c.PCI.Device = "0x028c" },
-		"autre firmware":      func(c *module.Card) { c.Hosts[0].Firmware = "5.2-0[19109]" },
-		"firmware non publié": func(c *module.Card) { c.Hosts[0].Firmware = "" },
+		"autre modèle": func(c *module.Card) { c.PCI.SubsystemDevice = "0x0300" },
+		"autre puce":   func(c *module.Card) { c.PCI.Device = "0x028c" },
 	}
 	for name, mod := range variants {
 		c := card("0000:01:00.0", "0")
@@ -856,20 +889,59 @@ func TestCollectRequiresQualification(t *testing.T) {
 		if !r.NodeValid {
 			t.Fatalf("%s : nœud refusé : %+v", name, r)
 		}
-		if d.cpCall != 0 || len(d.reads) != 0 || d.cmCall != 0 || d.countCall != 0 || d.aiCall != 0 || d.envCall != 0 {
-			t.Fatalf("%s : lectures envoyées (ZMM %d, paginées %v, 708 %d, comptage %d, 703 %d, 803 %d)", name, d.cpCall, d.reads, d.cmCall, d.countCall, d.aiCall, d.envCall)
+		if d.pausedCall+d.revCall+d.supCall != 0 || d.cpCall != 0 || len(d.reads) != 0 || d.cmCall != 0 || d.countCall != 0 || d.aiCall != 0 || d.envCall != 0 {
+			t.Fatalf("%s : commandes firmware envoyées (704 %d, 701 %d, 706 %d, ZMM %d, paginées %v, 708 %d, comptage %d, 703 %d, 803 %d)", name, d.pausedCall, d.revCall, d.supCall, d.cpCall, d.reads, d.cmCall, d.countCall, d.aiCall, d.envCall)
 		}
-		want := map[string]bool{"volumes": true, "disks": true, DiskInventoryCollector: true, DiskLocationCollector: true, CacheProtectionCollector: true}
+		want := map[string]bool{CapabilitiesCollector: true, "volumes": true, "disks": true, DiskInventoryCollector: true, DiskLocationCollector: true, CacheProtectionCollector: true, TemperatureCollector: true}
 		for _, u := range r.Unsupported {
 			delete(want, u)
 		}
-		if len(want) != 0 || !r.NodeValid || !r.Collected[CapabilitiesCollector] {
+		if len(want) != 0 || !r.NodeValid || len(r.Collected) != 0 {
 			t.Fatalf("%s : %+v", name, r)
 		}
 	}
-	// La carte de référence est qualifiée.
-	if !Qualified(card("0000:01:00.0", "0")) {
-		t.Fatal("6805 de référence non qualifiée")
+	// La carte de référence est un couple validé.
+	if !ValidatedCouple(card("0000:01:00.0", "0")) {
+		t.Fatal("6805 de référence non validée")
+	}
+}
+
+// otherModel rend une carte d'un modèle non qualifié (sous-système 0x0300),
+// avec la réponse GET_HBA_INFO cohérente.
+func otherModel(hba aacraid.HBAInfo) (module.Card, aacraid.HBAInfo) {
+	c := card("0000:01:00.0", "0")
+	c.PCI.SubsystemDevice = "0x0300"
+	hba.SubSystemID = 0x0300
+	return c, hba
+}
+
+// Modèle qualifié, firmware autre que ceux validés (ou non publié) : la
+// carte est lue (la qualification porte sur le modèle), protection du cache
+// comprise comme l'outil de référence, sans les écarts E1 et E2 (couple non
+// validé transmis au transport ; CDC, sections 6.11 et 6.12). La carte de
+// référence est un couple validé.
+func TestQualifiedModelOtherFirmware(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
+	for name, fw := range map[string]string{"autre firmware": "5.2-0[19109]", "firmware non publié": ""} {
+		c := card("0000:01:00.0", "0")
+		c.Hosts[0].Firmware = fw
+		d := &fakeDev{info: hba, sup: arcIo}
+		r := withDev(d, nil).Collect(context.Background(), c, ref)
+		if !d.validatedSet || d.validated {
+			t.Fatalf("%s : couple validé transmis au transport (%v, %v)", name, d.validatedSet, d.validated)
+		}
+		if d.cpCall == 0 || len(r.Unsupported) != 0 || !r.Collected[CacheProtectionCollector] {
+			t.Fatalf("%s : protection du cache envoyée %d fois ; non pris en charge %v", name, d.cpCall, r.Unsupported)
+		}
+		if len(d.reads) == 0 || d.countCall != 1 || d.aiCall != 1 || !r.Collected["volumes"] || !r.Collected[DiskInventoryCollector] {
+			t.Fatalf("%s : carte non lue (paginées %v, comptage %d, 703 %d) : %+v", name, d.reads, d.countCall, d.aiCall, r.Collected)
+		}
+	}
+	d := &fakeDev{info: hba, sup: arcIo}
+	withDev(d, nil).Collect(context.Background(), card("0000:01:00.0", "0"), ref)
+	if !d.validatedSet || !d.validated || d.cpCall == 0 {
+		t.Fatalf("carte de référence : couple validé %v/%v, protection du cache %d", d.validatedSet, d.validated, d.cpCall)
 	}
 }
 
@@ -1354,9 +1426,18 @@ func TestCollectTemperature(t *testing.T) {
 		if _, seen := r.Collected[TemperatureCollector]; !seen {
 			t.Fatal("échec de la 703 non publié")
 		}
+		// Protection du cache : lue seulement après une 703 valide ; publiée
+		// en échec, pas en non prise en charge.
+		if f.cpCall != 0 || slices.Contains(r.Unsupported, CacheProtectionCollector) {
+			t.Fatalf("protection du cache sans 703 : %d lecture(s) ; non prises en charge %v", f.cpCall, r.Unsupported)
+		}
+		if ok, seen := r.Collected[CacheProtectionCollector]; !seen || ok {
+			t.Fatalf("protection du cache non publiée en échec : %+v", r.Collected)
+		}
 		f.aiErr = nil
-		if r := m.Collect(context.Background(), c, ref); !r.Collected[TemperatureCollector] || f.aiCall != 2 {
-			t.Fatalf("échec de la 703 gardé en mémoire : %d lectures", f.aiCall)
+		if r := m.Collect(context.Background(), c, ref); !r.Collected[TemperatureCollector] || f.aiCall != 2 ||
+			!r.Collected[CacheProtectionCollector] || f.cpCall != 1 {
+			t.Fatalf("échec de la 703 gardé en mémoire : 703 %d, cache %d, %+v", f.aiCall, f.cpCall, r.Collected)
 		}
 	})
 	t.Run("803 en échec", func(t *testing.T) {
@@ -1370,9 +1451,8 @@ func TestCollectTemperature(t *testing.T) {
 		}
 	})
 	t.Run("carte non qualifiée", func(t *testing.T) {
-		unq := card("0000:01:00.0", "0")
-		unq.Hosts[0].Firmware = "5.2-0[19109]"
-		f := &fakeDev{info: hba, sup: arcIo}
+		unq, unqHBA := otherModel(hba)
+		f := &fakeDev{info: unqHBA, sup: arcIo}
 		r := withDev(f, nil).Collect(context.Background(), unq, ref)
 		if f.aiCall != 0 || f.envCall != 0 || !slices.Contains(r.Unsupported, TemperatureCollector) {
 			t.Fatalf("703/803 envoyées à une carte non qualifiée (%d, %d) ; %v", f.aiCall, f.envCall, r.Unsupported)
@@ -1716,13 +1796,13 @@ func TestCollectDiskStateCases(t *testing.T) {
 	if got, ok := states(r)["d8"]; ok {
 		t.Errorf("248 incomplète, fond de panier en panne publié : %v", got)
 	}
-	native := aacraid.AdapterInfo{SupportedOptions: 1 << 25}
+	native := aacraid.AdapterInfo{SupportedOptions: 1<<25 | aacraid.SupportedSupplementInfo}
 	r = collect(&fakeDev{info: hba, sup: arcIo, ai: &native, paged: extra})
 	if got := states(r)["d8"]; got != [2]string{"passthrough", "Raw (Pass Through)"} {
 		t.Errorf("HBA natif : %v", got)
 	}
-	// 703 illisible : format des blocs indéterminé, aucune lecture paginée
-	// (CDC, section 6.11, prérequis), collecteurs en échec.
+	// 703 illisible : ouverture arrêtée, aucune lecture paginée, collecteurs
+	// en échec.
 	fd := &fakeDev{info: hba, sup: arcIo, ai: &native, aiErr: errors.New("EIO"), paged: extra}
 	r = collect(fd)
 	if len(states(r)) != 0 || len(fd.reads) != 0 || fd.countCall != 0 || r.Collected["disks"] || r.Collected[DiskInventoryCollector] {
@@ -1955,18 +2035,18 @@ func TestPagedPrerequisites(t *testing.T) {
 			t.Errorf("sans bit 8, %s en échec : %+v", failing, r)
 		}
 	}
-	// 703 en échec : les capacités absentes de la 706 restent non prises en
-	// charge, les autres collecteurs paginés sont en échec.
-	none := arcIo
-	none.FeatureBits = 0
-	d703 := &fakeDev{info: hba, sup: none, aiErr: errors.New("EIO")}
+	// 703 en échec : ouverture arrêtée avant la 706 ; aucune autre commande,
+	// tous les collecteurs en échec (aucun n'est non pris en charge : la 706
+	// n'a pas pu les écarter).
+	d703 := &fakeDev{info: hba, sup: arcIo, aiErr: errors.New("EIO")}
 	r703 := withDev(d703, nil).Collect(context.Background(), c, ref)
-	if !unsupported(r703, "volumes", "disks", DiskLocationCollector) || r703.Collected[DiskInventoryCollector] ||
-		len(d703.reads) != 0 || d703.countCall != 0 || d703.cmCall != 0 {
-		t.Errorf("703 en échec sans bits 8 et 9 : lectures %v, %+v", d703.reads, r703)
+	if len(r703.Unsupported) != 0 || len(d703.reads) != 0 || d703.countCall != 0 || d703.cmCall != 0 || d703.supCall != 0 || d703.cpCall != 0 || d703.envCall != 0 {
+		t.Errorf("703 en échec : 706 %d, cache %d, 803 %d, lectures %v, %+v", d703.supCall, d703.cpCall, d703.envCall, d703.reads, r703)
 	}
-	if _, published := r703.Collected[DiskInventoryCollector]; !published {
-		t.Errorf("703 en échec : inventaire non publié en échec : %v", r703.Collected)
+	for _, col := range []string{CapabilitiesCollector, "volumes", "disks", DiskInventoryCollector, DiskLocationCollector, CacheProtectionCollector, TemperatureCollector} {
+		if ok, published := r703.Collected[col]; !published || ok {
+			t.Errorf("703 en échec : %s non publié en échec : %v", col, r703.Collected)
+		}
 	}
 	// Bit 9 sans bit 8 : volumes lus, carte des connecteurs non envoyée.
 	noMap := arcIo
@@ -2003,5 +2083,199 @@ func TestContainerListCappedByCount(t *testing.T) {
 	}
 	if n := d.chunks["229-0"]; n != 1 {
 		t.Fatalf("%d morceaux de la liste lus, 1 attendu", n)
+	}
+}
+
+// La table des modèles qualifiés de docs/aacraid-interface.md (section 8)
+// reprend exactement la liste du code : une ligne par modèle, mêmes
+// identifiants PCI et mêmes firmwares validés.
+func TestQualificationTableDocumented(t *testing.T) {
+	doc, err := os.ReadFile("../../../docs/aacraid-interface.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, table, ok := strings.Cut(string(doc), "| Modèle | Identifiants PCI | Firmwares validés | Validé le |\n|---|---|---|---|\n")
+	if !ok {
+		t.Fatal("table des modèles qualifiés absente")
+	}
+	table, _, _ = strings.Cut(table, "\n\n")
+	rows := strings.Split(strings.TrimSpace(table), "\n")
+	if len(rows) != len(Qualifications) {
+		t.Fatalf("%d ligne(s) documentée(s), %d modèle(s) qualifié(s)", len(rows), len(Qualifications))
+	}
+	for _, q := range Qualifications {
+		fws := make([]string, len(q.Firmwares))
+		for i, f := range q.Firmwares {
+			fws[i] = "`" + f + "`"
+		}
+		want := fmt.Sprintf("| %s | `%s` `%s` `%s` `%s` | %s | ", q.Model, q.Vendor, q.Device, q.SubsystemVendor, q.SubsystemDevice, strings.Join(fws, ", "))
+		if !slices.ContainsFunc(rows, func(r string) bool { return strings.HasPrefix(r, want) }) {
+			t.Fatalf("modèle %s absent ou différent de la table : %q", q.Model, want)
+		}
+	}
+}
+
+// Carte non qualifiée autorisée par l'option, 706 en échec : l'ouverture
+// (704, 701, 703) a eu lieu, aucune autre lecture n'est tentée ; tous les
+// collecteurs, protection du cache comprise, sont publiés en échec.
+func TestAllowedUnqualifiedSupplementFailure(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
+	c, h := otherModel(hba)
+	d := &fakeDev{info: h, supErr: errors.New("EIO")}
+	m := withDev(d, nil)
+	m.AllowUnqualified()
+	r := m.Collect(context.Background(), c, ref)
+	if d.pausedCall != 1 || d.revCall != 1 || d.aiCall != 1 || d.supCall != 1 {
+		t.Fatalf("ouverture : 704 %d, 701 %d, 703 %d, 706 %d (1 attendu chacune)", d.pausedCall, d.revCall, d.aiCall, d.supCall)
+	}
+	if d.cpCall != 0 || d.envCall != 0 || len(d.reads) != 0 || d.countCall != 0 {
+		t.Fatalf("lectures après l'échec de la 706 : cache %d, 803 %d, paginées %v, comptage %d", d.cpCall, d.envCall, d.reads, d.countCall)
+	}
+	if len(r.Unsupported) != 0 {
+		t.Fatalf("%+v / non pris en charge %v", r.Collected, r.Unsupported)
+	}
+	for _, col := range []string{"volumes", "disks", DiskInventoryCollector, DiskLocationCollector, TemperatureCollector, CacheProtectionCollector} {
+		if ok, tried := r.Collected[col]; !tried || ok {
+			t.Fatalf("%s non publié en échec : %+v", col, r.Collected)
+		}
+	}
+	if d.validated || !d.validatedSet {
+		t.Fatal("couple validé transmis pour un modèle non qualifié")
+	}
+}
+
+// Même carte, firmware mis à jour entre deux cycles du même module : le
+// premier cycle transmet un couple validé, le second un couple non validé ;
+// la protection du cache est lue aux deux.
+func TestFirmwareChangeLeavesValidatedPair(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
+	d := &fakeDev{info: hba, sup: arcIo}
+	m := withDev(d, nil)
+	c := card("0000:01:00.0", "0")
+	m.Collect(context.Background(), c, ref)
+	if !d.validated || d.cpCall == 0 {
+		t.Fatalf("premier cycle : couple validé %v, protection du cache %d", d.validated, d.cpCall)
+	}
+	calls := d.cpCall
+	c.Hosts = append([]sysfs.SCSIHost(nil), c.Hosts...)
+	c.Hosts[0].Firmware = "5.3-0[19205]"
+	r := m.Collect(context.Background(), c, ref)
+	if d.validated || d.cpCall <= calls || len(r.Unsupported) != 0 || !r.Collected["volumes"] {
+		t.Fatalf("second cycle : couple validé %v, protection du cache %d→%d, %v / %+v", d.validated, calls, d.cpCall, r.Unsupported, r.Collected)
+	}
+}
+
+// Ouverture de la carte comme l'outil de référence (CDC, section 6.11) :
+// 704, 701, 703, puis 706 seulement si la 703 annonce le bit 16. Une carte
+// en pause ou une révision refusée arrête la collecte avant toute autre
+// commande ; la 704 part à chaque cycle, la 701 acceptée est gardée.
+func TestOpeningSequence(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	c := card("0000:01:00.0", "0")
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
+	all := []string{CapabilitiesCollector, "volumes", "disks", DiskInventoryCollector, DiskLocationCollector, CacheProtectionCollector, TemperatureCollector}
+	unsupported := func(r module.Result, cols ...string) bool {
+		for _, col := range cols {
+			if _, published := r.Collected[col]; published || !slices.Contains(r.Unsupported, col) {
+				return false
+			}
+		}
+		return true
+	}
+	stopped := func(name string, d *fakeDev, r module.Result, wantRev, wantAI int) {
+		t.Helper()
+		if d.revCall != wantRev || d.aiCall != wantAI || d.supCall+d.cpCall+d.envCall+d.countCall+d.cmCall != 0 || len(d.reads) != 0 {
+			t.Errorf("%s : 701 %d, 703 %d, 706 %d, cache %d, 803 %d, paginées %v", name, d.revCall, d.aiCall, d.supCall, d.cpCall, d.envCall, d.reads)
+		}
+		if r.CollectErr == nil || len(r.Unsupported) != 0 {
+			t.Errorf("%s : erreur %v, non pris en charge %v", name, r.CollectErr, r.Unsupported)
+		}
+		for _, col := range all {
+			if ok, seen := r.Collected[col]; !seen || ok {
+				t.Errorf("%s : %s non publié en échec : %v", name, col, r.Collected)
+			}
+		}
+	}
+	d := &fakeDev{info: hba, sup: arcIo, paused: true}
+	r := withDev(d, nil).Collect(context.Background(), c, ref)
+	stopped("carte en pause", d, r, 0, 0)
+	if !errors.Is(r.CollectErr, aacraid.ErrAdapterPaused) {
+		t.Errorf("carte en pause : %v", r.CollectErr)
+	}
+	d = &fakeDev{info: hba, sup: arcIo, pausedErr: errors.New("EIO")}
+	stopped("704 en échec", d, withDev(d, nil).Collect(context.Background(), c, ref), 0, 0)
+	for name, rv := range map[string]aacraid.Revision{
+		"révision incompatible": {Compatible: false, FirmwareBuild: 19204},
+		"build sous le minimum": {Compatible: true, FirmwareBuild: aacraid.MinFirmwareBuild - 1},
+	} {
+		d = &fakeDev{info: hba, sup: arcIo, rev: &rv}
+		r = withDev(d, nil).Collect(context.Background(), c, ref)
+		stopped(name, d, r, 1, 0)
+		if !errors.Is(r.CollectErr, aacraid.ErrRevisionRefused) {
+			t.Errorf("%s : %v", name, r.CollectErr)
+		}
+	}
+	d = &fakeDev{info: hba, sup: arcIo, revErr: errors.New("EIO")}
+	stopped("701 en échec", d, withDev(d, nil).Collect(context.Background(), c, ref), 1, 0)
+
+	// Build au minimum : accepté ; 701 gardée, 704 renvoyée à chaque cycle.
+	min := aacraid.Revision{Compatible: true, FirmwareBuild: aacraid.MinFirmwareBuild}
+	d = &fakeDev{info: hba, sup: arcIo, rev: &min}
+	m := withDev(d, nil)
+	for i := 0; i < 2; i++ {
+		if r := m.Collect(context.Background(), c, ref); r.CollectErr != nil {
+			t.Fatalf("cycle %d : %v", i+1, r.CollectErr)
+		}
+	}
+	if d.pausedCall != 2 || d.revCall != 1 || d.aiCall != 1 || d.supCall != 1 {
+		t.Errorf("deux cycles : 704 %d (2), 701 %d (1), 703 %d (1), 706 %d (1)", d.pausedCall, d.revCall, d.aiCall, d.supCall)
+	}
+	// Révision refusée : non gardée, relue au cycle suivant.
+	bad := aacraid.Revision{Compatible: false}
+	d = &fakeDev{info: hba, sup: arcIo, rev: &bad}
+	m = withDev(d, nil)
+	m.Collect(context.Background(), c, ref)
+	d.rev = nil
+	if r := m.Collect(context.Background(), c, ref); r.CollectErr != nil || d.revCall != 2 {
+		t.Errorf("refus gardé : 701 %d, %v", d.revCall, r.CollectErr)
+	}
+
+	// 703 sans bit 16 : pas de 706 (ni l'outil ni le pilote ne l'envoient) ;
+	// capacités et lectures d'état non prises en charge ; protection du
+	// cache et température lues.
+	noSup := aacraid.AdapterInfo{SupportedOptions: 0x141e1d7c} // valeur capturée sans le bit 16, écrite en clair
+	d = &fakeDev{info: hba, sup: arcIo, ai: &noSup}
+	r = withDev(d, nil).Collect(context.Background(), c, ref)
+	if d.supCall != 0 || len(d.reads) != 0 || d.countCall != 0 || d.cpCall == 0 || d.envCall != 1 {
+		t.Errorf("sans bit 16 : 706 %d, paginées %v, comptage %d, cache %d, 803 %d", d.supCall, d.reads, d.countCall, d.cpCall, d.envCall)
+	}
+	if !unsupported(r, CapabilitiesCollector, "volumes", "disks", DiskInventoryCollector, DiskLocationCollector) ||
+		!r.Collected[CacheProtectionCollector] || !r.Collected[TemperatureCollector] || r.CollectErr != nil {
+		t.Errorf("sans bit 16 : %+v", r)
+	}
+	if _, seen := r.Collected[CapabilitiesCollector]; seen || len(r.Cached) != 0 {
+		t.Errorf("sans bit 16 : capacités publiées %v, gardées %v", r.Collected, r.Cached)
+	}
+}
+
+// Carte autorisée par -allow-unqualified : mêmes refus d'ouverture que le
+// modèle qualifié (704 en pause, 701 refusée), rien n'est envoyé ensuite.
+func TestAllowedUnqualifiedOpeningRefusals(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
+	c, h := otherModel(hba)
+	refused := aacraid.Revision{Compatible: false, FirmwareBuild: 19204}
+	for name, d := range map[string]*fakeDev{
+		"carte en pause":   {info: h, sup: arcIo, paused: true},
+		"révision refusée": {info: h, sup: arcIo, rev: &refused},
+	} {
+		m := withDev(d, nil)
+		m.AllowUnqualified()
+		r := m.Collect(context.Background(), c, ref)
+		if d.pausedCall != 1 || d.aiCall+d.supCall+d.cpCall+d.envCall+d.countCall+d.cmCall != 0 || len(d.reads) != 0 || r.CollectErr == nil {
+			t.Errorf("%s : 704 %d, 701 %d, 703 %d, 706 %d, cache %d, paginées %v ; %v", name, d.pausedCall, d.revCall, d.aiCall, d.supCall, d.cpCall, d.reads, r.CollectErr)
+		}
 	}
 }
