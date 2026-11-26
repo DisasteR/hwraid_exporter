@@ -4,7 +4,7 @@ Ce guide s'adresse à une personne qui dispose d'une carte RAID que l'exporter n
 
 | Pilote | Outil du constructeur | Annexe |
 |---|---|---|
-| `aacraid` (Adaptec Series 6, 7, 8) | ARCCONF 2.x | [guide-capture-aacraid.md](guide-capture-aacraid.md) |
+| `aacraid` (Adaptec Series 6, 7, 8) | ARCCONF 2.x ou 3.x | [guide-capture-aacraid.md](guide-capture-aacraid.md) |
 | `megaraid_sas`, `hpsa`, `smartpqi` | StorCLI, ssacli, ARCCONF 4.x | Écrite avec le module du pilote |
 
 ## 1. Quand une capture est utile

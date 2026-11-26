@@ -326,7 +326,7 @@ Indicateur requis absent, ou valeur autre que 0 et 1 : état `unknown` ; la pré
 
 ## 6 bis. Règles de l'outil de référence pour tous les niveaux [interopérabilité]
 
-Cette section décrit les règles de l'outil de référence (versions 2.05 et 3.07) au-delà des types observés sur l'hôte de référence. **L'exporter applique ces règles avec les écarts indiqués en section 6** (état des volumes, numérotation ARCIO seulement) ; pour le niveau RAID, il suit la table ci-dessous (section 5). Il publie l'état de tous les disques présents selon ces règles (section 6). Ses lectures au-delà de la 706 restent réservées aux couples modèle et firmware qualifiés (section 8).
+Cette section décrit les règles de l'outil de référence (versions 2.05 et 3.07) au-delà des types observés sur l'hôte de référence. **L'exporter applique ces règles avec les écarts indiqués en section 6** (état des volumes, numérotation ARCIO seulement) ; pour le niveau RAID, il suit la table ci-dessous (section 5). Il publie l'état de tous les disques présents selon ces règles (section 6). Ses lectures au-delà de la 706 sont envoyées à toute carte lue : modèle qualifié, ou désigné par `-allow-unqualified` (section 8).
 
 ### Type d'un conteneur et niveau RAID
 
