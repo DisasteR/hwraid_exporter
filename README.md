@@ -2,7 +2,78 @@
 
 Prometheus exporter for hardware RAID controllers. It talks directly to the Linux drivers and needs no vendor tool (ARCCONF, StorCLI, ssacli) at runtime.
 
-> **Status: v0.2.0.** First target: Adaptec 6805 (`aacraid` driver). RAID levels, volume states and disk states follow the vendor tool's rules for every level (RAID 0, 1, 1E, 5, 5EE, 6, 10, 50, 60, simple and spanned volumes, assemblies), with documented, more cautious differences. Validated on real hardware: optimal volume and online disk states, RAID levels of mirrors and an assembly, disk inventory, location and Linux device, failed cache protection (ZMM), controller temperature and thresholds, volume write-cache policy (all three settings) and state: on with the `wb` setting (capture of 2026-11-23, ZMM failed), off with `wbb` and `wt`. The other volume and disk states (degraded, rebuilding, failed, reduced redundancy, spare, raw…), the other RAID levels and the charging and optimal ZMM states are covered by tests on constructed data only, not yet observed on hardware. The write cache turning on again under `wbb` once the ZMM is optimal is not yet observed on hardware. Not yet available: task progress (rebuild), controller statistics.
+> **Status: v0.2.0.** One driver module so far: `aacraid`. The only qualified model and firmware is the Adaptec 6805 with firmware 5.3-0[19204]. What is validated on hardware and what is only tested is detailed [below](#what-it-monitors).
+
+## Why another exporter
+
+The goal is that an administrator can answer four questions from Prometheus: which array has lost its redundancy, which member is involved, is the rebuild progressing, and is the controller cache protected by a working module? v0.2.0 reports lost redundancy and the cache protection state. It names the member involved when the controller reports its disk failed or missing, and publishes the rebuilding state but not yet its progress.
+
+### Existing approaches
+
+Surveyed in November 2026. The examples are representative, not exhaustive.
+
+| Approach | Examples | What it needs | Limits |
+|---|---|---|---|
+| Run the vendor CLI and parse its output | Prometheus: `storcli.py` ([textfile collector scripts](https://github.com/prometheus-community/node-exporter-textfile-collector-scripts)), [hpraid_exporter](https://github.com/ProdriveTechnologies/hpraid_exporter) (ssacli, archived), [areca-prometheus-exporter](https://github.com/vilhelmprytz/areca-prometheus-exporter). [Netdata](https://github.com/netdata/netdata): `adaptecraid` (arcconf), `storcli`, `megacli`, `hpssa` (ssacli). Nagios/Icinga: [check_adaptec_raid](https://github.com/thomas-krenn/check_adaptec_raid). Status scripts: [hwraid](https://github.com/eLvErDe/hwraid) (`aacraid-status`…). | The vendor binary on the host, usually with root privileges (sudo or a privileged helper), depending on the tool. | Commands, metric names and model coverage vary with the tool and the vendor. The parsed output can change between tool versions. On `aacraid` series 6 cards (Linux 4.6 and later), a command interrupted by a signal, for instance a CLI killed on timeout, loses a driver command block until the next reboot ([driver defect](docs/aacraid-defaut-pilote.md)). |
+| Ask the server's BMC over Redfish (out of band) | [idrac_exporter](https://github.com/mrlhansen/idrac_exporter) (iDRAC, iLO, XClarity), [sapcc/redfish-exporter](https://github.com/sapcc/redfish-exporter) | A BMC, BMC credentials. | Nothing to install on the host. The data is what the BMC exposes about storage: nothing without a BMC (NAS, white-box servers), and coverage varies with the vendor and BMC generation. |
+| Read the disks | [smartctl_exporter](https://github.com/prometheus-community/smartctl_exporter), node_exporter `mdadm` collector | Access to the disks, or software RAID. | Complementary: SMART health of each disk does not give the state of a hardware array (degraded, rebuilding, failed). mdadm covers software RAID only. |
+| Talk to the driver directly | [megactl](https://github.com/hmage/megactl) (older LSI MegaRAID, command-line tools in C) | Root. | Command-line tools, not exporters. Among the projects surveyed, we found no maintained Prometheus exporter of this kind. |
+
+### What this exporter does differently
+
+- **No vendor binary required on the host.** It sends the driver's own management commands, from a read-only allowlist. It can run next to the vendor tool; concurrent access may then make a read fail or be retried ([metrics](docs/metrics.md)).
+- **Shared metrics contract.** Every module publishes the same metric names and state vocabularies (`optimal`, `degraded`, `failed`…), with the vendor's own wording kept in `vendor_*` labels, so dashboards and alerts do not depend on the vendor. What each module can fill in depends on the card.
+- **Least privilege.** Root only for startup preparation (its own device nodes), then an unprivileged user that keeps only the capability the driver requires.
+- **Collection decoupled from scrapes.** Cards are read on a configured schedule; `/metrics` serves the last published snapshot while it is fresh. On a collection timeout or a graceful shutdown, a command already sent to a card is allowed to finish; the service manager's stop timeout must leave room for it ([deployment](docs/deploiement.md)).
+- **`aacraid`: the vendor tool's rules.** RAID levels, and volume and disk states, follow the rules of the vendor tool, established by analysis for interoperability ([legal basis](docs/base-legale-interoperabilite.md)), with documented, more cautious differences ([CHANGELOG](CHANGELOG.md)). Volume states are computed for the configuration format used by the qualified card; volumes described in the older format get a RAID level but an `unknown` state.
+
+The cost of this approach:
+- Each driver family needs its own module, written and qualified on real hardware, where a vendor tool usually covers many models at once.
+- For `aacraid`, the management interface is not publicly documented. A firmware change can break the module, so each card is qualified by model and firmware, and other cards are not read beyond a few identification commands (see below).
+- Today only one card is qualified.
+
+## What it monitors
+
+`aacraid` module on the qualified Adaptec 6805. Full list of metrics and labels: [docs/metrics.md](docs/metrics.md).
+
+| Object | Published | Observed on hardware | Covered by tests on constructed data only |
+|---|---|---|---|
+| Controller | identity (model, firmware, serial, PCI address), driver and module, temperature and its thresholds | identity, temperature and thresholds | — |
+| Volumes | RAID level, state, capacity, members, write-cache policy and actual write-cache state | optimal state; RAID 1 mirrors and an assembly of mirrors; with a failed ZMM, write cache on under `wb`, off under `wbb` and `wt` | degraded, rebuilding, failed and reduced-redundancy states; RAID 0, 1E, 5, 5EE, 6, 10, 50, 60, simple volumes, spanned volumes made of disks |
+| Disks | state, inventory (vendor, model, firmware, serial, WWN), capacity, location on the controller, Linux device | online state, inventory, location, Linux device | rebuilding, failed, ready, spare, copyback, passthrough and unsupported states |
+| Cache protection | presence, type and state of the module (ZMM) | failed state | charging and optimal states |
+| Collection | success and last success time per collector, collection interval | successful collection | — |
+
+Not yet observed on hardware: the write cache turning on again under `wbb` once the ZMM is optimal. Not yet available: background task progress (rebuild, verification), overall controller state and controller statistics.
+
+Another card handled by the `aacraid` driver is listed with its identity. The module only checks that its device node designates the card and reads its capabilities; volumes, disks, cache protection and temperature are published as not supported (`hwraid_collector_supported 0`) until its model and firmware are qualified. The [capture guide](docs/guide-capture.md) explains how to record the exchanges needed to qualify it.
+
+## Architecture
+
+The exporter separates a driver-independent core from one module per driver family. Design contract: [CDC §6.10](cdc/cahier-des-charges-aacraid-exporter.md#610-contrat-dun-module-de-collecte).
+
+```text
+            sysfs: PCI functions, SCSI hosts, drivers
+                              │
+┌─────────────────────────────▼─────────────────────────────┐
+│ core                                                      │
+│  discovery ─▶ module selection ─▶ node creation (root)    │
+│  ─▶ privilege drop ─▶ collection loop ─▶ snapshot ─▶ HTTP │
+└──────────┬──────────────────────────────────────┬─────────┘
+           │ module contract                      │
+┌──────────▼──────────┐                ┌──────────▼──────────┐
+│ aacraid module      │                │ candidate modules   │
+│ (implemented)       │                │ megaraid_sas, hpsa, │
+│                     │                │ smartpqi (no code)  │
+└─────────────────────┘                └─────────────────────┘
+```
+
+- **The core** finds the controllers in sysfs, selects the module for each card, creates the device nodes the modules declare, drops privileges, runs the collection loop and serves the snapshot.
+- **A module** declares, through pure functions, which cards it handles (`Match`), which device nodes it needs (`Nodes`) and which capabilities it must keep (`Capabilities`). It never creates device nodes itself. After the privilege drop, `Collect` reads the card, decodes the answers, translates vendor states into the shared vocabularies and reports the functions the card does not support.
+- **Several families on one host.** A card claimed by exactly one module is assigned to it, and collected once its device nodes are prepared; a card claimed by several is reported as an error. The process keeps the union of the capabilities of the modules that have at least one card with its nodes prepared. A RAID controller no module handles is still published, with `hwraid_controller_backend_supported 0`.
+- **Enforced boundaries.** An architecture test allows `ioctl` only in the transport package, and the transport refuses any command outside the read-only allowlist.
+
+Only the `aacraid` module exists. MegaRAID, Smart Array and Smart Storage are candidate modules listed in the [specification](cdc/cahier-des-charges-aacraid-exporter.md#11-couverture-et-sélection-du-module).
 
 ## How it works
 
