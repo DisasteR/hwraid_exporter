@@ -85,6 +85,12 @@ func DecodeContainerCount(rsp []byte) (ContainerCount, error) {
 	return ContainerCount{n: n}, nil
 }
 
+// MaxContainersOpen est le plus grand MaxContainers avec lequel l'outil de
+// référence ouvre la carte (mode ordinaire) : il compare MaxContainers − 1,
+// non signé, à 0xff, et abandonne l'ouverture au-delà comme pour 0 (2.05
+// FsaOpenAdapter2W 0x8f4d28..0x8f4d5a, 3.07 0x8c848f).
+const MaxContainersOpen = 256
+
 // ContainerListSize est la taille demandée pour la liste des conteneurs,
 // comme le fait l'outil de référence : 8 + 4 × MaxContainers octets.
 func ContainerListSize(maxContainers uint32) uint32 { return 8 + 4*maxContainers }

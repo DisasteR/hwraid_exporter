@@ -346,17 +346,58 @@ func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeR
 		r.Unsupported = append(r.Unsupported, CapabilitiesCollector)
 		r.Cached = nil
 	}
-	if !sup.ArcIoReads() {
-		r.Unsupported = append(r.Unsupported, pagedCollectors()...)
-	}
 	m.collectTemperature(&r, d, ainfo)
-	// L'outil de référence lit la protection du cache sur une carte qu'il a
-	// ouverte, après ses informations générales (CDC, section 6.11).
-	collectCacheProtection(&r, d)
-	if sup.ArcIoReads() {
-		_, h, _ := hostOf(c)
-		m.collectArcIo(&r, d, key, h, sup, ainfo)
+	// Suite de l'ouverture de l'outil de référence (CDC, section 6.11) :
+	// comptage des conteneurs, puis lectures de configuration (disques, puis
+	// volumes), puis protection du cache et tâches. Un échec qui fait
+	// abandonner l'ouverture à l'outil arrête la carte pour ce cycle : les
+	// collecteurs déjà conclus gardent leur résultat, les autres sont en
+	// échec.
+	stop := func(err error) module.Result {
+		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("%w; no other card read attempted this cycle", err))
+		for _, col := range all {
+			if _, done := r.Collected[col]; !done && !slices.Contains(r.Unsupported, col) {
+				r.Collected[col] = false
+			}
+		}
+		return r
 	}
+	switch {
+	case sup.SpecialContainerCount():
+		// Règle d'abandon de l'outil non établie dans ce mode : rien de plus
+		// n'est envoyé.
+		r.Unsupported = append(r.Unsupported, append(pagedCollectors(), CacheProtectionCollector)...)
+		return r
+	case ainfo.LargeTransfers():
+		// Blocs de 2 048 octets (forme 3, non implémentée) : ni comptage ni
+		// lecture paginée. Reste documenté : l'outil enverrait le comptage
+		// dans cette forme et abandonnerait sur son échec.
+		r.Unsupported = append(r.Unsupported, pagedCollectors()...)
+	default:
+		d.SetPagedHighBit(sup.PagedHighBit())
+		count, err := m.containerCount(key, d)
+		if err != nil {
+			return stop(fmt.Errorf("container count: %w", err))
+		}
+		if count.Max() > aacraid.MaxContainersOpen {
+			return stop(fmt.Errorf("container count: MaxContainers %d above %d: the vendor tool does not open the card", count.Max(), aacraid.MaxContainersOpen))
+		}
+		if !sup.ArcIoReads() {
+			r.Unsupported = append(r.Unsupported, pagedCollectors()...)
+			break
+		}
+		_, h, _ := hostOf(c)
+		caps := aacraid.DiskCaps{DirectDisks: sup.DirectDisks(), JBOD: sup.JBOD(), NativeHBA: ainfo.NativeHBA(), NativeKnown: true}
+		cs, read, abort := m.collectConfig(&r, d, key, h, count, sup.ContainerReads(), sup.ConnectorMapRead(), caps)
+		if abort != nil {
+			return stop(abort)
+		}
+		collectCacheProtection(&r, d)
+		collectTasks(&r, d, cs, read, sup.ContainerReads())
+		return r
+	}
+	// Sans lecture paginée : protection du cache seulement.
+	collectCacheProtection(&r, d)
 	return r
 }
 
@@ -365,24 +406,6 @@ func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeR
 // disques (la 708 n'est lue qu'après un inventaire réussi).
 func pagedCollectors() []string {
 	return append(append([]string(nil), StateCollectors...), DiskInventoryCollector, DiskLocationCollector, TasksCollector)
-}
-
-// collectArcIo applique les prérequis des transferts paginés (CDC, section
-// 6.11), puis lit volumes et disques. Bit 13 de FeatureBits : le transport
-// porte le bit de poids fort sur les ouvertures et le comptage, comme
-// l'outil. Blocs de 2 048 octets (bit 15 de SupportedOptions) : non
-// implémentés (format des réponses non établi), collecteurs non pris en
-// charge, rien n'est envoyé. La 703 est toujours lue à ce stade
-// (ouverture de la carte).
-func (m *Module) collectArcIo(r *module.Result, d reader, key string, h sysfs.SCSIHost, sup aacraid.SupplementInfo, ainfo aacraid.AdapterInfo) {
-	if ainfo.LargeTransfers() {
-		r.Unsupported = append(r.Unsupported, pagedCollectors()...)
-		return
-	}
-	d.SetPagedHighBit(sup.PagedHighBit())
-	caps := aacraid.DiskCaps{DirectDisks: sup.DirectDisks(), JBOD: sup.JBOD(), NativeHBA: ainfo.NativeHBA(), NativeKnown: true}
-	cs, read := m.collectVolumes(r, d, key, h, sup.ContainerReads(), sup.ConnectorMapRead(), caps)
-	collectTasks(r, d, cs, read, sup.ContainerReads())
 }
 
 // collectTasks lit les tâches de fond comme l'outil de référence, après
@@ -524,24 +547,34 @@ func hostOf(c module.Card) (int, sysfs.SCSIHost, error) {
 	return i, c.Hosts[i], nil
 }
 
-// collectVolumes lit les deux chaînes de lecture, dans l'ordre de l'outil de
-// référence repris par l'exporter (229, les 234, 247, les 249, puis les
-// 248 et la 708), avec les dépendances de la section 6.11 du CDC :
-//   - chaîne des volumes (comptage, 229, les 234), seulement si la carte
-//     annonce les lectures de conteneurs (bit 9 de FeatureBits) ; sans lui,
-//     les collecteurs d'état sont non pris en charge ;
-//   - chaîne des disques (247, les 248, la 708), lue même si celle des
-//     volumes échoue ; la 708 seulement si la carte l'annonce (bit 8 de
-//     FeatureBits), sinon l'emplacement est non pris en charge ;
-//   - listes des membres (249) : seulement si les deux chaînes ont réussi,
-//     car les états utilisent la présence des disques.
+// collectConfig lit la configuration dans l'ordre de l'outil de référence
+// (2.05 et 3.07, GetConfig ; captures) : la 708 si elle doit être lue,
+// puis la chaîne des disques (247, puis les 248 dans l'ordre de la liste
+// rendue), puis celle des volumes (229 à la taille fixée par le comptage,
+// les 234, les 249). Dépendances (CDC, section 6.11) :
+//   - un échec d'échange (aacraid.ErrExchange : ioctl, statut, écho), qui
+//     fait abandonner l'ouverture à l'outil, arrête la carte pour le cycle
+//     (abort) ;
+//   - un refus (code, ou contrôle de l'exporter) n'arrête que sa chaîne :
+//     247 refusée, ni 248 ni 708 ensuite, volumes lus ; volumes seulement
+//     si la carte annonce les lectures de conteneurs (bit 9 de FeatureBits),
+//     sinon collecteurs d'état non pris en charge ; listes des membres (249)
+//     seulement si les deux chaînes ont réussi (les états utilisent la
+//     présence des disques) ;
+//   - 708 seulement si la carte l'annonce (bit 8 de FeatureBits), sinon
+//     emplacement non pris en charge.
 //
 // Toute erreur annule la publication de ce qu'elle concerne pour ce cycle :
-// jamais de configuration ni d'inventaire partiels.
-func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.SCSIHost, containers, connectors bool, caps aacraid.DiskCaps) (cs []aacraid.Container, containersRead bool) {
-	var volErr error
-	// Sans carte des connecteurs annoncée, l'emplacement est non pris en
-	// charge, quel que soit le sort des autres lectures.
+// jamais de configuration ni d'inventaire partiels. containersRead : liste
+// des conteneurs et listes des membres entièrement lues (condition des
+// tâches).
+func (m *Module) collectConfig(r *module.Result, d reader, key string, h sysfs.SCSIHost, count aacraid.ContainerCount, containers, connectors bool, caps aacraid.DiskCaps) (cs []aacraid.Container, containersRead bool, abort error) {
+	exchange := func(what string, err error) error {
+		if errors.Is(err, aacraid.ErrExchange) {
+			return fmt.Errorf("%s: %w", what, err)
+		}
+		return nil
+	}
 	if !connectors {
 		r.Unsupported = append(r.Unsupported, DiskLocationCollector)
 	}
@@ -550,26 +583,59 @@ func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.
 			r.Collected[DiskLocationCollector] = false
 		}
 	}
-	if containers {
-		if cs, volErr = m.readContainers(d, key); volErr != nil {
-			volErr = fmt.Errorf("containers: %w", volErr)
+	// 708 : avant la 247, comme l'outil, quand elle doit être lue.
+	var fresh *aacraid.ConnectorMap
+	var cmErr error
+	if connectors && !m.hasConnectorMap(key) {
+		// L'outil l'envoie sans exception et poursuit quel que soit son
+		// sort (2.05 0x8f521c..0x8f523a) : jamais un arrêt de la carte.
+		cm, err := d.ConnectorMap()
+		if err != nil {
+			cmErr = err
+		} else {
+			fresh = &cm
 		}
-	} else {
-		r.Unsupported = append(r.Unsupported, StateCollectors...)
 	}
 	present, diskErr := readDiskList(d)
-	if diskErr != nil {
-		diskErr = fmt.Errorf("disk list: %w", diskErr)
+	if a := exchange("disk list", diskErr); a != nil {
+		return nil, false, a
 	}
-	if containers && volErr == nil && diskErr == nil {
-		if err := readMembers(d, cs); err != nil {
-			volErr = fmt.Errorf("member lists: %w", err)
-		} else {
-			// Configuration des volumes complète : condition de la lecture
-			// des tâches (l'outil de référence abandonne la construction de
-			// ses volumes sur un échec de leur configuration).
-			containersRead = true
+	var inv []aacraid.DiskInfo
+	var invErr error
+	if diskErr == nil {
+		inv, invErr = readInventory(d, present)
+		if a := exchange("disk inventory", invErr); a != nil {
+			return nil, false, a
 		}
+	}
+	var volErr error
+	if containers {
+		var listed bool
+		cs, listed, volErr = m.readContainers(d, count)
+		if a := exchange("containers", volErr); a != nil {
+			return nil, false, a
+		}
+		if volErr != nil {
+			volErr = fmt.Errorf("containers: %w", volErr)
+		}
+		// Listes des membres des conteneurs retenus, comme l'outil, même
+		// après un refus de la 247 ou d'une 234 (il poursuit) ; jamais sans
+		// liste des conteneurs.
+		if listed {
+			if err := readMembers(d, cs); err != nil {
+				if a := exchange("member lists", err); a != nil {
+					return nil, false, a
+				}
+				volErr = errors.Join(volErr, fmt.Errorf("member lists: %w", err))
+			}
+		}
+		// Configuration des volumes complète : condition de la lecture des
+		// tâches (l'outil abandonne la construction de ses volumes sur un
+		// échec de leur configuration ; un échec côté disques ne l'empêche
+		// pas, T16).
+		containersRead = listed && volErr == nil
+	} else {
+		r.Unsupported = append(r.Unsupported, StateCollectors...)
 	}
 	states := containers && volErr == nil && diskErr == nil
 	if containers {
@@ -583,24 +649,22 @@ func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.
 	if diskErr != nil {
 		r.Collected[DiskInventoryCollector] = false
 		failLocation()
-		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("configuration: %w; disk inventory and location not read", diskErr))
-		return
+		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("configuration: disk list: %w; disk inventory and location not read", diskErr))
+		return cs, containersRead, nil
 	}
-	// L'inventaire (248) est lu avant le calcul des états : un disque qu'il
-	// déclare en panne compte comme membre perdu, comme dans l'outil de
-	// référence. Chaque réponse lue est une preuve, même si une lecture
-	// suivante échoue ; les disques non lus sont évalués par les drapeaux de
-	// leurs membres et la liste des disques présents. L'échec reste visible
-	// par le collecteur de l'inventaire.
-	inv, err := readInventory(d, present)
+	// Chaque réponse d'information de disque lue est une preuve pour le
+	// calcul des états, même si une lecture suivante a échoué ; les disques
+	// non lus sont évalués par les drapeaux de leurs membres et la liste des
+	// disques présents. L'échec reste visible par le collecteur de
+	// l'inventaire.
 	if states {
-		m.publishStates(r, cs, present, inv, err == nil, caps)
+		m.publishStates(r, cs, present, inv, invErr == nil, caps)
 	}
-	r.Collected[DiskInventoryCollector] = err == nil
-	if err != nil {
+	r.Collected[DiskInventoryCollector] = invErr == nil
+	if invErr != nil {
 		failLocation()
-		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("disk inventory: %w; disk location not read", err))
-		return
+		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("disk inventory: %w; disk location not read", invErr))
+		return cs, containersRead, nil
 	}
 	// Inventaire, périphérique Linux et emplacement : disques seulement. Un
 	// autre périphérique de la liste (boîtier, support amovible) n'est pas
@@ -611,22 +675,23 @@ func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.
 			hard = append(hard, i)
 		}
 	}
+	sort.Slice(hard, func(a, b int) bool { return hard[a].Number < hard[b].Number })
 	for _, i := range hard {
 		r.DiskInventory = append(r.DiskInventory, module.DiskInfo{ID: diskID(i.Number), Vendor: i.Vendor, Model: i.Model,
 			Firmware: i.Firmware, Serial: i.Serial, WWN: i.WWN, CapacityBytes: i.CapacityBytes()})
 	}
 	r.DiskOSDevices = osDevices(h, hard)
 	if !connectors {
-		return
+		return cs, containersRead, nil
 	}
-	locs, err := m.locations(key, d, hard)
+	locs, err := m.locations(key, hard, fresh, cmErr)
 	r.Collected[DiskLocationCollector] = err == nil
 	if err != nil {
 		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("disk location: %w", err))
-		return
+		return cs, containersRead, nil
 	}
 	r.DiskLocations = locs
-	return
+	return cs, containersRead, nil
 }
 
 // publishStates calcule les états des volumes et des disques à partir de la
@@ -703,8 +768,8 @@ func osDevices(h sysfs.SCSIHost, inv []aacraid.DiskInfo) []module.DiskOSDevice {
 // de l'information de disque lue pendant le cycle : sinon la carte a changé
 // ou une réponse est incohérente, et aucun emplacement n'est publié. Un
 // disque sans entrée (derrière un expandeur) n'a pas d'emplacement publié.
-func (m *Module) locations(key string, d reader, inv []aacraid.DiskInfo) ([]module.DiskLocation, error) {
-	cm, err := m.connectorMap(key, d, inv)
+func (m *Module) locations(key string, inv []aacraid.DiskInfo, fresh *aacraid.ConnectorMap, readErr error) ([]module.DiskLocation, error) {
+	cm, err := m.connectorMap(key, inv, fresh, readErr)
 	if err != nil {
 		return nil, err
 	}
@@ -744,25 +809,47 @@ func diskSet(inv []aacraid.DiskInfo) string {
 // connectorMap lit la carte des connecteurs une fois par carte et par nœud,
 // hors du verrou, et la relit quand l'ensemble des disques présents change
 // (disque ajouté ou retiré à chaud). Une lecture en échec n'est pas gardée.
-func (m *Module) connectorMap(key string, d reader, inv []aacraid.DiskInfo) (aacraid.ConnectorMap, error) {
+func (m *Module) connectorMap(key string, inv []aacraid.DiskInfo, fresh *aacraid.ConnectorMap, readErr error) (aacraid.ConnectorMap, error) {
 	set := diskSet(inv)
+	if readErr != nil {
+		return aacraid.ConnectorMap{}, readErr
+	}
+	if fresh != nil {
+		if key != "" { // key vide : rien n'est gardé
+			m.mu.Lock()
+			if m.connectors == nil {
+				m.connectors = map[string]keptMap{}
+			}
+			m.connectors[key] = keptMap{cm: *fresh, disks: set}
+			m.mu.Unlock()
+		}
+		return *fresh, nil
+	}
 	m.mu.Lock()
 	k, ok := m.connectors[key]
 	m.mu.Unlock()
-	if ok && k.disks == set {
-		return k.cm, nil
+	if !ok {
+		return aacraid.ConnectorMap{}, errors.New("connector map not read")
 	}
-	cm, err := d.ConnectorMap()
-	if err != nil || key == "" { // key vide : rien n'est gardé
-		return cm, err
+	if k.disks != set {
+		// Disques changés depuis sa lecture : relue au début du cycle
+		// suivant, avant la 247 comme l'outil, plutôt qu'après les 248.
+		m.forgetConnectorMap(key)
+		return aacraid.ConnectorMap{}, errors.New("disks changed since the connector map was read: read again next cycle")
+	}
+	return k.cm, nil
+}
+
+// hasConnectorMap indique une carte des connecteurs gardée pour cette
+// identité : sinon elle est lue avant la 247, comme l'outil.
+func (m *Module) hasConnectorMap(key string) bool {
+	if key == "" {
+		return false
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.connectors == nil {
-		m.connectors = map[string]keptMap{}
-	}
-	m.connectors[key] = keptMap{cm: cm, disks: set}
-	return cm, nil
+	_, ok := m.connectors[key]
+	return ok
 }
 
 // forgetConnectorMap oublie la carte gardée : elle sera relue au cycle
@@ -780,34 +867,40 @@ func (m *Module) forgetConnectorMap(key string) {
 // vérifiées : elles ne servent pas à l'inventaire (tout ou rien), mais leur
 // bit de panne reste une preuve pour le calcul des états.
 func readInventory(d reader, nums []uint32) ([]aacraid.DiskInfo, error) {
-	sorted := append([]uint32(nil), nums...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
-	out := make([]aacraid.DiskInfo, 0, len(sorted))
-	for _, n := range sorted {
+	// Dans l'ordre de la liste rendue par la carte, comme l'outil de
+	// référence (captures) : sur un échec d'échange, les mêmes disques ont
+	// été interrogés.
+	// Un refus (code, ou réponse rejetée par l'exporter) fait sauter ce
+	// disque et les suivants sont lus, comme chez l'outil ; un échec
+	// d'échange arrête la lecture aussitôt (l'outil abandonne).
+	out := make([]aacraid.DiskInfo, 0, len(nums))
+	var refused error
+	for _, n := range nums {
 		raw, err := d.ReadPaged(aacraid.ReadDiskInfo, n, 0, func([]byte) int { return aacraid.DiskInventoryNeed })
-		if err != nil {
+		if errors.Is(err, aacraid.ErrExchange) {
 			return out, err
+		}
+		if err != nil {
+			refused = errors.Join(refused, err)
+			continue
 		}
 		i, err := aacraid.DecodeDiskInfo(raw)
-		if err != nil {
-			return out, err
+		if err == nil && i.Number != n {
+			err = fmt.Errorf("disk %d info: the response is for disk %d", n, i.Number)
 		}
-		if i.Number != n {
-			return out, fmt.Errorf("disk %d info: the response is for disk %d", n, i.Number)
+		if err != nil {
+			refused = errors.Join(refused, err)
+			continue
 		}
 		out = append(out, i)
 	}
-	return out, nil
+	return out, refused
 }
 
-// readContainers lit la chaîne des volumes : MaxContainers, la liste des
-// conteneurs à la taille qu'il fixe (8 + 4 × MaxContainers, comme l'outil de
+// readContainers lit la chaîne des volumes, à partir du comptage lu à
+// l'ouverture : la liste des conteneurs à la taille qu'il fixe (8 + 4 × MaxContainers, comme l'outil de
 // référence ; CDC, section 6.11, forme 1), puis l'information de chacun.
-func (m *Module) readContainers(d reader, key string) ([]aacraid.Container, error) {
-	count, err := m.containerCount(key, d)
-	if err != nil {
-		return nil, fmt.Errorf("container count: %w", err)
-	}
+func (m *Module) readContainers(d reader, count aacraid.ContainerCount) (retained []aacraid.Container, listed bool, err error) {
 	maxContainers := count.Max()
 	// Taille liée au comptage validé de cette carte, vérifiée par le
 	// transport au moment de l'envoi.
@@ -826,34 +919,47 @@ func (m *Module) readContainers(d reader, key string) ([]aacraid.Container, erro
 		return aacraid.ContainerListNeed(b)
 	}
 	raw, err := d.ReadPaged(aacraid.ReadContainerList, 0, count.ListSize(), need)
+	if errors.Is(err, aacraid.ErrExchange) {
+		return nil, false, err
+	}
 	if announced > maxContainers {
-		return nil, fmt.Errorf("container list: %d entries, MaxContainers %d", announced, maxContainers)
+		return nil, false, fmt.Errorf("container list: %d entries, MaxContainers %d", announced, maxContainers)
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	nums, err := aacraid.DecodeContainerList(raw)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
+	// Un refus (code, ou réponse rejetée par l'exporter) fait sauter ce
+	// conteneur et les suivants sont lus, comme chez l'outil ; un échec
+	// d'échange arrête la lecture aussitôt (l'outil abandonne).
 	var cs []aacraid.Container
+	var refused error
 	for _, n := range nums {
 		raw, err := d.ReadPaged(aacraid.ReadContainerInfo, n, 0, func([]byte) int { return aacraid.ContainerInfoNeed })
-		if err != nil {
-			return nil, err
+		if errors.Is(err, aacraid.ErrExchange) {
+			return nil, true, err
 		}
-		info, err := aacraid.DecodeContainerInfo(raw)
-		if err != nil {
-			return nil, err
+		var info aacraid.ContainerInfo
+		if err == nil {
+			info, err = aacraid.DecodeContainerInfo(raw)
 		}
-		for _, prev := range cs {
-			if prev.Info.UID == info.UID {
-				return nil, fmt.Errorf("duplicate container UID %#x (containers %d and %d)", info.UID, prev.Number, n)
+		if err == nil {
+			for _, prev := range cs {
+				if prev.Info.UID == info.UID {
+					err = fmt.Errorf("duplicate container UID %#x (containers %d and %d)", info.UID, prev.Number, n)
+				}
 			}
+		}
+		if err != nil {
+			refused = errors.Join(refused, fmt.Errorf("container %d: %w", n, err))
+			continue
 		}
 		cs = append(cs, aacraid.Container{Number: n, Info: info})
 	}
-	return cs, nil
+	return cs, true, refused
 }
 
 // readDiskList lit la liste des disques présents (247).
@@ -867,28 +973,36 @@ func readDiskList(d reader) ([]uint32, error) {
 
 // readMembers lit la liste des membres de chaque conteneur (249).
 func readMembers(d reader, cs []aacraid.Container) error {
+	// Un refus fait sauter ce conteneur et les suivants sont lus, comme chez
+	// l'outil ; un échec d'échange arrête la lecture aussitôt.
+	var refused error
 	for i := range cs {
 		size := aacraid.MemberListSize(cs[i].Info.Members)
 		raw, err := d.ReadPaged(aacraid.ReadMemberList, cs[i].Info.UID, size, func([]byte) int { return int(size) })
-		if err != nil {
+		if errors.Is(err, aacraid.ErrExchange) {
 			return err
 		}
-		if cs[i].Members, err = aacraid.DecodeMemberList(raw); err != nil {
-			return err
+		if err == nil {
+			cs[i].Members, err = aacraid.DecodeMemberList(raw)
 		}
-		if len(cs[i].Members) != cs[i].Info.Members {
-			return fmt.Errorf("container %#x: %d members announced, %d listed", cs[i].Info.UID, cs[i].Info.Members, len(cs[i].Members))
+		if err == nil && len(cs[i].Members) != cs[i].Info.Members {
+			err = fmt.Errorf("%d members announced, %d listed", cs[i].Info.Members, len(cs[i].Members))
 		}
-		seen := map[[2]uint32]bool{}
-		for _, mb := range cs[i].Members {
-			k := [2]uint32{mb.Disk, mb.ChildUID}
-			if seen[k] {
-				return fmt.Errorf("container %#x: member listed twice (disk %#x, container %#x)", cs[i].Info.UID, mb.Disk, mb.ChildUID)
+		if err == nil {
+			seen := map[[2]uint32]bool{}
+			for _, mb := range cs[i].Members {
+				k := [2]uint32{mb.Disk, mb.ChildUID}
+				if seen[k] {
+					err = fmt.Errorf("member listed twice (disk %#x, container %#x)", mb.Disk, mb.ChildUID)
+				}
+				seen[k] = true
 			}
-			seen[k] = true
+		}
+		if err != nil {
+			refused = errors.Join(refused, fmt.Errorf("container %#x: %w", cs[i].Info.UID, err))
 		}
 	}
-	return nil
+	return refused
 }
 
 func uidID(uid uint32) string { return fmt.Sprintf("%08x", uid) }

@@ -398,3 +398,34 @@ func TestHighBitAndInlineForms(t *testing.T) {
 		}
 	}
 }
+
+// Statut non nul ou mauvais écho : échec d'échange (ErrExchange), examinés
+// avant le reste de l'en-tête, qui ne doit pas les masquer ; un en-tête
+// inattendu seul n'en est pas un.
+func TestDecodePagedResponseExchange(t *testing.T) {
+	le := binary.LittleEndian
+	req := ChunkRequest(0x1000, 9, 0)
+	rsp := func(f func([]byte)) []byte {
+		b := append([]byte(nil), req...)
+		le.PutUint16(b[fibSize:], ChunkRspSize)
+		le.PutUint32(b[FIBHeaderSize:], 0)
+		f(b)
+		return b
+	}
+	for name, tc := range map[string]struct {
+		f    func([]byte)
+		want bool
+	}{
+		"statut":             {func(b []byte) { le.PutUint32(b[FIBHeaderSize:], 1) }, true},
+		"écho":               {func(b []byte) { le.PutUint32(b[FIBHeaderSize+4:], 84) }, true},
+		"commande et statut": {func(b []byte) { le.PutUint16(b[fibCommand:], 700); le.PutUint32(b[FIBHeaderSize:], 1) }, true},
+		"taille et écho":     {func(b []byte) { le.PutUint16(b[fibSize:], 100); le.PutUint32(b[FIBHeaderSize+4:], 84) }, true},
+		"commande seule":     {func(b []byte) { le.PutUint16(b[fibCommand:], 700) }, false},
+		"taille seule":       {func(b []byte) { le.PutUint16(b[fibSize:], 100) }, false},
+	} {
+		_, err := DecodePagedResponse(req, rsp(tc.f))
+		if err == nil || errors.Is(err, ErrExchange) != tc.want {
+			t.Errorf("%s : %v (échec d'échange attendu %v)", name, err, tc.want)
+		}
+	}
+}

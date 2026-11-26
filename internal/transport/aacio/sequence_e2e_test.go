@@ -13,6 +13,7 @@ import (
 	"github.com/DisasteR/hwraid_exporter/internal/sysfs"
 	"os"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 
@@ -288,11 +289,145 @@ func expectedSequence(t *testing.T, golden []byte) []byte {
 	for i, l := range lines {
 		if strings.HasPrefix(l, open229) {
 			out := append(append(append([]string(nil), lines[:i]...), containerCountRequest()+"\n"), lines[i:]...)
-			return []byte(strings.Join(out, ""))
+			return []byte(strings.Join(reorderAsTool(t, out), ""))
 		}
 	}
 	t.Fatal("ouverture de la 229 absente de la séquence de référence")
 	return nil
+}
+
+// reorderAsTool range, dans chaque cycle, les lectures de configuration
+// dans l'ordre de l'outil de référence (captures fibcap-AL et
+// fibcap-STATUS ; CDC, section 6.11) : comptage, 708, 247, les 248 dans
+// l'ordre de la liste rendue par la carte de référence (3, 4, 5, 7, 6, 1, 2,
+// 0), 229, les 234, les 249, puis la protection du cache ; les tâches (101)
+// restent à la fin. Une lecture paginée (ouverture, morceaux, clôture) est
+// déplacée d'un bloc ; les identifiants de transfert, que le faux firmware
+// attribue dans l'ordre des ouvertures, sont réattribués dans le nouvel
+// ordre. Aucune requête n'est ajoutée ni retirée (vérifié ici).
+func reorderAsTool(t *testing.T, lines []string) []string {
+	t.Helper()
+	le := binary.LittleEndian
+	type block struct {
+		label string
+		lines []string
+	}
+	decode := func(l string) (string, []byte) {
+		ioc, h, _ := strings.Cut(strings.TrimSuffix(l, "\n"), " ")
+		b, _ := hex.DecodeString(h)
+		return ioc, b
+	}
+	labelOf := func(l string) string {
+		ioc, b := decode(l)
+		switch {
+		case ioc == fmt.Sprintf("%#x", aacraid.IoctlSendLargeFIB):
+			return "708"
+		case len(b) < 64 || le.Uint16(b[4:]) != 500:
+			return ""
+		case le.Uint32(b[aacraid.FIBHeaderSize:]) != 2:
+			return "cache"
+		}
+		sub := le.Uint32(b[aacraid.FIBHeaderSize+4:])
+		switch sub {
+		case 83, 84:
+			return "chunk"
+		case 4, 229, 247:
+			return fmt.Sprint(sub)
+		}
+		return fmt.Sprintf("%d:%x", sub, le.Uint32(b[aacraid.FIBHeaderSize+8:]))
+	}
+	rank := func(label string) int {
+		disks := map[string]int{"248:3": 0, "248:4": 1, "248:5": 2, "248:7": 3, "248:6": 4, "248:1": 5, "248:2": 6, "248:0": 7}
+		switch {
+		case label == "4":
+			return 0
+		case label == "708":
+			return 1
+		case label == "247":
+			return 2
+		case strings.HasPrefix(label, "248:"):
+			return 10 + disks[label]
+		case label == "229":
+			return 20
+		case strings.HasPrefix(label, "234:"):
+			return 21
+		case strings.HasPrefix(label, "249:"):
+			return 22
+		case label == "cache":
+			return 30
+		}
+		t.Fatalf("lecture inattendue dans la configuration : %s", label)
+		return 0
+	}
+	var out []string
+	var oldX, region []block
+	before := 0
+	flush := func() {
+		sort.SliceStable(region, func(i, j int) bool { return rank(region[i].label) < rank(region[j].label) })
+		for _, b := range region {
+			out = append(out, b.lines...)
+		}
+		region = nil
+	}
+	in := false
+	for i := 0; i < len(lines); i++ {
+		l := lines[i]
+		lab := labelOf(l)
+		switch {
+		case strings.HasPrefix(l, "# cycle") || (lab == "" && in):
+			if in {
+				flush()
+				in = false
+			}
+			out = append(out, l)
+			continue
+		case lab == "4" || lab == "708" || lab == "cache" || strings.HasPrefix(lab, "2"):
+			in = true
+		}
+		if !in {
+			out = append(out, l)
+			continue
+		}
+		b := block{label: lab, lines: []string{l}}
+		for i+1 < len(lines) && labelOf(lines[i+1]) == "chunk" {
+			i++
+			b.lines = append(b.lines, lines[i])
+		}
+		if len(b.lines) > 1 {
+			oldX = append(oldX, b)
+		}
+		before += len(b.lines)
+		region = append(region, b)
+	}
+	if in {
+		flush()
+	}
+	// Identifiants de transfert : ceux de la séquence d'origine, dans
+	// l'ordre où ils ont été attribués, donnés aux lectures dans le nouvel
+	// ordre.
+	var ids []uint32
+	for _, b := range oldX {
+		_, c := decode(b.lines[1])
+		ids = append(ids, le.Uint32(c[aacraid.FIBHeaderSize+20:]))
+	}
+	k := 0
+	for i := 0; i < len(out); i++ {
+		if labelOf(out[i]) != "chunk" {
+			continue
+		}
+		id := ids[k]
+		for ; i < len(out) && labelOf(out[i]) == "chunk"; i++ {
+			ioc, b := decode(out[i])
+			le.PutUint32(b[aacraid.FIBHeaderSize+20:], id)
+			out[i] = ioc + " " + hex.EncodeToString(b) + "\n"
+		}
+		i--
+		k++
+	}
+	if len(out) != len(lines) || k != len(ids) {
+		t.Fatalf("réordonnancement : %d lignes pour %d, %d transferts pour %d", len(out), len(lines), k, len(ids))
+	}
+	return out
 }
 
 // capturedRequest écrit une requête de l'outil telle que capturée (en-tête
@@ -577,14 +712,15 @@ func TestOversizedContainerListStopsAfterFirstChunk(t *testing.T) {
 	var after229 [][2]uint32
 	for i, s := range subs {
 		if s[0] == 229 {
-			after229 = subs[i : i+3]
+			after229 = subs[i:min(i+3, len(subs))]
 			break
 		}
 	}
-	// Ouverture et morceau 0 seulement pour la 229, puis la lecture
-	// suivante (ouverture de la 247, chaîne des disques) : ni morceau ni
-	// clôture pour ce transfert.
-	if len(after229) != 3 || after229[1] != [2]uint32{83, 0} || after229[2][0] != 247 {
+	// Ouverture et morceau 0 seulement pour la 229 ; la chaîne des volumes
+	// s'arrête là (les disques, lus avant elle comme chez l'outil, ont
+	// déjà été lus) : ni morceau ni clôture pour ce transfert, et aucune
+	// lecture de configuration ensuite.
+	if len(after229) < 2 || after229[1] != [2]uint32{83, 0} || len(subs) != slices.Index(subs, [2]uint32{229, 0})+2 {
 		t.Fatalf("requêtes après l'ouverture de la 229 : %v", subs)
 	}
 	// Aucune autre lecture de la carte de référence ne dépasse un morceau
@@ -596,8 +732,8 @@ func TestOversizedContainerListStopsAfterFirstChunk(t *testing.T) {
 	}
 }
 
-// Sans bit 9 de FeatureBits : ni comptage ni lecture de conteneurs ou de
-// membres, chaîne des disques lue ; sans bit 8 : pas de 708. Vérifié sur les
+// Sans bit 9 de FeatureBits : ni lecture de conteneurs ni de membres (le
+// comptage part, comme à l'ouverture de l'outil), chaîne des disques lue ; sans bit 8 : pas de 708. Vérifié sur les
 // ioctl émis.
 func TestFeatureBitsGateReads(t *testing.T) {
 	list, err := aacraid.NewAllowlist()
@@ -624,7 +760,8 @@ func TestFeatureBitsGateReads(t *testing.T) {
 			seen[s[0]] = true
 		}
 		containers := tc.clear&aacraid.FeatureContainerReads == 0
-		if seen[4] != containers || seen[229] != containers || seen[234] != containers || seen[249] != containers ||
+		// Comptage envoyé à l'ouverture, comme l'outil, avec ou sans bit 9.
+		if !seen[4] || seen[229] != containers || seen[234] != containers || seen[249] != containers ||
 			!seen[247] || !seen[248] || cm != tc.cm {
 			t.Errorf("%s : sous-commandes %v, 708 %v", tc.name, subs, cm)
 		}
@@ -972,7 +1109,9 @@ func TestOpeningIoctls(t *testing.T) {
 	if slices.Contains(got, fmt.Sprintf("%#x/%d", aacraid.IoctlSendFIB, aacraid.CmdRequestSupplementAdapterInfo)) {
 		t.Errorf("sans bit 16 : 706 envoyée : %v", got)
 	}
-	if subs, cm := containerConfigSent(t, fw.log); len(subs) != 0 || cm || cacheProtectionSent(t, fw.log) == 0 {
+	// Seul le comptage part (ouverture de l'outil, sans condition de
+	// capacité) : ni transfert ni 708.
+	if subs, cm := containerConfigSent(t, fw.log); !slices.Equal(subs, [][2]uint32{{4, 0}}) || cm || cacheProtectionSent(t, fw.log) == 0 {
 		t.Errorf("sans bit 16 : VM_ContainerConfig %v, 708 %v, cache %d", subs, cm, cacheProtectionSent(t, fw.log))
 	}
 }

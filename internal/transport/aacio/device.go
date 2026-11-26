@@ -187,11 +187,13 @@ func (d *Device) do(ctx context.Context, req allowlist.Request) error {
 	if refused != nil {
 		return refused
 	}
+	// Ioctl parti et en échec : échec d'échange (aacraid.ErrExchange), que
+	// l'outil de référence traite par une exception.
 	if errors.Is(err, unix.ENOMEM) && priv.Ioctl != aacraid.IoctlGetHBAInfo {
-		return fmt.Errorf("ioctl %#x on %s: %w: %w", req.Ioctl, d.path, err, ErrDriverNoMemory)
+		return fmt.Errorf("ioctl %#x on %s: %w: %w: %w", req.Ioctl, d.path, err, ErrDriverNoMemory, aacraid.ErrExchange)
 	}
 	if err != nil {
-		return fmt.Errorf("ioctl %#x on %s: %w", req.Ioctl, d.path, err)
+		return fmt.Errorf("ioctl %#x on %s: %w: %w", req.Ioctl, d.path, err, aacraid.ErrExchange)
 	}
 	copy(req.Buf, priv.Buf)
 	return nil

@@ -173,6 +173,17 @@ func (s SupplementInfo) PagedHighBit() bool { return s.capability(s.FeatureBits,
 // ArcIoReads indique si la carte annonce l'interface des lectures de volume,
 // de membres et de disque décrites dans docs/aacraid-interface.md :
 // SupportedOptions2 n'est valide que si Version est supérieur à 1.
+// SupportedSpecialCount est le bit 28 de SupportedOptions2 : l'outil de
+// référence compare alors, à l'ouverture, un autre champ du comptage des
+// conteneurs (mot 3) selon un réglage de la carte non établi (2.05
+// FsaOpenAdapter2W 0x8f4d2b..0x8f4d4f).
+const SupportedSpecialCount = 0x10000000
+
+// SpecialContainerCount indique le bit 28 de SupportedOptions2.
+func (s SupplementInfo) SpecialContainerCount() bool {
+	return s.capability(s.SupportedOptions2, SupportedSpecialCount)
+}
+
 func (s SupplementInfo) ArcIoReads() bool {
 	return s.Version > 1 && s.SupportedOptions2&SupportedArcIo != 0
 }

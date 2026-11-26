@@ -408,22 +408,24 @@ type fakeFirmware struct {
 	xfer       uint32
 	failAt     int // numéro de morceau en erreur (-1 : aucun)
 	requests   [][]byte
-	openMark   uint32   // marque d'ouverture (0 : 0xc9)
-	total      uint32   // taille annoncée (0 : taille de payload)
-	stopXfer   uint32   // transfert annoncé à la clôture (0 : écho)
-	stopMark   uint32   // marque de la clôture (0 : 0xc6)
-	stopMarks  []uint32 // marques des clôtures successives, prioritaires sur stopMark
-	chunkMark  uint32   // marque des réponses de morceau (0 : 0xc8)
-	chunkSize  uint16   // champ Size des réponses de morceau (0 : 496)
-	payloads   [][]byte // contenus des transferts successifs, prioritaires sur payload
-	onStop     func()   // appelé à chaque clôture reçue
-	onChunk    func()   // appelé à chaque demande de morceau reçue
-	onOpen     func()   // appelé à chaque ouverture reçue
-	openCode   uint32   // mot 4 de la réponse d'ouverture (0 : 0xda)
-	openSize   uint16   // champ Size de la réponse d'ouverture (0 : 496)
-	openSender uint16   // champ SenderSize de la réponse d'ouverture (0 : celui de la requête)
-	stopSize   uint16   // champ Size de la réponse de clôture (0 : 496)
-	failErr    error    // erreur du morceau failAt (nil : EIO)
+	openMark   uint32         // marque d'ouverture (0 : 0xc9)
+	total      uint32         // taille annoncée (0 : taille de payload)
+	stopXfer   uint32         // transfert annoncé à la clôture (0 : écho)
+	stopMark   uint32         // marque de la clôture (0 : 0xc6)
+	stopMarks  []uint32       // marques des clôtures successives, prioritaires sur stopMark
+	chunkMark  uint32         // marque des réponses de morceau (0 : 0xc8)
+	chunkSize  uint16         // champ Size des réponses de morceau (0 : 496)
+	payloads   [][]byte       // contenus des transferts successifs, prioritaires sur payload
+	onStop     func()         // appelé à chaque clôture reçue
+	onChunk    func()         // appelé à chaque demande de morceau reçue
+	onOpen     func()         // appelé à chaque ouverture reçue
+	openCode   uint32         // mot 4 de la réponse d'ouverture (0 : 0xda)
+	openSize   uint16         // champ Size de la réponse d'ouverture (0 : 496)
+	openSender uint16         // champ SenderSize de la réponse d'ouverture (0 : celui de la requête)
+	openErr    error          // erreur de l'ioctl d'ouverture (nil : aucune)
+	stopHook   func(d []byte) // modifie la réponse de clôture une fois construite
+	stopSize   uint16         // champ Size de la réponse de clôture (0 : 496)
+	failErr    error          // erreur du morceau failAt (nil : EIO)
 	// chunkHook modifie la réponse au morceau n une fois construite.
 	chunkHook func(n uint32, d []byte)
 	// openHook modifie la réponse d'ouverture une fois construite.
@@ -496,9 +498,15 @@ func (f *fakeFirmware) ioctl(t *testing.T) {
 			if f.stopXfer != 0 {
 				le.PutUint32(d[20:], f.stopXfer)
 			}
+			if f.stopHook != nil {
+				f.stopHook(d)
+			}
 		default: // ouverture
 			if f.onOpen != nil {
 				f.onOpen()
+			}
+			if f.openErr != nil {
+				return f.openErr
 			}
 			if len(f.payloads) > 0 {
 				f.payload = f.payloads[0]
@@ -1722,5 +1730,52 @@ func TestReadPagedInlineSenderSizeAndRequested(t *testing.T) {
 		if total, w7 := le.Uint32(r[aacraid.FIBHeaderSize+12:]), le.Uint32(r[aacraid.FIBHeaderSize+28:]); total != 0xfa0 || w7 != 0x80001000 {
 			t.Fatalf("morceau %d : total %#x, mot 7 %#x (attendu 0xfa0 et 0x80001000)", i+1, total, w7)
 		}
+	}
+}
+
+// Échec d'échange (aacraid.ErrExchange, sur lequel l'outil abandonne
+// l'ouverture de la carte) : ioctl en échec à l'ouverture ou sur un
+// morceau, statut non nul ou mauvais écho dans une réponse. Un refus n'en
+// est pas un : code d'ouverture atypique, contrôle propre à l'exporter
+// (marque d'un morceau), clôture d'un autre transfert.
+func TestReadPagedExchangeFailures(t *testing.T) {
+	le := binary.LittleEndian
+	at := func(n uint32, off int, v uint32) func(uint32, []byte) {
+		return func(m uint32, d []byte) {
+			if m == n {
+				le.PutUint32(d[off:], v)
+			}
+		}
+	}
+	for name, tc := range map[string]struct {
+		f        *fakeFirmware
+		exchange bool
+	}{
+		"ioctl de l'ouverture":         {&fakeFirmware{payload: make([]byte, 0x1000), failAt: -1, openErr: syscall.EIO}, true},
+		"ioctl d'un morceau":           {&fakeFirmware{payload: make([]byte, 0x1000), failAt: 1}, true},
+		"statut d'un morceau":          {&fakeFirmware{payload: make([]byte, 0x1000), failAt: -1, chunkHook: at(1, 0, 1)}, true},
+		"écho d'un morceau":            {&fakeFirmware{payload: make([]byte, 0x1000), failAt: -1, chunkHook: at(1, 4, 82)}, true},
+		"statut de l'ouverture":        {&fakeFirmware{payload: make([]byte, 0x1000), failAt: -1, openHook: func(d []byte) { le.PutUint32(d[0:], 1) }}, true},
+		"écho de l'ouverture":          {&fakeFirmware{payload: make([]byte, 0x1000), failAt: -1, openHook: func(d []byte) { le.PutUint32(d[4:], 0xeb) }}, true},
+		"statut de la clôture":         {&fakeFirmware{payload: make([]byte, 0x1000), failAt: -1, stopHook: func(d []byte) { le.PutUint32(d[0:], 1) }}, true},
+		"écho de la clôture":           {&fakeFirmware{payload: make([]byte, 0x1000), failAt: -1, stopHook: func(d []byte) { le.PutUint32(d[4:], 83) }}, true},
+		"marque d'un morceau":          {&fakeFirmware{payload: make([]byte, 0x1000), failAt: -1, chunkHook: at(1, 8, 0xc9)}, false},
+		"code d'ouverture":             {&fakeFirmware{payload: make([]byte, 0x1000), failAt: -1, openCode: 0xdb}, false},
+		"clôture d'un autre transfert": {&fakeFirmware{payload: make([]byte, 0x1000), failAt: -1, stopXfer: 10}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := tc.f
+			f.xfer = 9
+			f.ioctl(t)
+			d, err := Open("/dev/null", devNull, list(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			_, err = d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return 0x1000 })
+			if err == nil || errors.Is(err, aacraid.ErrExchange) != tc.exchange {
+				t.Fatalf("err=%v, échec d'échange attendu %v", err, tc.exchange)
+			}
+		})
 	}
 }

@@ -778,9 +778,12 @@ func TestCollectVolumesReference(t *testing.T) {
 			t.Fatalf("disque : %+v", dk)
 		}
 	}
-	// Séquence : liste, 5 informations, disques, 5 listes de membres, puis
-	// l'information de chacun des 8 disques présents.
-	if len(d.reads) != 20 || d.reads[0] != "229-0" || d.reads[6] != "247-0" || d.reads[12] != "248-0" || d.reads[19] != "248-7" {
+	// Séquence de l'outil de référence (captures fibcap-AL et
+	// fibcap-STATUS) : disques (247, puis les 248 dans l'ordre de la liste
+	// rendue), puis volumes (229, les 5 informations, les 5 listes de
+	// membres).
+	wantReads := "247-0 248-3 248-4 248-5 248-7 248-6 248-1 248-2 248-0 229-0 234-0 234-fc 234-fd 234-fe 234-ff 249-1d000000 249-1d000004 249-1d000003 249-1d000002 249-1d000001"
+	if strings.Join(d.reads, " ") != wantReads {
 		t.Fatalf("lectures %v", d.reads)
 	}
 	// Inventaire : tous les disques présents, dans l'ordre, valeurs de la
@@ -1207,8 +1210,11 @@ func TestCollectMemberCountMismatch(t *testing.T) {
 	}
 }
 
-// Carte des connecteurs relue quand l'ensemble des disques présents change
-// (ajout à chaud), et seulement dans ce cas.
+// Carte des connecteurs : lue avant la 247 quand aucune n'est gardée (comme
+// l'outil), puis gardée tant que l'ensemble des disques présents ne change
+// pas ; s'il change (ajout à chaud), elle n'est pas relue après les 248 :
+// l'emplacement n'est pas publié à ce cycle, et elle est relue au début du
+// suivant, avant la 247.
 func TestConnectorMapRereadOnDiskChange(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
 	c := card("0000:01:00.0", "0")
@@ -1226,11 +1232,24 @@ func TestConnectorMapRereadOnDiskChange(t *testing.T) {
 	if d.cmCall != 1 {
 		t.Fatalf("%d lectures pour une liste inchangée", d.cmCall)
 	}
+	if d.reads[0] != "247-0" {
+		t.Fatalf("708 lue après la 247 : %v", d.reads[:2])
+	}
 	seven = false
+	d.reads = nil
 	r := m.Collect(context.Background(), c, ref)
-	m.Collect(context.Background(), c, ref)
-	if d.cmCall != 2 || len(r.DiskLocations) != 8 {
-		t.Fatalf("%d lectures, %d emplacements après l'ajout de d7", d.cmCall, len(r.DiskLocations))
+	if d.cmCall != 1 || r.DiskLocations != nil || r.Collected[DiskLocationCollector] || !r.Collected[DiskInventoryCollector] {
+		t.Fatalf("cycle de l'ajout de d7 : %d lectures de 708, %d emplacements, %v", d.cmCall, len(r.DiskLocations), r.Collected)
+	}
+	cmBefore := d.cmCall
+	var order []string
+	d.paged = func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
+		order = append(order, fmt.Sprintf("%d (708 : %d)", r, d.cmCall))
+		return referencePaged(r, p, size)
+	}
+	r = m.Collect(context.Background(), c, ref)
+	if d.cmCall != cmBefore+1 || len(r.DiskLocations) != 8 || order[0] != fmt.Sprintf("247 (708 : %d)", cmBefore+1) {
+		t.Fatalf("cycle suivant : %d lectures de 708, %d emplacements, ordre %v", d.cmCall, len(r.DiskLocations), order[:1])
 	}
 }
 
@@ -1305,15 +1324,18 @@ func TestCollectStopsWithContext(t *testing.T) {
 		return referencePaged(r, p, size)
 	}}
 	r := withDev(d, nil).Collect(ctx, card("0000:01:00.0", "0"), ref)
-	// 229 puis trois 234 ; la quatrième 234 et 708 ne sont pas envoyées.
-	if len(d.reads) != 4 || d.cmCall != 0 || d.refused == 0 {
+	// 708 (avant la 247, comme l'outil), 247 puis trois 248 ; la quatrième
+	// 248 et la suite ne sont pas envoyées.
+	if len(d.reads) != 4 || d.cmCall != 1 || d.refused == 0 {
 		t.Fatalf("lectures après la fin du contexte : %v (708 : %d, refusées %d)", d.reads, d.cmCall, d.refused)
 	}
 	if !errors.Is(r.CollectErr, aacio.ErrStopped) || r.Collected["volumes"] || r.Volumes != nil || r.DiskInventory != nil {
 		t.Fatalf("%+v", r)
 	}
-	if !r.Collected[CacheProtectionCollector] || !r.NodeValid {
-		t.Fatalf("lectures faites avant la fin perdues : %+v", r)
+	// Lectures faites avant la fin gardées ; la protection du cache, lue
+	// après la configuration comme chez l'outil, ne part plus.
+	if !r.Collected[TemperatureCollector] || !r.Collected[CapabilitiesCollector] || !r.NodeValid || d.cpCall != 0 || r.Collected[CacheProtectionCollector] {
+		t.Fatalf("lectures faites avant la fin : %+v (protection du cache %d)", r, d.cpCall)
 	}
 
 	// Contexte déjà terminé : aucune commande firmware, pas même 706, et le
@@ -1360,7 +1382,7 @@ func TestCollectStopDuringBlockedCommand(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Collect ne rend pas la main après la commande en cours")
 	}
-	if len(d.reads) != 2 || d.cmCall != 0 || !errors.Is(r.CollectErr, aacio.ErrStopped) {
+	if len(d.reads) != 2 || d.cmCall != 1 || !errors.Is(r.CollectErr, aacio.ErrStopped) {
 		t.Fatalf("lectures %v, 708 %d, err %v", d.reads, d.cmCall, r.CollectErr)
 	}
 }
@@ -1899,10 +1921,12 @@ func TestContainerCountSizesContainerList(t *testing.T) {
 	}
 }
 
-// Comptage en échec, ou liste plus longue que MaxContainers : aucune liste
-// des conteneurs n'est demandée (échec) ou ses données sont refusées ; les
-// collecteurs des volumes sont en échec, la chaîne des disques est lue, et
-// la réponse en échec n'est pas gardée.
+// Comptage des conteneurs, envoyé à l'ouverture comme l'outil : en échec,
+// ou MaxContainers au-delà de 256 (l'outil n'ouvre pas la carte), la carte
+// s'arrête pour le cycle (aucune lecture paginée, ni protection du cache,
+// la température déjà lue est gardée) et la réponse n'est pas gardée ;
+// 256 est admis. Liste plus longue que MaxContainers : données refusées,
+// collecteurs des volumes en échec, chaîne des disques lue.
 func TestContainerCountFailures(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
 	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
@@ -1912,11 +1936,26 @@ func TestContainerCountFailures(t *testing.T) {
 		return r.Volumes == nil && r.Disks == nil && !r.Collected["volumes"] && !r.Collected["disks"] &&
 			r.Collected[DiskInventoryCollector] && r.Collected[DiskLocationCollector] && r.CollectErr != nil && r.NodeValid
 	}
+	stopped := func(r module.Result, f *fakeDev) bool {
+		for _, col := range []string{"volumes", "disks", DiskInventoryCollector, DiskLocationCollector, TasksCollector, CacheProtectionCollector} {
+			if ok, tried := r.Collected[col]; !tried || ok {
+				return false
+			}
+		}
+		return len(f.reads) == 0 && f.cmCall == 0 && f.cpCall == 0 && r.Collected[TemperatureCollector] && r.Collected[CapabilitiesCollector]
+	}
 	f := &fakeDev{info: hba, sup: arcIo, countErr: errors.New("EIO")}
 	m := withDev(f, nil)
 	r := m.Collect(context.Background(), c, ref)
-	if !failed(r) || strings.Join(f.reads, " ") != "247-0 248-0 248-1 248-2 248-3 248-4 248-5 248-6 248-7" {
-		t.Fatalf("comptage en échec : lectures %v, %+v", f.reads, r)
+	if !stopped(r, f) {
+		t.Fatalf("comptage en échec : lectures %v, 708 %d, cache %d, %+v", f.reads, f.cmCall, f.cpCall, r)
+	}
+	for n, wantStop := range map[uint32]bool{257: true, 1023: true, 256: false} {
+		fn := &fakeDev{info: hba, sup: arcIo, count: n}
+		r := withDev(fn, nil).Collect(context.Background(), c, ref)
+		if stopped(r, fn) != wantStop || (wantStop && !strings.Contains(r.CollectErr.Error(), "above 256")) {
+			t.Fatalf("MaxContainers %d : arrêt attendu %v, lectures %v, %+v", n, wantStop, fn.reads, r)
+		}
 	}
 	if !strings.Contains(r.CollectErr.Error(), "container count") {
 		t.Fatalf("cause non signalée : %v", r.CollectErr)
@@ -1941,22 +1980,29 @@ func TestReadDependencies(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
 	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
 	c := card("0000:01:00.0", "0")
-	run := func(failing string) (*fakeDev, module.Result) {
+	refused := errors.New("refusé")
+	exchange := fmt.Errorf("EIO: %w", aacraid.ErrExchange)
+	runWith := func(failing string, ferr error) (*fakeDev, module.Result) {
 		d := &fakeDev{info: hba, sup: arcIo, paged: func(r aacraid.PagedRead, p, size uint32) ([]byte, error) {
 			if fmt.Sprintf("%d-%x", r, p) == failing {
-				return nil, errors.New("EIO")
+				return nil, ferr
 			}
 			return referencePaged(r, p, size)
 		}}
+		if failing == "708" {
+			d.cmap = func() (aacraid.ConnectorMap, error) { return aacraid.ConnectorMap{}, ferr }
+		}
 		return d, withDev(d, nil).Collect(context.Background(), c, ref)
 	}
+	run := func(failing string) (*fakeDev, module.Result) { return runWith(failing, refused) }
 	nominal, r := run("")
 	if r.CollectErr != nil {
 		t.Fatal(r.CollectErr)
 	}
-	// Ordre nominal conservé : 229, les 234, 247, les 249, puis les 248.
-	want := "229-0 234-0 234-fc 234-fd 234-fe 234-ff 247-0 249-1d000000 249-1d000004 249-1d000003 249-1d000002 249-1d000001 " +
-		"248-0 248-1 248-2 248-3 248-4 248-5 248-6 248-7"
+	// Ordre de l'outil (captures) : 247, les 248 dans l'ordre de la liste,
+	// 229, les 234, les 249.
+	want := "247-0 248-3 248-4 248-5 248-7 248-6 248-1 248-2 248-0 " +
+		"229-0 234-0 234-fc 234-fd 234-fe 234-ff 249-1d000000 249-1d000004 249-1d000003 249-1d000002 249-1d000001"
 	if got := strings.Join(nominal.reads, " "); got != want || nominal.countCall != 1 || nominal.cmCall != 1 {
 		t.Fatalf("séquence nominale : %s (comptage %d, 708 %d)", got, nominal.countCall, nominal.cmCall)
 	}
@@ -1969,26 +2015,36 @@ func TestReadDependencies(t *testing.T) {
 		t.Fatalf("%s absent de la séquence nominale", last)
 		return nil
 	}
-	var diskChain, inv []string
+	var volChain []string
 	for _, rd := range nominal.reads {
-		if strings.HasPrefix(rd, "247-") || strings.HasPrefix(rd, "248-") {
-			diskChain = append(diskChain, rd)
-		}
-		if strings.HasPrefix(rd, "248-") {
-			inv = append(inv, rd)
+		if !strings.HasPrefix(rd, "247-") && !strings.HasPrefix(rd, "248-") && !strings.HasPrefix(rd, "249-") {
+			volChain = append(volChain, rd)
 		}
 	}
+	without := func(drop string) []string {
+		var out []string
+		for _, rd := range nominal.reads {
+			if rd != drop {
+				out = append(out, rd)
+			}
+		}
+		return out
+	}
+	// Refus (code, ou contrôle de l'exporter) : l'objet est sauté et la
+	// boucle se poursuit, comme chez l'outil ; la liste des conteneurs
+	// refusée arrête la chaîne des volumes ; la liste des disques refusée
+	// empêche les 248 (pas les 249).
 	cases := []struct {
 		failing           string
 		reads             []string
 		volumes, inv, loc bool
 		cm                int
 	}{
-		{"229-0", append([]string{"229-0"}, diskChain...), false, true, true, 1},
-		{"234-fd", append(upTo("234-fd"), diskChain...), false, true, true, 1},
-		{"247-0", upTo("247-0"), false, false, false, 0},
-		{"249-1d000002", append(upTo("249-1d000002"), inv...), false, true, true, 1},
-		{"248-3", upTo("248-3"), true, false, false, 0},
+		{"229-0", upTo("229-0"), false, true, true, 1},
+		{"234-fd", without("249-1d000003"), false, true, true, 1},
+		{"247-0", append([]string{"247-0"}, append(volChain, nominal.reads[len(nominal.reads)-5:]...)...), false, false, false, 1},
+		{"249-1d000002", nominal.reads, false, true, true, 1},
+		{"248-3", nominal.reads, true, false, false, 1},
 	}
 	for _, tc := range cases {
 		d, r := run(tc.failing)
@@ -2002,6 +2058,43 @@ func TestReadDependencies(t *testing.T) {
 		if tc.volumes != (len(r.Volumes) == 5) || tc.inv != (len(r.DiskInventory) == 8) {
 			t.Errorf("%s en échec : %d volumes, %d disques inventoriés publiés", tc.failing, len(r.Volumes), len(r.DiskInventory))
 		}
+		if !r.Collected[CacheProtectionCollector] {
+			t.Errorf("%s refusé : protection du cache non lue", tc.failing)
+		}
+	}
+	// Échec d'échange (ioctl, statut, écho), sur lequel l'outil abandonne
+	// l'ouverture : la carte s'arrête, aucune commande après celle en échec
+	// (ni protection du cache ni tâches) ; ce qui était conclu avant reste.
+	for _, failing := range []string{"247-0", "248-5", "234-fd", "249-1d000002"} {
+		d, r := runWith(failing, exchange)
+		want := upTo(failing)
+		if got := strings.Join(d.reads, " "); got != strings.Join(want, " ") || d.cpCall != 0 || len(d.taskListCalls) != 0 || d.cmCall != 1 {
+			t.Errorf("échange en échec sur %s : lectures %s, 708 %d, cache %d, 101 %d", failing, got, d.cmCall, d.cpCall, len(d.taskListCalls))
+		}
+		if !errors.Is(r.CollectErr, aacraid.ErrExchange) || r.Collected[CacheProtectionCollector] || r.Collected[TasksCollector] || !r.Collected[TemperatureCollector] {
+			t.Errorf("échange en échec sur %s : %v, %v", failing, r.Collected, r.CollectErr)
+		}
+	}
+	// 708 en échec, même d'échange : l'outil poursuit (envoi sans
+	// exception) ; emplacement en échec, tout le reste lu.
+	d, r708 := runWith("708", exchange)
+	if strings.Join(d.reads, " ") != strings.Join(nominal.reads, " ") || r708.Collected[DiskLocationCollector] || !r708.Collected[CacheProtectionCollector] || !r708.Collected["volumes"] {
+		t.Errorf("708 en échec : lectures %v, %v", d.reads, r708.Collected)
+	}
+	// Refus puis échec d'échange sur l'objet suivant, que l'outil lit aussi :
+	// arrêt à ce point, rien ensuite.
+	d = &fakeDev{info: hba, sup: arcIo, paged: func(rd aacraid.PagedRead, p, size uint32) ([]byte, error) {
+		switch fmt.Sprintf("%d-%x", rd, p) {
+		case "248-3":
+			return nil, refused
+		case "248-4":
+			return nil, exchange
+		}
+		return referencePaged(rd, p, size)
+	}}
+	r = withDev(d, nil).Collect(context.Background(), c, ref)
+	if strings.Join(d.reads, " ") != "247-0 248-3 248-4" || d.cpCall != 0 || r.Collected[CacheProtectionCollector] {
+		t.Errorf("refus puis échange : lectures %v, cache %d", d.reads, d.cpCall)
 	}
 }
 
@@ -2066,8 +2159,10 @@ func TestPagedPrerequisites(t *testing.T) {
 		}
 		d := &fakeDev{info: hba, sup: noVol}
 		r := withDev(d, nil).Collect(context.Background(), c, ref)
-		if !unsupported(r, "volumes", "disks") || d.countCall != 0 || r.CollectErr != nil ||
-			strings.Join(d.reads, " ") != "247-0 248-0 248-1 248-2 248-3 248-4 248-5 248-6 248-7" ||
+		// Comptage envoyé à l'ouverture, comme l'outil (sans condition de
+		// bit 9) ; aucune 229.
+		if !unsupported(r, "volumes", "disks") || d.countCall != 1 || r.CollectErr != nil ||
+			strings.Join(d.reads, " ") != "247-0 248-3 248-4 248-5 248-7 248-6 248-1 248-2 248-0" ||
 			!r.Collected[DiskInventoryCollector] || len(r.DiskInventory) != 8 || r.Volumes != nil || r.Disks != nil {
 			t.Errorf("sans bit 9 (bit 8 : %v) : lectures %v, comptage %d, %+v", bit8, d.reads, d.countCall, r)
 		}
@@ -2348,7 +2443,9 @@ func TestOpeningSequence(t *testing.T) {
 	noSup := aacraid.AdapterInfo{SupportedOptions: 0x141e1d7c} // valeur capturée sans le bit 16, écrite en clair
 	d = &fakeDev{info: hba, sup: arcIo, ai: &noSup}
 	r = withDev(d, nil).Collect(context.Background(), c, ref)
-	if d.supCall != 0 || len(d.reads) != 0 || d.countCall != 0 || d.cpCall == 0 || d.envCall != 1 {
+	// Le comptage des conteneurs part comme à l'ouverture de l'outil, sans
+	// condition de capacité ; aucune lecture paginée.
+	if d.supCall != 0 || len(d.reads) != 0 || d.countCall != 1 || d.cpCall == 0 || d.envCall != 1 {
 		t.Errorf("sans bit 16 : 706 %d, paginées %v, comptage %d, cache %d, 803 %d", d.supCall, d.reads, d.countCall, d.cpCall, d.envCall)
 	}
 	if !unsupported(r, CapabilitiesCollector, "volumes", "disks", DiskInventoryCollector, DiskLocationCollector) ||
@@ -2469,9 +2566,10 @@ func TestCollectTasks(t *testing.T) {
 	}
 
 	// Configuration des volumes incomplète (liste des conteneurs, liste des
-	// disques qui empêche celle des membres, liste des membres) : aucune
-	// 101, collecteur en échec.
-	for _, failing := range []aacraid.PagedRead{aacraid.ReadContainerList, aacraid.ReadDiskList, aacraid.ReadMemberList} {
+	// membres) : aucune 101, collecteur en échec. Liste des disques refusée :
+	// l'outil poursuit la construction des volumes (T16), les membres sont
+	// lus, les tâches aussi.
+	for _, failing := range []aacraid.PagedRead{aacraid.ReadContainerList, aacraid.ReadMemberList} {
 		d = &fakeDev{info: hba, sup: arcIo, paged: func(rd aacraid.PagedRead, p, size uint32) ([]byte, error) {
 			if rd == failing {
 				return nil, errors.New("EIO")
@@ -2482,6 +2580,16 @@ func TestCollectTasks(t *testing.T) {
 		if ok, seen := r.Collected[TasksCollector]; !seen || ok || len(d.taskListCalls) != 0 {
 			t.Fatalf("lecture %d en échec : %v, 101 %v", failing, r.Collected, d.taskListCalls)
 		}
+	}
+	d = &fakeDev{info: hba, sup: arcIo, paged: func(rd aacraid.PagedRead, p, size uint32) ([]byte, error) {
+		if rd == aacraid.ReadDiskList {
+			return nil, errors.New("refusé")
+		}
+		return referencePaged(rd, p, size)
+	}}
+	r = withDev(d, nil).Collect(context.Background(), c, ref)
+	if !r.Collected[TasksCollector] || len(d.taskListCalls) != 5 || r.Collected["volumes"] {
+		t.Fatalf("247 refusée : %v, 101 %v", r.Collected, d.taskListCalls)
 	}
 	// Inventaire des disques (248) en échec : configuration des volumes
 	// complète, tâches lues.
@@ -2503,5 +2611,30 @@ func TestCollectTasks(t *testing.T) {
 	r = withDev(d, nil).Collect(context.Background(), c, ref)
 	if _, seen := r.Collected[TasksCollector]; seen || !slices.Contains(r.Unsupported, TasksCollector) || len(d.taskListCalls) != 0 {
 		t.Fatalf("sans bit 9 : %v, %v, 101 %v", r.Collected, r.Unsupported, d.taskListCalls)
+	}
+}
+
+// Comptage à l'ouverture selon la carte : mode particulier (bit 28 de
+// SupportedOptions2, règle d'abandon de l'outil non établie) : ni comptage,
+// ni lecture paginée, ni protection du cache (non pris en charge) ; blocs de
+// 2 048 octets (bit 15 de SupportedOptions, forme non implémentée) : ni
+// comptage ni lecture paginée, protection du cache lue.
+func TestOpeningCountByCard(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
+	c := card("0000:01:00.0", "0")
+	special := arcIo
+	special.SupportedOptions2 |= aacraid.SupportedSpecialCount
+	d := &fakeDev{info: hba, sup: special}
+	r := withDev(d, nil).Collect(context.Background(), c, ref)
+	if d.countCall != 0 || len(d.reads) != 0 || d.cmCall != 0 || d.cpCall != 0 || !slices.Contains(r.Unsupported, CacheProtectionCollector) ||
+		!slices.Contains(r.Unsupported, "volumes") || !r.Collected[TemperatureCollector] || r.CollectErr != nil {
+		t.Fatalf("mode particulier : comptage %d, lectures %v, 708 %d, cache %d, %v / %v", d.countCall, d.reads, d.cmCall, d.cpCall, r.Collected, r.Unsupported)
+	}
+	large := aacraid.AdapterInfo{SupportedOptions: aacraid.SupportedHeatSensor | aacraid.SupportedLargeTransfers | aacraid.SupportedSupplementInfo}
+	d = &fakeDev{info: hba, sup: arcIo, ai: &large}
+	r = withDev(d, nil).Collect(context.Background(), c, ref)
+	if d.countCall != 0 || len(d.reads) != 0 || d.cmCall != 0 || d.cpCall == 0 || !r.Collected[CacheProtectionCollector] || !slices.Contains(r.Unsupported, "volumes") {
+		t.Fatalf("blocs de 2 048 octets : comptage %d, lectures %v, 708 %d, cache %d, %v / %v", d.countCall, d.reads, d.cmCall, d.cpCall, r.Collected, r.Unsupported)
 	}
 }

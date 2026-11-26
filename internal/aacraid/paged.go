@@ -5,6 +5,7 @@ package aacraid
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 )
 
@@ -299,6 +300,15 @@ func checkPagedRequest(b []byte) bool {
 	}
 }
 
+// ErrExchange marque l'échec d'un échange avec la carte que l'outil de
+// référence traite par une exception (2.05 CT_SendReceiveFIB 0x8dda1d,
+// 3.07 0x8afeea) : ioctl en échec, statut non nul ou écho incorrect, sur
+// une ouverture, un morceau ou une clôture. Pendant les lectures de
+// configuration, l'outil abandonne alors l'ouverture de la carte : rien
+// d'autre ne part ; l'exporter arrête de même la carte pour le cycle. Un
+// code refusé ou un contrôle propre à l'exporter n'en est pas un.
+var ErrExchange = errors.New("card exchange failed (ioctl, status or echo)")
+
 // PagedResponse est l'en-tête de réponse d'une étape de transfert.
 // CodeOK : mot 4 de la réponse d'ouverture d'un transfert (CT_OK, Linux
 // aacraid.h).
@@ -327,16 +337,18 @@ func DecodePagedResponse(req, rsp []byte) (PagedResponse, error) {
 		return PagedResponse{}, fmt.Errorf("paged response: %d bytes", len(rsp))
 	}
 	le := binary.LittleEndian
-	if cmd := le.Uint16(rsp[fibCommand:]); cmd != cmdContainerCommand {
-		return PagedResponse{}, fmt.Errorf("paged response: command %d", cmd)
-	}
 	d := rsp[FIBHeaderSize:]
 	q := req[FIBHeaderSize:]
+	// Statut et écho d'abord, comme l'outil : leur échec est un échec
+	// d'échange, qu'un autre champ de l'en-tête ne doit pas masquer.
 	if st := le.Uint32(d[0:]); st != 0 {
-		return PagedResponse{}, fmt.Errorf("paged response: status %d", st)
+		return PagedResponse{}, fmt.Errorf("%w: paged response: status %d", ErrExchange, st)
 	}
 	if le.Uint32(d[4:]) != le.Uint32(q[4:]) {
-		return PagedResponse{}, fmt.Errorf("paged response: subcommand %d, expected %d", le.Uint32(d[4:]), le.Uint32(q[4:]))
+		return PagedResponse{}, fmt.Errorf("%w: paged response: subcommand %d, expected %d", ErrExchange, le.Uint32(d[4:]), le.Uint32(q[4:]))
+	}
+	if cmd := le.Uint16(rsp[fibCommand:]); cmd != cmdContainerCommand {
+		return PagedResponse{}, fmt.Errorf("paged response: command %d", cmd)
 	}
 	// Taille annoncée par la carte : 496 octets, en-tête compris, pour toute
 	// réponse paginée (ouverture, morceau, clôture ; 732 ouvertures et
