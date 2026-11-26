@@ -114,6 +114,11 @@ func DecodeConnectorMap(b []byte) (ConnectorMap, error) {
 	if nc != cmapQualifiedConns {
 		return ConnectorMap{}, fmt.Errorf("708 response: %d connectors, unqualified format", nc)
 	}
+	// Filtre de l'outil de référence : une réponse sans entrée n'est pas
+	// retenue (CDC, section 6.11) ; lecture en échec, relue au cycle suivant.
+	if n == 0 {
+		return ConnectorMap{}, fmt.Errorf("708 response: no entry")
+	}
 	if n > cmapMaxEntries || FIBHeaderSize+cmapEntryBase+n*cmapEntrySize > size {
 		return ConnectorMap{}, fmt.Errorf("708 response: %d entries for %d bytes", n, size)
 	}

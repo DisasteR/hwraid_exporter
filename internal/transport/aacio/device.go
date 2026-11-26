@@ -80,6 +80,9 @@ type Device struct {
 	// closeOther compte les lectures rejetées parce que leur clôture a été
 	// confirmée par 0xc5.
 	closeOther int
+	// containerListSize : seule taille de liste des conteneurs admise pendant
+	// le cycle (0 : aucune ; ExpectContainerList).
+	containerListSize uint32
 }
 
 // CloseUnconfirmed renvoie le nombre de lectures paginées rejetées depuis
@@ -147,6 +150,12 @@ func (d *Device) do(ctx context.Context, req allowlist.Request) error {
 	priv := allowlist.Request{Ioctl: req.Ioctl, Buf: append([]byte(nil), req.Buf...)}
 	if _, err := d.list.Check(priv); err != nil {
 		return err
+	}
+	// Liste des conteneurs : la liste blanche admet toute taille 8 + 4 × n ;
+	// seule celle qui découle du comptage de cette carte part (CDC, section
+	// 6.11, contrôle des formes), quel que soit le chemin d'appel.
+	if size, ok := aacraid.ContainerListOpenSize(priv.Buf); ok && priv.Ioctl == aacraid.IoctlSendFIB && (d.containerListSize == 0 || size != d.containerListSize) {
+		return fmt.Errorf("%w: container list of %d bytes, %d expected from the card's container count (0: none)", allowlist.ErrDenied, size, d.containerListSize)
 	}
 	var err, refused error
 	if queued != nil {
@@ -223,6 +232,30 @@ func (d *Device) Environment(ctx context.Context) (aacraid.Environment, error) {
 		return aacraid.Environment{}, err
 	}
 	return aacraid.DecodeEnvironment(buf)
+}
+
+// ContainerCount lit CT_GET_CONTAINER_COUNT et rend MaxContainers décodé,
+// borné à 1..aacraid.MaxContainersLimit. Soumise à ctx.
+func (d *Device) ContainerCount(ctx context.Context) (aacraid.ContainerCount, error) {
+	if err := admit(ctx); err != nil {
+		return aacraid.ContainerCount{}, err
+	}
+	buf := aacraid.ContainerCountRequest()
+	if err := d.do(ctx, allowlist.Request{Ioctl: aacraid.IoctlSendFIB, Buf: buf}); err != nil {
+		return aacraid.ContainerCount{}, err
+	}
+	return aacraid.DecodeContainerCount(buf)
+}
+
+// ExpectContainerList fixe la taille de la liste des conteneurs (229) que ce
+// périphérique accepte d'envoyer pendant le cycle : celle qui découle d'un
+// comptage décodé d'une réponse de cette carte (lu par ContainerCount, ou
+// gardé par le module sous l'identité de la carte). Sans comptage (valeur
+// nulle), aucune liste des conteneurs n'est envoyée (CDC, section 6.11,
+// contrôle des formes : la taille découle des capacités de la carte
+// destinataire).
+func (d *Device) ExpectContainerList(c aacraid.ContainerCount) {
+	d.containerListSize = c.ListSize()
 }
 
 // ConnectorMap envoie RequestConnectorMap (708) par FSACTL_SEND_LARGE_FIB,

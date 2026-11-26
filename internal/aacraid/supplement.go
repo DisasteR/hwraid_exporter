@@ -121,6 +121,18 @@ const (
 	FeatureJBOD          = 0x08000000
 )
 
+// Bits de FeatureBits qui conditionnent les lectures (CDC, section 6.11) :
+// bit 8, carte des connecteurs (708) ; bit 9, listes et informations des
+// conteneurs et listes des membres (229, 234, 249) ; bit 13, forme
+// d'ouverture à bit de poids fort (forme 2), non encore implémentée. Carte
+// de référence : bits 8 et 9 présents, bit 13 absent (42 réponses 706
+// capturées).
+const (
+	FeatureConnectorMap   = 0x100
+	FeatureContainerReads = 0x200
+	FeaturePagedHighBit   = 0x2000
+)
+
 // SupplementInfo regroupe les champs utilisés de la réponse à
 // RequestSupplementAdapterInfo.
 type SupplementInfo struct {
@@ -140,6 +152,21 @@ func (s SupplementInfo) DirectDisks() bool {
 
 // JBOD indique AAC_FEATURE_JBOD.
 func (s SupplementInfo) JBOD() bool { return s.capability(s.FeatureBits, FeatureJBOD) }
+
+// ContainerReads indique le bit 9 de FeatureBits : sans lui, l'outil de
+// référence ne lit ni les conteneurs ni leurs membres.
+func (s SupplementInfo) ContainerReads() bool {
+	return s.capability(s.FeatureBits, FeatureContainerReads)
+}
+
+// ConnectorMapRead indique le bit 8 de FeatureBits : sans lui, l'outil de
+// référence ne lit pas la carte des connecteurs.
+func (s SupplementInfo) ConnectorMapRead() bool {
+	return s.capability(s.FeatureBits, FeatureConnectorMap)
+}
+
+// PagedHighBit indique le bit 13 de FeatureBits (forme 2 des transferts).
+func (s SupplementInfo) PagedHighBit() bool { return s.capability(s.FeatureBits, FeaturePagedHighBit) }
 
 // ArcIoReads indique si la carte annonce l'interface des lectures de volume,
 // de membres et de disque décrites dans docs/aacraid-interface.md :

@@ -60,6 +60,14 @@ const SupportedNativeHBA = 0x2000000
 // NativeHBA indique l'option HBA natif.
 func (a AdapterInfo) NativeHBA() bool { return a.SupportedOptions&SupportedNativeHBA != 0 }
 
+// SupportedLargeTransfers est le bit 15 de SupportedOptions : transferts
+// paginés en blocs de 2 048 octets (CDC, section 6.11, forme 3), non encore
+// implémentés. Absent sur la carte de référence (28 réponses 703 capturées).
+const SupportedLargeTransfers = 0x8000
+
+// LargeTransfers indique le bit 15 de SupportedOptions.
+func (a AdapterInfo) LargeTransfers() bool { return a.SupportedOptions&SupportedLargeTransfers != 0 }
+
 // DecodeAdapterInfo décode la réponse à RequestAdapterInfo. Size inclut
 // l'en-tête : il doit couvrir SupportedOptions et tenir dans le tampon.
 func DecodeAdapterInfo(b []byte) (AdapterInfo, error) {

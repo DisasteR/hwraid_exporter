@@ -24,7 +24,7 @@ La cible produit inclut tous les contrôleurs RAID matériels de l’hôte, y co
 | Smart Array / `hpsa` et Smart Storage / `smartpqi` | Modules candidats distincts. Documenter les fonctions par pilote et par modèle. | Pilotes Linux, interface CISS. |
 | Famille inconnue ou accès incomplet | Publier identité, pilote si connu et statut de prise en charge. Une permission manquante sur un module connu est une erreur d’accès. | Inventaire Linux de l’hôte. |
 
-Chaque lecture utilisée par un module est qualifiée par comparaison avec l’outil témoin de sa famille sur le matériel de référence, et inscrite dans la matrice de qualification du dépôt.
+Chaque lecture utilisée par un module est qualifiée par comparaison avec l’outil témoin de sa famille (capture sur le matériel de référence, ou forme dérivée selon S4), et inscrite dans la matrice de qualification du dépôt.
 
 **Base légale des informations non documentées.** Lorsqu’aucune source publique ne décrit une information nécessaire (par exemple l’état des membres d’un volume sur les cartes Adaptec), elle est établie par l’analyse de l’outil constructeur, au titre de l’exception d’interopérabilité (directive 2009/24/CE, article 6 ; code de la propriété intellectuelle, article L122-6-1 IV). Ces informations ne sont communiquées que dans la mesure nécessaire à l’interopérabilité de l’exporter : son code et la description de l’interface qu’il utilise ([docs/aacraid-interface.md](../docs/aacraid-interface.md)). L’analyse elle-même (méthode, éléments internes de l’outil) n’est pas publiée. Les textes applicables (Union européenne, France, États-Unis, Royaume-Uni, Allemagne) et les risques sont détaillés dans [docs/base-legale-interoperabilite.md](../docs/base-legale-interoperabilite.md).
 
@@ -104,7 +104,8 @@ Le pilote ne distingue pas une lecture d’une écriture : l’ouverture en lect
 | **S1. Couche de transport unique par pilote.** Un seul paquet Go par pilote importe `syscall` ou `golang.org/x/sys/unix` et émet des ioctl. | Analyse statique des imports en CI : tout import de `syscall`, `golang.org/x/sys/unix` ou usage de `SyscallConn` hors des paquets de transport fait échouer la construction. |
 | **S2. Liste blanche positive et fermée.** Le transport n’émet que des requêtes figurant dans une liste déclarée. Pour `aacraid`, une entrée est la clé (code ioctl, `header.Command`, commande du corps, sous-type, taille de requête min/max). La vérification porte sur les octets finaux sérialisés, juste avant l’appel système. Tout le reste est refusé. N’y figurent jamais : `FSACTL_RESET_IOP`, `FSACTL_SEND_RAW_SRB`, `FSACTL_DELETE_DISK`, `FSACTL_FORCE_DELETE_DISK`, `FSACTL_GET_CONTAINERS`, l’abonnement aux événements, `TakeABreakPt`, ni aucune commande de configuration. | Test à base de propriétés : pour des codes ioctl et des combinaisons de sélecteurs FIB tirés au hasard (dont toutes les valeurs connues des sources), seules les entrées de la liste atteignent le faux appel système. Un second test vérifie que la liste chargée est identique à la liste déclarée. |
 | **S3. Ajout tracé.** Toute entrée ajoutée à la liste blanche référence sa ligne de la matrice de qualification. | Revue obligatoire de toute modification du fichier de liste blanche. |
-| **S4. Première émission sans risque nouveau.** Une commande qui n’est pas décrite par une source publique n’entre dans la liste blanche que si le firmware la reçoit déjà de l’outil témoin lors d’une opération de consultation (`GETCONFIG`, `GETSTATUS`), sur le même modèle et le même firmware. La partie significative de la requête doit être identique à celle du témoin : commande, sous-commande, tailles, paramètres et structure de données. Les octets situés hors de cette structure sont mis à zéro, à deux conditions : la structure est délimitée par les captures, et ces octets y sont démontrés résiduels, c’est-à-dire qu’ils varient d’un envoi à l’autre du témoin sans effet sur la réponse. Lorsque le témoin envoie déjà la commande avec ces octets à zéro, c’est cette variante qui est reproduite à l’identique. | La matrice de qualification conserve, pour chaque entrée, les captures du témoin, la délimitation de la partie significative et, le cas échéant, la preuve du caractère résiduel des autres octets. Un test compare la requête construite par l’exporter à la capture : identité sur la partie significative, zéros ailleurs. Un mode `--dry-run`, qui journaliserait les requêtes sans les émettre, est prévu (section 7.7) ; à ce jour, la séquence est vérifiée par les tests sur faux pilote. |
+| **S4. Première émission sans risque nouveau.** Une commande qui n’est pas décrite par une source publique n’entre dans la liste blanche que si l’une de deux preuves l’établit. (a) **Capture** : le firmware la reçoit déjà de l’outil témoin lors d’une opération de consultation (`GETCONFIG`, `GETSTATUS`), sur le même modèle (quatre identifiants PCI). (b) **Forme dérivée** : elle découle d’une forme de base prouvée par (a), par une règle de construction de l’outil (versions 2.05 et 3.07) établie par l’analyse de l’outil et confirmée en observant son comportement ; c’est le cas des formes que la carte de référence ne déclenche pas (section 6.11 : capacités différentes, codes de réponse atypiques). La version de firmware des captures est consignée. Lire une autre version du même modèle sans nouvelle capture est une décision de risque, acceptée : les preuves portent sur les requêtes que construit l’outil témoin, non sur les réponses d’un autre firmware ; l’exporter construit ses requêtes à partir des capacités annoncées par la carte, comme l’outil, qui ne teste pas la version de firmware dans ses chemins de lecture (section 6.11). La documentation distingue le modèle reconnu, les versions de firmware effectivement testées et l’autorisation de collecter. La partie significative de la requête doit être identique à celle du témoin : commande, sous-commande, tailles, paramètres et structure de données. Les octets situés hors de cette structure sont mis à zéro, à deux conditions : la structure est délimitée par les captures, et ces octets y sont démontrés résiduels, c’est-à-dire qu’ils varient d’un envoi à l’autre du témoin sans effet sur la réponse. Lorsque le témoin envoie déjà la commande avec ces octets à zéro, c’est cette variante qui est reproduite à l’identique. | La matrice de qualification conserve, pour chaque entrée, les captures du témoin (preuve a) ou la règle de construction, sa forme de base et sa confirmation (preuve b), la délimitation de la partie significative et, le cas échéant, la preuve du caractère résiduel des autres octets. Un test compare la requête construite par l’exporter à la capture (preuve a) ou à la requête de référence que donne la règle confirmée (preuve b) : identité sur la partie significative, zéros ailleurs, avec la justification des octets mis à zéro. La matrice indique pour chaque forme la portée de sa confirmation (requête entière, en-tête seul, situation observée). Un mode `--dry-run`, qui journaliserait les requêtes sans les émettre, est prévu (section 7.7) ; à ce jour, la séquence est vérifiée par les tests sur faux pilote. |
+| **S4 bis. Modèle non qualifié (option `-allow-unqualified`, désactivée par défaut).** Sur une carte dont le modèle n’est pas qualifié et que l’opérateur a désignée (section 6.12), l’exigence d’une preuve sur le même modèle est levée : l’exporter y envoie les formes de la section 6.11 selon sa règle de conduite (suite de commandes de l’outil, sans les écarts E1 et E2, avec les écarts E3 et E4), prouvées selon S4 (capture ou forme dérivée) sur le modèle de référence et décrites dans `docs/aacraid-interface.md` [interopérabilité], avec le même critère de recette que S4 (partie significative, octets mis à zéro et leur justification). Le risque restant, accepté par l’opérateur, est qu’un modèle non testé réponde autrement que l’outil ne l’attend. | Tests de la section 6.11 (une forme par combinaison de capacités, non-régression du modèle qualifié) ; une forme dont la preuve S4 est partielle (statut de preuve de la section 6.11) reste refusée, option comprise ; test qu’une carte d’un modèle non qualifié et non désignée ne reçoit rien au-delà de la 706. La documentation publique signale chaque forme jamais observée sur matériel. |
 | **S5. Ouverture minimale.** `aacraid` et `megaraid_sas` : nœud ouvert en `O_RDONLY\|O_NOFOLLOW\|O_CLOEXEC`. `hpsa` et `smartpqi` : le noyau impose `O_RDWR` sur `sg` pour ces ioctl, la sécurité repose alors entièrement sur S2. sysfs est lu en lecture seule. | Test de démarrage avec `/sys` en lecture seule et nœud transmis avec la permission Docker `r` pour `aacraid`. Test qui échoue si le transport `hpsa`/`smartpqi` ouvre en `O_RDONLY` (refus `EPERM` du noyau). |
 | **S6. Préparation puis abandon des privilèges.** Seule la phase de préparation, exécutée au démarrage avant toute lecture d’entrée externe et avant l’ouverture du port HTTP, crée ou supprime des nœuds, et uniquement dans `/dev/hwraid_exporter/` (section 6.2). Elle se termine par un abandon irréversible des privilèges : identité non root, capacités réduites à celles des pilotes présents dans tous les ensembles (effectif, permis, hérité, ambiant, limite), `no_new_privs`. Le processus vérifie le résultat dans `/proc/self/status` et s’arrête immédiatement si un écart subsiste. Le binaire n’est jamais installé avec un bit setuid ni des capacités de fichier. | Cas de recette « Préparation des nœuds », « Abandon des privilèges » et « Abandon en échec ». |
 | **S7. Privilèges minimaux.** En conteneur : `cap_drop: ALL` puis seulement les capacités de la phase de préparation (section 6.5), `no-new-privileges`, racine en lecture seule, accès aux périphériques limité par `device_cgroup_rules` aux nœuds caractère en lecture. En natif : une unité unique démarrée en root avec `CapabilityBoundingSet` limité au même ensemble, `NoNewPrivileges=yes`, `ProtectSystem=strict`, `DevicePolicy=closed` avec `DeviceAllow=char-aac rm` (création et lecture) (et équivalents par pilote), `SystemCallFilter`. Ni `userns-remap` ni Docker rootless : les capacités y sont sans effet sur les contrôles `capable()` des pilotes. `privileged: true` n’est qu’un repli documenté (section 6.5). | Le fragment Compose et l’unité systemd fournis respectent ces règles. Avec `userns-remap`, l’exporter publie une erreur d’accès explicite (cause `EPERM`). |
@@ -264,7 +265,7 @@ Le gestionnaire HTTP charge une seule référence au snapshot publié pour toute
 
 **Démarrage et fraîcheur.** Publier avant l’ouverture HTTP une vue initiale avec `hwraid_snapshot_ready 0` et sans valeurs matérielles. Le premier résultat de découverte publié porte `hwraid_snapshot_ready 1`, y compris en cas d’échec ; `hwraid_discovery_success` indique le succès ou l’échec. Pour chaque couple contrôleur/fonction, publier la date du dernier succès dès qu’un succès existe. Une lecture en échec publie `hwraid_collection_success 0` et retire les valeurs métier de cette fonction. Dimensionner le seuil de péremption par rapport à l’intervalle effectif de chaque contrôleur et à la durée de collecte tolérée.
 
-**Arrêt.** Un appel en cours ne doit pas être interrompu : sous `aacraid`, une commande de gestion interrompue perd un bloc de commande du pilote jusqu’au redémarrage (docs/aacraid-defaut-pilote.md). À l’arrêt, aucun nouveau cycle ne démarre et le cycle en cours n’envoie plus de nouvelle commande, la seule exception étant la séquence qui clôt un transfert paginé déjà ouvert (premier morceau, puis clôture) ; seules les commandes déjà envoyées sont attendues, sans limite interne, avec un avertissement toutes les 10 s ; pendant cette attente, `/metrics` ne sert plus de valeurs matérielles (`hwraid_snapshot_ready 0`). Le serveur HTTP est fermé ensuite. Le seul délai est celui du superviseur (`TimeoutStopSec`, `stop_grace_period`, 30 s dans les exemples), réglé par l’exploitant : au-delà, il tue le processus, et la commande en cours est perdue pour la réserve du pilote.
+**Arrêt.** Un appel en cours ne doit pas être interrompu : le pilote `aacraid` ne rend pas le bloc de commande d’un ioctl interrompu par un signal [public] ; sur la carte de référence, ce bloc est resté perdu jusqu’au redémarrage (docs/aacraid-defaut-pilote.md, qui qualifie aussi le risque propre aux grandes commandes). À l’arrêt, aucun nouveau cycle ne démarre et le cycle en cours n’envoie plus de nouvelle commande, la seule exception étant la séquence qui termine un transfert paginé déjà ouvert (suite définie par phase dans la section 6.11, « Annulation » ; aujourd’hui, parcours nominal seul : premier morceau, puis clôture) ; hors cette séquence, aucune commande n’est envoyée ; les commandes en cours sont attendues sans limite interne, avec un avertissement toutes les 10 s ; pendant cette attente, `/metrics` ne sert plus de valeurs matérielles (`hwraid_snapshot_ready 0`). Le serveur HTTP est fermé ensuite. Le seul délai est celui du superviseur (`TimeoutStopSec`, `stop_grace_period`, 30 s dans les exemples), réglé par l’exploitant : au-delà, il tue le processus : l’ioctl en cours ne rend pas son bloc de commande, qui est resté perdu sur la carte de référence.
 
 ### 6.5 Accès Docker sur Debian / OpenMediaVault
 
@@ -367,6 +368,226 @@ Collect(carte, nœuds préparés, échéance) → instantané et résultat par f
 Les familles communes de métriques utilisent le préfixe `hwraid_`. La protection du cache couvre ZMM, batterie ou autre module identifié. Exposer son type dans l’inventaire et publier l’état normalisé uniquement si la correspondance est établie. Une carte sans module de collecte donne `hwraid_controller_backend_supported=0` avec son identité. Une carte prise en charge mais illisible conserve `backend_supported=1` et signale une collecte en échec. Les fonctions encore inconnues restent indéterminées. Utiliser un module de simulation pour tester cette distinction avant la disponibilité d’un deuxième matériel.
 
 Les lectures directes de SMART par disque, les fonctions d’administration RAID et l’embarquement d’un outil constructeur sont hors périmètre.
+
+### 6.11 Généralisation des échanges `aacraid`
+
+**État : conception, non implémentée.** Aujourd’hui, l’exporter reproduit les requêtes de l’outil témoin telles qu’il les envoie à la carte de référence : les valeurs qui dépendent de la carte y sont figées (taille de la liste des conteneurs, taille des blocs de commande). Cette section les fait calculer, comme l’outil, à partir des capacités annoncées par la carte. Sur le modèle qualifié et les réponses nominales, les données décodées, les niveaux RAID, les états et les métriques ne changent pas. Sont ajoutés : la validation des nouvelles phases de transfert, le filtre de la 708, le décodage de la batterie classique et la valeur d’état `maintenance`.
+
+#### Règle de conduite
+
+**La carte de référence est maîtrisée ; ailleurs, l’exporter suit l’outil.** Dans les décisions de lecture des volumes et des disques examinées (versions 2.05 et 3.07), l’outil ne fait dépendre ses requêtes ni du modèle, ni des identifiants PCI, ni de la version de firmware : il les construit à partir des capacités de la carte (réponses 703 et 706, `MaxContainers`) et de ses réponses (section 7 de `docs/aacraid-interface.md`). L’exporter fait de même, avec trois règles :
+
+1. **Jamais plus que l’outil.** Dans une situation donnée, l’exporter n’envoie aucune commande ni transition que l’outil n’enverrait pas, sauf les écarts du tableau ci-dessous.
+2. **Moins, quand une réponse est rejetée.** Un contrôle de l’exporter (statut, écho, identifiant du transfert, numéro de morceau, tailles, bornes, prérequis) peut arrêter la suite : la lecture est en échec, aucune commande de ce transfert ne suit, pas même une clôture (voir « Abandon sans clôture »), et les lectures qui en dépendent ne sont pas envoyées au cycle courant.
+3. **Données plus strictes.** Les données ne sont utilisées que selon « Données retenues » : un code d’ouverture autre que `0xda` ne change pas la suite de commandes (ligne 6), il rejette les données.
+
+Les mesures qui ne concernent pas la carte (nœuds dédiés, abandon des privilèges, sérialisation, une lecture en vol par carte) valent pour toutes les cartes.
+
+| Écart | Effet sur les envois | Portée | Statut |
+|---|---|---|---|
+| E1. Arrêt anticipé | clôture dès que les données suffisent, avant le dernier morceau | couple validé seulement | validé sur 5.3-0[19204] |
+| E2. Relecture après une clôture `0xc5` | une nouvelle ouverture, au plus une fois par lecture, que l’outil ne fait pas | couple validé seulement | comportement actuel sur la carte de référence |
+| E3. Borne de taille | total supérieur à 4 100 octets hors code `0xe2` : abandon (aucune commande) au lieu de la lecture des morceaux | toutes les cartes | comportement actuel ; une clôture immédiate ne remplacera l’abandon que lorsque sa forme sera établie (requête de clôture construite sur un total hors borne : aucune preuve) |
+| E4. Annulation (échéance du cycle, arrêt du service) | suite définie par phase (tableau des événements) | toutes les cartes | l’outil n’a pas d’échéance |
+
+Aucune option ne permet d’appliquer E1 ou E2 à une autre carte : pour en bénéficier, on qualifie le couple modèle–firmware (capture, comparaison à l’outil, ajout à la liste).
+
+**Non-régression.** Sur le modèle qualifié et sur les réponses nominales capturées, les capacités redonnent exactement les requêtes actuelles, qu’un test compare (séquence et octets) au transport actuel, avec un seul ajout attendu : `CT_GET_CONTAINER_COUNT`, publique (pilote Linux), que l’outil témoin envoie à la carte de référence (captures) ; elle relève de S4 sans dérogation et sa réponse est gardée comme celle de la 706. La séquence de référence est celle du transport actuel, enregistrée par un test sur faux pilote avant toute modification (sur deux cycles, avec et sans réponses gardées) ; `CT_GET_CONTAINER_COUNT` y est insérée avant la 229. Les nouvelles branches sont testées séparément.
+
+#### Lectures et conditions d’envoi
+
+Verrou commun : **aucune lecture au-delà de la 706** n’est envoyée si le modèle n’est pas qualifié et que la carte n’est pas désignée (section 6.12), quelles que soient les capacités annoncées ; un test sur faux pilote vérifie qu’une 706 annonçant les lectures ARCIO ne suffit pas à franchir ce verrou. Au-delà, chaque commande suit la condition de l’outil (versions 2.05 et 3.07) ci-dessous, complétée par les prérequis propres à l’exporter (plus bas) ; l’échec d’une lecture interdit au cycle courant celles qui en dépendent.
+
+Ordre observé de l’outil, en résumé (avec des répétitions) : 703 et 706 à chaque ouverture de la carte, 803, `CT_GET_CONTAINER_COUNT`, 708, 247 puis les 248, de nouveau `CT_GET_CONTAINER_COUNT`, 229 puis les 234 puis les 249, enfin la protection du cache. L’exporter garde son ordre actuel (706 avant 703) et y insère `CT_GET_CONTAINER_COUNT` avant la 229 ; l’ordre de l’outil reste une référence, non une obligation, tant qu’aucune dépendance de la carte n’est établie.
+
+| Lecture | Condition d’envoi | Forme |
+|---|---|---|
+| Vérification du nœud (`GET_HBA_INFO`) | aucune | actuelle, avant toute commande firmware |
+| 706 | nœud vérifié | actuelle (lue ou réutilisée) |
+| 703 `RequestAdapterInfo` (publique) | 706 valide | actuelle |
+| `CT_GET_CONTAINER_COUNT` (publique, envoyée aussi par le pilote Linux au chargement) | lectures ARCIO annoncées | `VM_ContainerConfig`, sous-commande 4, avec les variantes des formes 2 et 3 ; mot 2 de la réponse : `MaxContainers` |
+| 229, 234, 249 (volumes et membres) | 706 avec `Version` > 1 et `SupportedOptions2` bit `0x08`, `FeatureBits` bit 9 (`0x200`) et `MaxContainers` ≥ 1 | voir « Formes » |
+| 247, 248 (disques) | 706 avec `Version` > 1 et `SupportedOptions2` bit `0x08`, sans condition supplémentaire ; chaîne séparée (247 puis 248), que l’échec du comptage, de la 229, de la 234 ou de la 249 n’interrompt pas, et inversement (implémenté ; succès et échecs attribués par collecteur) | voir « Formes » |
+| 803 (température) | `SupportedOptions` (703) bit `AAC_SUPPORTED_HEAT_SENSOR` | actuelle (bloc de 512 octets quelle que soit la carte) |
+| 708 (carte des connecteurs) | `FeatureBits` (706) bit 8 (`0x100`), lu seulement si `Version` > 1 (règle commune à tout usage de `FeatureBits`) | actuelle (bloc de 2 048 octets quelle que soit la carte) ; filtre de l’outil à ajouter : réponse retenue si mot 0 = 1 et nombres d’entrées et de connecteurs non nuls (le décodeur accepte aujourd’hui zéro entrée) ; le décodeur ne publie des emplacements que pour deux connecteurs : sur une carte qui en annonce un autre nombre, la lecture est en échec (emplacement des disques non publié) jusqu’à qualification de ce format |
+| Protection du cache (`0x30000`, puis `0x700000`) | `0x700000` si la réponse `0x30000` porte le bit `0x2000` (module à mémoire flash) ; sans ce bit, batterie décodée depuis la seule réponse `0x30000` (voir ci-dessous) | actuelle (bloc de 512 octets quelle que soit la carte) |
+
+Sans `FeatureBits` bit 9, l’outil ne lit ni la liste des conteneurs, ni leurs informations, ni leurs membres, mais lit la liste et les informations des disques : les collecteurs des volumes sont non pris en charge, ceux des disques restent lus.
+
+**Prérequis propres à l’exporter**, en plus des conditions de l’outil (règle 2 : moins de commandes, jamais d’autres) :
+- 703 en échec : ni `CT_GET_CONTAINER_COUNT` ni lecture paginée, le format des blocs n’étant pas déterminé (implémenté ; avant, les lectures paginées partaient malgré l’échec de la 703) ;
+- `CT_GET_CONTAINER_COUNT` seulement si `FeatureBits` porte le bit 9 : elle ne sert qu’à dimensionner la 229, que l’exporter n’envoie pas sans ce bit (l’outil l’envoie dès que les lectures ARCIO sont annoncées) ;
+- 708 : envoyée seulement après un inventaire des disques réussi, et gardée tant que l’ensemble des disques ne change pas (comportement actuel) ; sans lectures ARCIO, non envoyée ; les conditions supplémentaires de l’outil (état d’initialisation, absence de résultat gardé) n’ont pas d’équivalent ;
+- protection du cache : sur un autre couple, non envoyée tant que le point d’analyse 3 n’est pas résolu (collecteur non pris en charge) ; après un échec, l’outil renvoie une fois la même requête, l’exporter ne la renvoie pas.
+
+**Dépendances des résultats**, chaînes des volumes et des disques séparées :
+
+| Échec | Lectures non envoyées au cycle | Collecteurs en échec | Collecteurs maintenus |
+|---|---|---|---|
+| `CT_GET_CONTAINER_COUNT`, ou `MaxContainers` hors bornes | 229, 234, 249 | volumes, membres | chaîne des disques (247, 248, 708) |
+| 229, une 234 ou une 249 | la suite de la chaîne des volumes | volumes, membres | chaîne des disques |
+| 247 | 248, 708, et les 249 restantes (inutiles sans états des volumes) | inventaire, emplacement ; volumes et membres (les états utilisent la présence des disques) | aucun |
+| une 248 | les 248 suivantes (l’outil poursuit pour un disque répondu sous un code non admis : moins de commandes, règle 2) | inventaire | états des volumes, calculés comme aujourd’hui : les 248 déjà lues comptent comme preuves de panne |
+
+La publication des états des disques sans données de volumes reste à spécifier (liste ci-dessous). Ordre nominal actuel, conservé : 229, les 234, 247, les 249, puis les 248.
+
+#### Formes qui dépendent de la carte
+
+[interopérabilité] Établies par l’analyse de l’outil et confirmées en observant son comportement (versions 2.05 et 3.07, mêmes requêtes dans les deux versions) :
+
+1. **Liste des conteneurs (229) : 8 + 4 × `MaxContainers` octets.** Sur la carte de référence, `MaxContainers` = 256, d’où les 1 032 octets actuels. L’exporter vérifie statut, écho et taille de la réponse, borne `MaxContainers` à 1..1023 avant le calcul (4 100 octets au plus), garde la réponse comme celle de la 706 (rattachée à l’identité de la carte) et refuse hors bornes (lecture en échec ; l’outil n’émet aucune liste pour 0 : écart prudent). Le nombre d’entrées reçues reste inférieur ou égal à `MaxContainers`.
+2. **`FeatureBits` (706) bit 13 (`0x2000`)** : bit de poids fort (`0x80000000`) du mot 7 (taille demandée) de la requête d’ouverture et de celle de `CT_GET_CONTAINER_COUNT` ; sur le parcours `0xc9`, les requêtes de morceau et de clôture reprennent le total de la réponse, sans ce bit (le parcours `0xc8` suit la forme 4). Sens non établi.
+3. **`SupportedOptions` (703) bit 15 (`0x8000`) : blocs de 2 048 octets pour les transferts paginés** : `FSACTL_SEND_LARGE_FIB`, `Size` = 2 016, `SenderSize` = 2 048, pas de 1 984 octets (au lieu de `FSACTL_SENDFIB`, 480, 512 et 432). La règle vaut pour toutes les requêtes `VM_ContainerConfig` : ouvertures, morceaux, clôtures et `CT_GET_CONTAINER_COUNT` (observé) ; les autres commandes (703, 706, 708, 803, protection du cache) gardent leur forme actuelle. Confirmation limitée à l’ioctl et aux tailles d’en-tête ; transfert complet et pas des morceaux établis par l’analyse seule.
+4. **Ouverture portant déjà des données (marque `0xc8`)** : l’outil copie les données reçues avec l’ouverture (total au mot 3, pas égal au minimum du mot 6 et de `SenderSize` − 64), demande les morceaux suivants à partir du numéro 1 avec la taille demandée `| 0x80000000` au mot 7, et ne clôture pas.
+
+#### Déroulement d’un transfert
+
+Après une réponse d’ouverture au statut nul et à l’écho correct. Les lignes sont évaluées dans l’ordre ; la première qui s’applique décide. « Comme l’outil » signifie la même suite de commandes. Toute branche sans données retenues met la lecture en échec.
+
+| # | Réponse d’ouverture | Outil | Exporter, couple validé | Exporter, autre couple | Preuve (S4) |
+|---|---|---|---|---|---|
+| 1 | identifiant `0xffffffff`, ou marque autre que `0xc8` et `0xc9` (dont `0xc6`) | aucune commande | comme l’outil | comme l’outil | analyse |
+| 2 | `0xc8` ou `0xc9`, code `0xe2` au mot 4, quel que soit le total | clôture immédiate | comme l’outil ; aucune donnée | comme l’outil ; aucune donnée | (b) après `0xc9` (requête de clôture, 229, réponse non observée) ; à confirmer après `0xc8` |
+| 3 | total supérieur à 4 100 octets (E3) | lecture des morceaux | abandon | abandon | sans objet (aucune commande) |
+| 4 | `0xc9`, total nul | clôture sans morceau | comme l’outil ; aucune donnée | comme l’outil ; aucune donnée | à confirmer |
+| 5 | `0xc9`, code `0xda` (nominal) | tous les morceaux, puis clôture | morceaux nécessaires, puis clôture (E1) | tous les morceaux, puis clôture | (a) capture |
+| 6 | `0xc9`, autre code | tous les morceaux, puis clôture ; code jugé ensuite par chaque lecture | comme l’outil | comme l’outil | (b) code `0xdb`, 248 |
+| 7 | `0xc8` | forme 4, sans clôture | comme l’outil | comme l’outil | (b) morceaux 1 à 9, 247, pas de 432 octets |
+
+Aujourd’hui, seules la ligne 5 et, pour la marque, la ligne 1 sont implémentées : une ouverture `0xc9` nominale portant l’identifiant `0xffffffff` n’est pas encore rejetée, et la liste blanche n’écarte pas cet identifiant dans une requête de morceau (à corriger avec le point 19, recette comprise) ; dans les cas des lignes 2, 3, 4, 6 et 7, l’exporter n’envoie aucune commande (lecture en échec ; point 19 de la section 7.7). La cible est le tableau ci-dessus.
+
+Événements en cours de transfert :
+
+| Événement | Outil | Exporter, couple validé | Exporter, autre couple |
+|---|---|---|---|
+| Statut non nul ou mauvais écho sur un morceau (parcours `0xc9`) | abandon sans clôture | abandon sans clôture | abandon sans clôture |
+| Erreur que l’outil ne contrôle pas ou dont son traitement n’est pas établi : retour d’ioctl en échec, `EINTR`, identifiant du transfert, numéro de morceau, taille ou marque incohérents | non établi | abandon sans clôture (règle 2) | abandon sans clôture (règle 2) |
+| Réponse de clôture | vérifiée | `0xc6` : transfert clos ; `0xc5` : lecture rejetée ; toute autre réponse, ou réponse invalide : lecture en échec | idem |
+| Clôture `0xc5` | lecture rejetée, non refaite | relecture (E2) seulement sur la ligne 5, après des morceaux conformes, si le contexte admet encore une commande ; après une clôture immédiate ou une annulation : lecture en échec, sans relecture | lecture en échec, sans relecture |
+
+Annulation (E4), selon la dernière phase envoyée ; après une annulation, aucune nouvelle ouverture ni relecture n’est envoyée et les données du transfert sont écartées :
+
+| Phase | Couple validé | Autre couple |
+|---|---|---|
+| ouverture non encore envoyée | aucune commande | aucune commande |
+| ligne 5, aucun morceau envoyé | morceau 0, puis clôture | tous les morceaux, puis clôture |
+| ligne 5, morceau n reçu | clôture | morceaux restants, puis clôture |
+| lignes 2 et 4 | la clôture prévue | la clôture prévue |
+| ligne 6 | suite de l’outil (morceaux restants, puis clôture) | idem |
+| ligne 7 | morceaux restants, sans clôture | idem |
+| ligne 3, erreur de morceau | aucune commande | aucune commande |
+| clôture déjà envoyée | attente de sa réponse, aucune commande ensuite | idem |
+
+Sur le parcours `0xc9`, le nombre de commandes envoyées après l’annulation est borné par la borne de taille (au plus 10 morceaux de 432 octets, ou 3 de 1 984 octets, et une clôture). Sur le parcours `0xc8`, le pas vient du mot 6 de la réponse : la borne dépend du pas minimal admis, à fixer avant d’activer ce parcours (un pas inférieur est rejeté, règle 2). Toute limite de temps porte sur ces **nouveaux envois** : une commande déjà envoyée n’est jamais interrompue et peut durer au-delà (section 6.4).
+
+**Abandon sans clôture.** Vérifié dans le pilote Linux [public] : le pilote ne garde aucun état de transfert paginé ; chaque commande alloue un bloc de commande et le libère à son retour (sauf interruption par un signal, défaut documenté dans `docs/aacraid-defaut-pilote.md`, indépendant de ce choix). Un transfert abandonné ne reste donc ouvert que dans le firmware ; l’effet sur la carte n’est pas établi, et c’est ce que fait l’outil sur une erreur de statut ou d’écho. L’effet d’une clôture sans transfert correspondant (transfert inexistant, déjà clos ou appartenant à un autre outil) n’est pas établi non plus : l’exporter n’en émet jamais. Changement par rapport au transport actuel : sur une erreur de morceau, celui-ci tente aujourd’hui une clôture, comportement jamais validé. À revérifier sur la version du pilote ciblée au moment de l’implémentation.
+
+**Données retenues.** Une clôture confirmée par `0xc6` confirme la fin du transfert, non les données : l’exporter ne les utilise que si le code d’ouverture est `0xda` et que les morceaux et le décodage sont valides.
+
+**Codes d’ouverture par lecture.** Sur un transfert, l’outil :
+- ne vérifie pas le code d’ouverture pour la liste et les informations des conteneurs (229, 234) : il utilise les données quel que soit le code, sauf `0xe2` ;
+- exige `0xda` pour la liste et les informations des disques (247, 248) et pour la liste des membres (249) ;
+- sur son chemin de collecte, n’accepte pas le code `0x11a` pour un disque : un disque répondu ainsi est ignoré (l’outil ne l’accepte que pour la relecture d’un disque isolé).
+
+L’exporter exige `0xda` pour toutes ces lectures : identique à l’outil pour 247, 248 et 249, plus strict pour 229 et 234 (règle 3 : lecture en échec plutôt que des données sous un code inconnu).
+
+#### Statut de preuve des parcours (S4)
+
+- Nominal `0xc9` / `0xda` : capture (preuve a).
+- Formes dérivées confirmées (preuve b), dans la portée observée : clôture immédiate sur `0xe2` après une ouverture `0xc9` (requête de clôture, 229) ; lecture complète puis clôture sur un code atypique (parcours complet, 248) ; parcours `0xc8` (morceaux 1 à 9 sans clôture, 247, pas de 432 octets) ; bit de poids fort du bit 13 (requêtes d’ouverture et de comptage) ; blocs de 2 048 octets (ioctl et tailles d’en-tête seulement).
+- Restent à confirmer avant activation : clôture immédiate sur `0xe2` après une ouverture `0xc8`, clôture sur total nul, transfert complet en blocs de 2 048 octets.
+
+La matrice reprend cette portée par commande et par phase. Une forme n’est activée que par une entrée de la matrice qui fixe la commande, les capacités, le cas d’ouverture (ligne du tableau), la phase, la requête sérialisée, ses octets significatifs et les contrôles qui autorisent la transition ; une transition sans entrée active, après une ouverture déjà envoyée, est traitée comme un rejet (règle 2 : abandon, lecture en échec). Les tests vérifient les ioctl effectivement émis, y compris leur absence pour les combinaisons refusées, sur le modèle qualifié comme ailleurs. Les preuves (b) établissent les requêtes de l’outil face à des réponses construites pour déclencher chaque parcours : elles ne disent pas comment une carte réelle répond.
+
+#### maxCache
+
+Si `SupportedOptions2` porte le bit 17 (`0x20000`), l’outil lit après la 229 la liste des conteneurs maxCache (sous-commande `0xfe`, paramètre 13, taille demandée 512 octets ; réponse : identifiants terminés par zéro), puis l’information de chacun sur 432 octets, et l’ajoute aux volumes si cette lecture rend le code `0xda` et que l’octet 90 porte le bit `0x40`. Forme de `0xfe` confirmée ; lectures courtes de la 234 non confirmées : la découverte des conteneurs maxCache est hors de ce lot (point ouvert n° 4). Que la 229 contienne ou non ces conteneurs n’est pas établi.
+
+#### Protection du cache par batterie
+
+Réponse `0x30000` sans le bit `0x2000`. Décodage de l’outil, établi et confirmé en l’observant (versions 2.05 et 3.07). Positions relatives aux données de la réponse : mot d’indicateurs de 16 bits aux octets 42-43, qui dit quels champs sont présents ; octets d’état 20 (présence, indicateur `0x1`), 21 (batterie utilisable, `0x2`) et 22 (mode maintenance, `0x4`). Valeurs observées : 0 et 1 (indicateurs `0x17`).
+
+| Octet 20 | Octet 21 | Octet 22 | `hwraid_cache_protection_present` | État publié |
+|---|---|---|---|---|
+| 0 | — | — | 0 | aucun (module non installé) |
+| 1 | 0 | — | 1 | `failed` |
+| 1 | 1 | 0 | 1 | `optimal` |
+| 1 | 1 | 1 | 1 | `maintenance` (avertissement) |
+
+- Un octet n’est lu que si son indicateur est présent ; « — » : octet non lu. Indicateur requis absent, ou valeur autre que 0 et 1 : état `unknown` ; la présence est publiée si l’octet 20 a été lu et vaut 0 ou 1, absente sinon. Dans tous ces cas, la lecture est un succès (`hwraid_collection_success` 1). Une réponse invalide (tronquée, statut ou écho faux) est une lecture en échec, sans état publié (« Résultat publié »). La recette couvre ces cas et les quatre cas observés.
+- `maintenance` est une nouvelle valeur de `hwraid_cache_protection_state`, qui reprend le terme de l’outil. Ce n’est pas un état sain. À titre d’information, hors contrat : la documentation du constructeur pour ses générations précédentes décrit ce mode comme un cycle de reconditionnement de la batterie, de 8 à 10 heures, à autonomie réduite et cache en écriture directe ; l’état effectif du cache reste publié par volume (`hwraid_volume_write_cache_enabled`).
+- Alertes : `HwraidCacheProtectionMaintenance` (avertissement, après 12 heures) ; `maintenance` s’ajoute aux états de `HwraidVolumeWriteCacheUnprotected` (cache d’écriture actif alors que la protection n’est pas garantie).
+- Type publié : `battery`, `vendor_type` `bbu`.
+- Les autres états affichés par l’outil (en charge, en décharge, charge désactivée) dépendent d’indicateurs que ce chemin ne fournit pas.
+- La commande `0xa0000`, que l’outil envoie si l’indicateur `0x8` est présent, pour un champ complémentaire inutile à l’état, n’est pas envoyée par l’exporter.
+
+#### Contrôle des formes (S2, S4)
+
+- Seules partent les formes qui découlent des capacités de la carte destinataire, par phase du transfert (ouverture, morceau, clôture). Le contrôle est réparti ainsi (implémenté) :
+  - le module est garant de la provenance : il lit la 706, la 703 et le comptage sur la carte, les garde sous l’identité complète de la carte (comme la 706), et n’émet le comptage et les lectures paginées que si ces capacités l’autorisent (bits 13 et 15 absents, bit 9 pour le comptage et les lectures de volumes) ;
+  - le transport contrôle la forme au point d’envoi commun, y compris sur son API brute : la 229 n’y part qu’à la taille déduite d’un comptage décodé d’une réponse de la carte (type opaque, valeur nulle refusée), lié au descripteur ouvert sur cette carte ;
+  - le transport ne relit pas lui-même les capacités : cela ajouterait des commandes à chaque cycle, contre la règle de conduite. Ce contrôle détecte une erreur de programmation de l’exporter ; module et transport sont dans le même processus, sans frontière de confiance entre eux.
+- Les morceaux et la clôture restent rattachés à l’ouverture validée sur le même nœud (point 4 de la section 7.7). Les requêtes de morceau peuvent reprendre des mots de la réponse précédente (observé : un morceau reprend le code `0xdb`, le suivant `0xda`).
+- Pour chaque phase, clôture immédiate comprise, la provenance de chaque champ (réponse précédente ou valeur construite) et ses bornes sont spécifiées.
+- Un test refuse un identifiant sentinelle, un morceau hors séquence, un mot de réponse incohérent et une continuation sur un autre nœud.
+- Toute nouvelle commande ou forme sérialisée (dont `CT_GET_CONTAINER_COUNT`, et les nouvelles formes d’ouverture, de morceau et de clôture) reçoit une justification S8 (rejeu par le noyau) avant activation ; chaque forme ajoutée reçoit sa référence S3, même derrière un ioctl déjà inscrit.
+- Le modèle qualifié ne reçoit que les formes qui découlent de ses capacités (les formes actuelles) et celles du déroulement des transferts ci-dessus (point 19).
+
+**Résultat publié.** Lecture tentée en échec (réponse invalide, `MaxContainers` hors bornes, transfert interrompu, code autre que `0xda`) : `hwraid_collection_success 0` pour les collecteurs qui en dépendent, aucun état publié. Capacité exigée absente : `hwraid_collector_supported 0`.
+
+**Limite, à documenter.** Les formes 2 à 4 et la poursuite d’un transfert sur un code atypique ne sont jamais déclenchées par la carte de référence (bits 8 et 9 de `FeatureBits` présents, bit 13 de `FeatureBits` et bit 15 de `SupportedOptions` absents, ouvertures `0xc9` et `0xda`) : elles seront vérifiées par des tests sur données construites uniquement. Ces tests prouvent que l’exporter envoie ce que l’outil envoie dans chaque situation reproduite ; ils ne prouvent pas qu’une carte réelle réponde comme ces situations le supposent. Les contrôles de taille et de cohérence rejettent les incohérences qu’ils détectent (échec ou `unknown`), jamais pour publier un état inventé.
+
+#### Points d’analyse à établir avant l’implémentation
+
+Outil, versions 2.05 et 3.07 ; une forme dont le point n’est pas résolu reste refusée :
+1. Bit 13 et blocs de 2 048 octets : valeurs que la carte place dans ses réponses d’ouverture et de morceau (l’outil reprend ces mots dans les requêtes suivantes ; l’exporter les vérifie) ; pas des morceaux de 2 048 octets, établi par l’analyse seule.
+2. Parcours `0xc8` : traitement d’un mot 6 nul dans la réponse d’ouverture.
+3. Protection du cache : préconditions d’émission de `0x30000` à établir.
+4. maxCache : lecture de l’information des conteneurs maxCache sur 432 octets, et seconde requête `0xfe` (16 octets) émise par un autre appelant.
+
+Résolus : codes d’ouverture examinés par chaque lecture, code `0x11a`, décodage de la batterie classique, chemin des disques sans `FeatureBits` bit 9, mots des requêtes de morceau du parcours `0xc8` (morceaux 1 à n, taille `| 0x80000000`, sans clôture), clôture immédiate sur `0xe2` après une ouverture `0xc9`, lecture complète puis clôture sur un code atypique, ordre des lectures, abandon sans clôture sur erreur de morceau.
+
+#### À spécifier avec l’implémentation
+
+Avant d’activer chaque forme :
+- champs repris d’une réponse validée et leurs bornes ;
+- requêtes sérialisées de chaque transition, clôture immédiate sans morceau comprise ;
+- forme sérialisée complète de `CT_GET_CONTAINER_COUNT` et de ses variantes (bit 13, bit 15, les deux), écho et taille minimale de sa réponse, justification des octets mis à zéro ;
+- tailles de réponse admises par phase, rejet des réponses tronquées, longueur utile des données de l’ouverture `0xc8`, pas nul ;
+- taille demandée comme borne plus serrée que 4 100 octets (E3), si les captures montrent que le total ne la dépasse jamais ;
+- traitement de `EINTR` (S8, sans relance immédiate) dans l’abandon ; durée maximale admise pour les nouveaux envois après une annulation sur un autre couple ;
+- états des disques publiés sans données de volumes, avec recette (bit 9 absent, `MaxContainers` nul ou invalide, échec d’une 234) ;
+- prérequis de la 708 retenus par l’exporter, préconditions de `0x30000` ;
+- masques de batterie autres que ceux du tableau, si une carte en présente ;
+- sélecteur `serial:` quand la série d’une autre carte est illisible ;
+- séquence attendue par cycle, réutilisation des réponses gardées comprise ;
+- statut d’activation de chaque combinaison dans la matrice ;
+- description des formes dans `docs/aacraid-interface.md` ;
+- valeur `maintenance` de `hwraid_cache_protection_state` et alerte `HwraidCacheProtectionMaintenance` dans `docs/metrics.md` et `docs/alerts.md`, alertes Grafana de déploiement comprises.
+
+#### Qualification par modèle
+
+Un modèle est qualifié par ses quatre identifiants PCI (S4) ; la version de firmware n’est plus une condition de lecture. Les écarts E1 et E2 restent attachés au couple modèle–firmware où ils ont été validés. La documentation liste les couples modèle et firmware effectivement testés (aujourd’hui : Adaptec 6805, 5.3-0[19204]), et le firmware reste publié par `hwraid_controller_info`. `docs/alerts.md`, `docs/guide-capture.md` et `docs/aacraid-interface.md` (section 8) seront mis à jour avec l’implémentation.
+
+### 6.12 Modèles non qualifiés (option `-allow-unqualified`)
+
+**État : conception, non implémentée.** Une carte `aacraid` dont le couple modèle–firmware n’est pas qualifié est aujourd’hui inventoriée, son nœud vérifié, seule sa 706 lue, et ses autres collecteurs publiés non pris en charge (alerte `HwraidVolumesNotMonitored`). Une fois la section 6.11 en place, l’option permet de la lire avec le même code que le modèle qualifié, selon sa règle de conduite : suite de commandes de l’outil, sans les écarts validés sur le seul couple de référence (E1, E2), avec les écarts qui valent partout (E3, E4). Elle reste désactivée par défaut : une carte jamais testée reçoit des commandes que le constructeur ne documente pas, et ce choix revient à celui qui l’exploite.
+
+**Option**, répétable, deux formes cumulables :
+- `-allow-unqualified=aacraid` : toutes les cartes du module `aacraid` (pilote du même nom), présentes ou futures ;
+- `-allow-unqualified=serial:<numéro>` : une carte `aacraid` précise, résolue avant chaque collecte sur l’inventaire du cycle (numéro lu à ce cycle, valide et unique ; un label `pci:` est refusé ; un numéro absent, conservé d’un cycle précédent ou dupliqué invalide ce sélecteur pour la carte, sans effet sur une autorisation `aacraid` indépendante). Ce sélecteur ne vaut que pour les cartes du module `aacraid`. Si la découverte du cycle est partielle ou en échec, l’unicité n’est pas établie et le sélecteur ne vaut pas ; l’autorisation porte sur la carte dont le nœud est vérifié à ce cycle. Le numéro qui autorise la collecte est celui de la 706 lue à ce cycle (jamais une réponse gardée) sur ce nœud, déjà vérifié par `GET_HBA_INFO`, et le même descripteur, ouvert une fois par cycle, sert à toutes les commandes suivantes du cycle ; si ce lien ne peut pas être établi, le sélecteur ne vaut pas. Le pilote rattache un descripteur à la carte présente à son ouverture [public] : une carte installée ensuite n’est jamais atteinte par ce descripteur. Le retrait à chaud d’une carte pendant un cycle n’est pas géré par le pilote sur ce chemin (il le signale lui-même) : hors périmètre. La recette couvre inventaire partiel, doublon, remplacement de carte et label conservé, avec et sans autorisation `aacraid`.
+
+Pas de forme « toutes » : l’acceptation nomme ce qu’elle vise, pour qu’un module futur ne soit jamais activé par effet de bord. Un nom de module inconnu fait échouer le démarrage ; une valeur `serial:` qui ne désigne aucune carte présente est journalisée.
+
+**Effet.** Le verrou de qualification du module (la carte est lue au-delà de la 706 si son modèle est qualifié) devient : modèle qualifié, ou carte désignée par l’option. Le reste de la collecte est celui de la section 6.11.
+
+**Métrique.** `hwraid_controller_qualified{controller}` : 1 si le modèle est qualifié, 0 sinon, pour chaque carte d’un module qui qualifie ses cartes. Aucune alerte dédiée ; `HwraidVolumesNotMonitored` suit l’état du collecteur des volumes.
+
+**Risques acceptés par l’opérateur**, documentés dans le README et `docs/deploiement.md` :
+- des formes jamais observées sur matériel, vérifiées face à des réponses construites (section 6.11, « Limite ») ;
+- une fréquence plus élevée que l’outil, qui ne lit la carte que lorsqu’on l’appelle (intervalle long recommandé, par exemple 5 minutes) ;
+- une commande sans réponse n’est pas interrompue (défaut du pilote, `docs/aacraid-defaut-pilote.md`) : la carte n’est plus collectée jusqu’à la réponse ;
+- la concurrence avec l’outil constructeur : le pilote sérialise chaque ioctl, pas un transfert ; les contrôles de transfert rejettent les réponses dont ils détectent l’incohérence (la cause exacte des clôtures `0xc5` n’est pas établie).
 
 ## 7. Premier lot de travail et recette
 
@@ -499,7 +720,7 @@ Deux revues indépendantes du dépôt ont été menées. Les corrections immédi
 6. **Vocabulaires des pilotes suivants.** Identifiant de disque `enclosure:slot`, états `predictive_failure`, `offline`, `unconfigured_bad` pour les disques, `learning` et `degraded` pour les batteries.
 7. **Chaîne d'outillage.** Fait : actions et images de la CI et de la publication épinglées par empreinte. Reste à les tenir à jour (Dependabot).
 8. **Rattachement du nœud au domaine PCI.** Fermé. Les quatre identifiants PCI sont comparés avant toute commande firmware ; le domaine PCI, absent de la réponse du pilote, n'est pas nécessaire : le numéro de carte comparé (`unique_id`, minor du nœud) est attribué par le pilote et unique sur la machine, quel que soit le domaine.
-9. **Collecte hors délai interrompue entre deux commandes.** Fait : un contexte terminé à l'échéance du cycle ou à l'arrêt du service est transmis au module et au transport, qui n'envoient plus de commande firmware ensuite (ni nouveau morceau, ni relecture) ; une commande en cours n'est jamais interrompue et un transfert paginé ouvert est clos.
+9. **Collecte hors délai interrompue entre deux commandes.** Fait : un contexte terminé à l'échéance du cycle ou à l'arrêt du service est transmis au module et au transport, qui n'envoient plus de commande firmware ensuite (ni nouvelle ouverture, ni relecture ; aucun morceau hormis ceux de la suite de fin d'un transfert ouvert) ; une commande en cours n'est jamais interrompue et un transfert paginé ouvert est terminé (aujourd'hui : morceau 0 puis clôture ; cible : suite par phase de la section 6.11, « Annulation »).
 10. **Provenance des nœuds du répertoire dédié.** Non retenu : `/dev/hwraid_exporter` n'est modifiable que par root (et, en conteneur, n'existe que dans le `/dev` privé du conteneur). Un processus root qui y créerait un nœud dispose déjà de tous les droits ; la garde ne protégerait de rien.
 11. **Mode `--dry-run`, niveau de journalisation et fuzzing des décodeurs**, annoncés dans les exigences de diagnostic et de recette.
 12. **Dates de succès et caches liés à la carte, non à l'emplacement.** Fait : l'historique par carte et les réponses gardées sont rattachés à l'identité matérielle (`module.Card.Identity`) ; contrat dans `docs/metrics.md`.
@@ -508,3 +729,5 @@ Deux revues indépendantes du dépôt ont été menées. Les corrections immédi
 15. **Intervalle de collecte par contrôleur** (section 6.8) : seul l'intervalle global existe ; à implémenter si une carte demande une cadence différente des autres.
 16. **Température du contrôleur.** Fait en v0.1.3 (collecteur `temperature`, alertes à 55 et 60 °C et au seuil haut de la carte). Constat d'origine : non publiée, les outils de surveillance fondés sur ARCCONF (par exemple `check_adaptec_raid`, seuils d'avertissement et critique) la surveillent, et un exporter qui les remplace doit la couvrir. Établi le 2026-11-24 [interopérabilité] : commande publique `AdapterEnvironmentInfo` (803, FreeBSD `aacraid_reg.h`), un seul bloc, mot de données 0 = 1 ; réponse en champs de 16 bits : température en °C à la position 36, seuils de la carte à 40 (95 sur la 6805) et 42 (100) ; l'outil de référence (versions 2.05 et 3.07) affiche un état anormal quand la température atteint le seuil de la position 42. Concorde avec l'affichage de l'outil sur l'hôte de référence (48 et 49 °C). Condition d'envoi, comme l'outil de référence [public] : bit `AAC_SUPPORTED_HEAT_SENSOR` (0x80000) de `SupportedOptions`, mot à la position 80 de la réponse à `RequestAdapterInfo` (703, FreeBSD `aacraid_reg.h`) ; positionné sur la 6805 de référence.
 17. **Épuisement de la réserve de commandes de gestion du pilote.** Le pilote n'expose aucun compteur de blocs libres (réserve de 8 par carte) : l'occupation n'est pas mesurable sans sonde noyau. Publier un compteur par contrôleur des refus `ENOMEM` sur les commandes de gestion, distinguant si possible les petites commandes (réserve) des grandes (tampon DMA), avec une alerte dédiée : l'épuisement est aujourd'hui visible au journal et par des lectures en échec seulement, alors qu'il change la conduite à tenir avant un redémarrage (cache non vidé, `docs/aacraid-defaut-pilote.md`).
+18. **Généralisation des échanges et modèles non qualifiés** (sections 6.11 et 6.12, exigences S4 et S4 bis) : conçue, non implémentée. Ordre : généralisation (sur le scénario nominal capturé, requêtes du modèle qualifié inchangées à l’ajout attendu de `CT_GET_CONTAINER_COUNT` près, à vérifier par les tests de non-régression, sur deux cycles, avec et sans réponses gardées ; changements du point 19 testés séparément), puis qualification par modèle, puis option. Une forme n’est activée qu’une fois résolus ses points d’analyse et spécifiés ses points d’implémentation.
+19. **Codes d’ouverture d’un transfert, modèle qualifié compris.** Sur une ouverture au statut et à l’écho corrects, avec un identifiant de transfert valide, l’exporter n’envoie aucune commande si le code n’est pas `0xda` ou si le total est nul ; l’outil témoin clôture immédiatement sur le code `0xe2` (marque `0xc8` ou `0xc9`), et, sur marque `0xc9`, clôture sans morceau un total nul ou lit les morceaux puis clôture pour tout autre code, si bien qu’un transfert qu’il aurait fermé peut rester ouvert. Jamais observé sur l’hôte de référence (315 ouvertures capturées, toutes `0xda`, total non nul et dans la borne). Traité par la section 6.11 ; la clôture immédiate et la poursuite sur code atypique sont spécifiées et qualifiées séparément, avec la clôture sur total nul (les formes actuelles de morceau et de clôture portent `0xda` et un total non nul). Relève aussi de ce point la clôture que le transport envoie aujourd’hui après toute erreur ou tout rejet en cours de transfert, y compris le rejet d’une liste des conteneurs qui annonce plus d’entrées que `MaxContainers` : elle est remplacée par l’abandon sans clôture (section 6.11, « Abandon sans clôture »).

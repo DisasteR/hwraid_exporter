@@ -985,3 +985,111 @@ func TestReadPagedNoRetryAfterChunkError(t *testing.T) {
 		t.Fatalf("%d ouverture(s), %d rejet(s) : une seule ouverture et un rejet compté attendus", opens, d.CloseUnconfirmed())
 	}
 }
+
+// La liste des conteneurs n'est envoyée qu'à la taille déduite du comptage
+// validé pour ce périphérique (ExpectContainerList) : sans comptage, ou à une
+// autre taille, même alignée et acceptée par la liste blanche, rien
+// n'atteint le noyau. Le réglage ne vaut que pour ce périphérique.
+func TestContainerListSizeBoundToCount(t *testing.T) {
+	list5 := make([]byte, 28)
+	binary.LittleEndian.PutUint32(list5[4:], 5)
+	f := &fakeFirmware{payload: list5, xfer: 3, failAt: -1}
+	calls := 0
+	f.ioctl(t)
+	orig := ioctlFn
+	ioctlFn = func(fd int, req uint32, buf []byte) error { calls++; return orig(fd, req, buf) }
+	t.Cleanup(func() { ioctlFn = orig })
+	open := func() *Device {
+		d, err := Open("/dev/null", devNull, list(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { d.Close() })
+		return d
+	}
+	need := aacraid.ContainerListNeed
+	d := open()
+	if _, err := d.ReadPaged(context.Background(), aacraid.ReadContainerList, 0, aacraid.ContainerListSize(256), need); err == nil || calls != 0 {
+		t.Fatalf("liste envoyée sans comptage : %v, %d ioctl", err, calls)
+	}
+	d.ExpectContainerList(mustCount(t, 256))
+	if _, err := d.ReadPaged(context.Background(), aacraid.ReadContainerList, 0, aacraid.ContainerListSize(255), need); err == nil || calls != 0 {
+		t.Fatalf("liste de %d octets envoyée pour MaxContainers 256 : %v, %d ioctl", aacraid.ContainerListSize(255), err, calls)
+	}
+	if _, err := d.ReadPaged(context.Background(), aacraid.ReadContainerList, 0, 0x408, need); err != nil || calls != 3 {
+		t.Fatalf("liste de 0x408 octets refusée : %v, %d ioctl", err, calls)
+	}
+	if got := binary.LittleEndian.Uint32(f.requests[0][aacraid.FIBHeaderSize+28:]); got != 0x408 {
+		t.Fatalf("taille demandée %#x, 0x408 attendu", got)
+	}
+	// Un autre périphérique (autre carte, autre cycle) ne reprend pas ce
+	// réglage.
+	if _, err := open().ReadPaged(context.Background(), aacraid.ReadContainerList, 0, 0x408, need); err == nil || calls != 3 {
+		t.Fatalf("réglage partagé entre périphériques : %v, %d ioctl", err, calls)
+	}
+}
+
+// Le contrôle de la taille de la liste des conteneurs vaut aussi pour l'API
+// brute Do : une ouverture de 12 octets, acceptée par la liste blanche,
+// n'atteint pas le noyau sans le comptage correspondant.
+func TestContainerListSizeCheckedOnRawPath(t *testing.T) {
+	calls := fakeIoctl(t, func(req uint32, buf []byte) error { return nil })
+	d, err := Open("/dev/null", devNull, list(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	open, err := aacraid.OpenRequest(aacraid.ReadContainerList, 0, aacraid.ContainerListSize(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Do(allowlist.Request{Ioctl: aacraid.IoctlSendFIB, Buf: open}); !errors.Is(err, allowlist.ErrDenied) || *calls != 0 {
+		t.Fatalf("ouverture de 12 octets sans comptage : %v, %d ioctl", err, *calls)
+	}
+	d.ExpectContainerList(mustCount(t, 256))
+	if err := d.Do(allowlist.Request{Ioctl: aacraid.IoctlSendFIB, Buf: open}); !errors.Is(err, allowlist.ErrDenied) || *calls != 0 {
+		t.Fatalf("ouverture de 12 octets pour MaxContainers 256 : %v, %d ioctl", err, *calls)
+	}
+	d.ExpectContainerList(mustCount(t, 1))
+	if err := d.Do(allowlist.Request{Ioctl: aacraid.IoctlSendFIB, Buf: open}); err != nil || *calls != 1 {
+		t.Fatalf("ouverture de 12 octets pour MaxContainers 1 : %v, %d ioctl", err, *calls)
+	}
+}
+
+// mustCount décode une réponse CT_GET_CONTAINER_COUNT construite pour n
+// conteneurs : seule voie pour obtenir un comptage utilisable.
+func mustCount(t *testing.T, n uint32) aacraid.ContainerCount {
+	t.Helper()
+	b := make([]byte, aacraid.FIBSize)
+	le := binary.LittleEndian
+	le.PutUint16(b[4:], 500)
+	le.PutUint16(b[8:], aacraid.ChunkRspSize)
+	le.PutUint32(b[aacraid.FIBHeaderSize+4:], 4)
+	le.PutUint32(b[aacraid.FIBHeaderSize+8:], n)
+	c, err := aacraid.DecodeContainerCount(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// Sans comptage décodé (valeur nulle), aucune liste des conteneurs ne part,
+// quelle que soit sa taille.
+func TestContainerListNeedsDecodedCount(t *testing.T) {
+	calls := fakeIoctl(t, func(req uint32, buf []byte) error { return nil })
+	d, err := Open("/dev/null", devNull, list(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	d.ExpectContainerList(aacraid.ContainerCount{})
+	for _, n := range []uint32{1, 256, aacraid.MaxContainersLimit} {
+		open, err := aacraid.OpenRequest(aacraid.ReadContainerList, 0, aacraid.ContainerListSize(n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := d.Do(allowlist.Request{Ioctl: aacraid.IoctlSendFIB, Buf: open}); !errors.Is(err, allowlist.ErrDenied) || *calls != 0 {
+			t.Fatalf("liste de %d octets sans comptage : %v, %d ioctl", aacraid.ContainerListSize(n), err, *calls)
+		}
+	}
+}

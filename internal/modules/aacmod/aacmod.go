@@ -8,8 +8,10 @@ package aacmod
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,6 +35,8 @@ type device interface {
 	AdapterInfo(ctx context.Context) (aacraid.AdapterInfo, error)
 	Environment(ctx context.Context) (aacraid.Environment, error)
 	CacheProtection(ctx context.Context) (bool, aacraid.ZMMStatus, error)
+	ContainerCount(ctx context.Context) (aacraid.ContainerCount, error)
+	ExpectContainerList(c aacraid.ContainerCount)
 	ReadPaged(ctx context.Context, r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error)
 	ConnectorMap(ctx context.Context) (aacraid.ConnectorMap, error)
 	CloseUnconfirmed() int
@@ -46,6 +50,8 @@ type reader interface {
 	AdapterInfo() (aacraid.AdapterInfo, error)
 	Environment() (aacraid.Environment, error)
 	CacheProtection() (bool, aacraid.ZMMStatus, error)
+	ContainerCount() (aacraid.ContainerCount, error)
+	ExpectContainerList(c aacraid.ContainerCount)
 	ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error)
 	ConnectorMap() (aacraid.ConnectorMap, error)
 }
@@ -86,6 +92,9 @@ type Module struct {
 	supplement map[string]aacraid.SupplementInfo
 	// adapterInfo garde de même la réponse à RequestAdapterInfo (703).
 	adapterInfo map[string]aacraid.AdapterInfo
+	// maxContainers garde de même MaxContainers (CT_GET_CONTAINER_COUNT),
+	// qui fixe la taille de la liste des conteneurs.
+	maxContainers map[string]aacraid.ContainerCount
 	// connectors garde de même la carte des connecteurs (708), fixe tant que
 	// la carte n'est pas réinitialisée.
 	connectors map[string]keptMap
@@ -157,6 +166,10 @@ func (b bound) Environment() (aacraid.Environment, error) { return b.dev.Environ
 func (b bound) CacheProtection() (bool, aacraid.ZMMStatus, error) {
 	return b.dev.CacheProtection(b.ctx)
 }
+func (b bound) ContainerCount() (aacraid.ContainerCount, error) {
+	return b.dev.ContainerCount(b.ctx)
+}
+func (b bound) ExpectContainerList(c aacraid.ContainerCount) { b.dev.ExpectContainerList(c) }
 func (b bound) ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error) {
 	return b.dev.ReadPaged(b.ctx, r, param, size, need)
 }
@@ -248,10 +261,56 @@ func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeR
 	ainfo, ainfoOK := m.collectTemperature(&r, d, key)
 	if sup.ArcIoReads() {
 		_, h, _ := hostOf(c)
-		caps := aacraid.DiskCaps{DirectDisks: sup.DirectDisks(), JBOD: sup.JBOD(), NativeHBA: ainfo.NativeHBA(), NativeKnown: ainfoOK}
-		m.collectVolumes(&r, d, key, h, caps)
+		m.collectArcIo(&r, d, key, h, sup, ainfo, ainfoOK)
 	}
 	return r
+}
+
+// pagedCollectors sont les collecteurs qui reposent sur des transferts
+// paginés : états des volumes et des disques, inventaire et emplacement des
+// disques (la 708 n'est lue qu'après un inventaire réussi).
+func pagedCollectors() []string {
+	return append(append([]string(nil), StateCollectors...), DiskInventoryCollector, DiskLocationCollector)
+}
+
+// collectArcIo applique les prérequis des transferts paginés (CDC, section
+// 6.11), puis lit volumes et disques. Formes à bit de poids fort (bit 13 de
+// FeatureBits) ou en blocs de 2 048 octets (bit 15 de SupportedOptions) :
+// non implémentées, collecteurs non pris en charge, rien n'est envoyé. 703
+// en échec : format des blocs indéterminé, aucune lecture paginée, collecteurs
+// en échec (relus au cycle suivant).
+func (m *Module) collectArcIo(r *module.Result, d reader, key string, h sysfs.SCSIHost, sup aacraid.SupplementInfo, ainfo aacraid.AdapterInfo, ainfoOK bool) {
+	switch {
+	case sup.PagedHighBit():
+		r.Unsupported = append(r.Unsupported, pagedCollectors()...)
+		return
+	case !ainfoOK:
+		// Les capacités que la 706 refuse restent non prises en charge ; les
+		// autres collecteurs sont en échec.
+		gated := map[string]bool{}
+		if !sup.ContainerReads() {
+			for _, col := range StateCollectors {
+				gated[col] = true
+			}
+		}
+		if !sup.ConnectorMapRead() {
+			gated[DiskLocationCollector] = true
+		}
+		for _, col := range pagedCollectors() {
+			if gated[col] {
+				r.Unsupported = append(r.Unsupported, col)
+			} else {
+				r.Collected[col] = false
+			}
+		}
+		r.CollectErr = errors.Join(r.CollectErr, errors.New("RequestAdapterInfo failed: transfer format undetermined, no volume or disk read"))
+		return
+	case ainfo.LargeTransfers():
+		r.Unsupported = append(r.Unsupported, pagedCollectors()...)
+		return
+	}
+	caps := aacraid.DiskCaps{DirectDisks: sup.DirectDisks(), JBOD: sup.JBOD(), NativeHBA: ainfo.NativeHBA(), NativeKnown: true}
+	m.collectVolumes(r, d, key, h, sup.ContainerReads(), sup.ConnectorMapRead(), caps)
 }
 
 // Qualification est un couple modèle et firmware sur lequel les lectures
@@ -292,21 +351,62 @@ func hostOf(c module.Card) (int, sysfs.SCSIHost, error) {
 	return i, c.Hosts[i], nil
 }
 
-// collectVolumes lit la configuration (conteneurs, membres, disques
-// présents) et calcule les états, puis l'inventaire des disques présents.
+// collectVolumes lit les deux chaînes de lecture, dans l'ordre de l'outil de
+// référence repris par l'exporter (229, les 234, 247, les 249, puis les
+// 248 et la 708), avec les dépendances de la section 6.11 du CDC :
+//   - chaîne des volumes (comptage, 229, les 234), seulement si la carte
+//     annonce les lectures de conteneurs (bit 9 de FeatureBits) ; sans lui,
+//     les collecteurs d'état sont non pris en charge ;
+//   - chaîne des disques (247, les 248, la 708), lue même si celle des
+//     volumes échoue ; la 708 seulement si la carte l'annonce (bit 8 de
+//     FeatureBits), sinon l'emplacement est non pris en charge ;
+//   - listes des membres (249) : seulement si les deux chaînes ont réussi,
+//     car les états utilisent la présence des disques.
+//
 // Toute erreur annule la publication de ce qu'elle concerne pour ce cycle :
-// jamais de configuration ni d'inventaire partiels. L'inventaire réutilise
-// la liste des disques présents : il n'est pas lu si la configuration ne
-// l'a pas été.
-func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.SCSIHost, caps aacraid.DiskCaps) {
-	cs, present, err := readConfiguration(d)
-	for _, col := range StateCollectors {
-		r.Collected[col] = err == nil
+// jamais de configuration ni d'inventaire partiels.
+func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.SCSIHost, containers, connectors bool, caps aacraid.DiskCaps) {
+	var cs []aacraid.Container
+	var volErr error
+	// Sans carte des connecteurs annoncée, l'emplacement est non pris en
+	// charge, quel que soit le sort des autres lectures.
+	if !connectors {
+		r.Unsupported = append(r.Unsupported, DiskLocationCollector)
 	}
-	if err != nil {
+	failLocation := func() {
+		if connectors {
+			r.Collected[DiskLocationCollector] = false
+		}
+	}
+	if containers {
+		if cs, volErr = m.readContainers(d, key); volErr != nil {
+			volErr = fmt.Errorf("containers: %w", volErr)
+		}
+	} else {
+		r.Unsupported = append(r.Unsupported, StateCollectors...)
+	}
+	present, diskErr := readDiskList(d)
+	if diskErr != nil {
+		diskErr = fmt.Errorf("disk list: %w", diskErr)
+	}
+	if containers && volErr == nil && diskErr == nil {
+		if err := readMembers(d, cs); err != nil {
+			volErr = fmt.Errorf("member lists: %w", err)
+		}
+	}
+	states := containers && volErr == nil && diskErr == nil
+	if containers {
+		for _, col := range StateCollectors {
+			r.Collected[col] = states
+		}
+	}
+	if volErr != nil {
+		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("configuration: %w", volErr))
+	}
+	if diskErr != nil {
 		r.Collected[DiskInventoryCollector] = false
-		r.Collected[DiskLocationCollector] = false
-		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("configuration: %w; disk inventory and location not read", err))
+		failLocation()
+		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("configuration: %w; disk inventory and location not read", diskErr))
 		return
 	}
 	// L'inventaire (248) est lu avant le calcul des états : un disque qu'il
@@ -316,8 +416,46 @@ func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.
 	// leurs membres et la liste des disques présents. L'échec reste visible
 	// par le collecteur de l'inventaire.
 	inv, err := readInventory(d, present)
+	if states {
+		m.publishStates(r, cs, present, inv, err == nil, caps)
+	}
+	r.Collected[DiskInventoryCollector] = err == nil
+	if err != nil {
+		failLocation()
+		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("disk inventory: %w; disk location not read", err))
+		return
+	}
+	// Inventaire, périphérique Linux et emplacement : disques seulement. Un
+	// autre périphérique de la liste (boîtier, support amovible) n'est pas
+	// publié, comme pour l'état (« disque » a le même sens partout).
+	hard := make([]aacraid.DiskInfo, 0, len(inv))
+	for _, i := range inv {
+		if i.HardDrive() {
+			hard = append(hard, i)
+		}
+	}
+	for _, i := range hard {
+		r.DiskInventory = append(r.DiskInventory, module.DiskInfo{ID: diskID(i.Number), Vendor: i.Vendor, Model: i.Model,
+			Firmware: i.Firmware, Serial: i.Serial, WWN: i.WWN, CapacityBytes: i.CapacityBytes()})
+	}
+	r.DiskOSDevices = osDevices(h, hard)
+	if !connectors {
+		return
+	}
+	locs, err := m.locations(key, d, hard)
+	r.Collected[DiskLocationCollector] = err == nil
+	if err != nil {
+		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("disk location: %w", err))
+		return
+	}
+	r.DiskLocations = locs
+}
+
+// publishStates calcule les états des volumes et des disques à partir de la
+// configuration et des informations de disque lues (invOK : toutes lues).
+func (m *Module) publishStates(r *module.Result, cs []aacraid.Container, present []uint32, inv []aacraid.DiskInfo, invOK bool, caps aacraid.DiskCaps) {
 	failed := map[uint32]bool{}
-	complete := err == nil
+	complete := invOK
 	for _, i := range inv {
 		// Un périphérique qui n'est pas un disque compte, pour un membre
 		// qui le désigne, comme un disque en panne (outil de référence).
@@ -338,50 +476,23 @@ func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.
 			byNum[i.Number] = i
 		}
 		r.Disks = diskStatesOf(aacraid.DiskStates(cs, present, byNum, caps))
-	} else {
-		// Information absente, partielle ou incomplète : états déduits des
-		// membres, et tout disque qu'une réponse lue déclare en panne est
-		// publié en panne, membre ou non (plus prudent que de ne rien
-		// publier pour lui ; un périphérique qui n'est pas un disque reste
-		// hors des disques).
-		st := map[uint32]aacraid.DiskStatus{}
-		for n, ds := range ev.Disks {
-			st[n] = aacraid.DiskStatus{State: ds}
-		}
-		for _, i := range inv {
-			if i.Failed() && i.HardDrive() {
-				st[i.Number] = aacraid.DiskStatus{State: aacraid.DiskFailed}
-			}
-		}
-		r.Disks = diskStatesOf(st)
-	}
-	r.Collected[DiskInventoryCollector] = err == nil
-	if err != nil {
-		r.Collected[DiskLocationCollector] = false
-		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("disk inventory: %w; disk location not read", err))
 		return
 	}
-	// Inventaire, périphérique Linux et emplacement : disques seulement. Un
-	// autre périphérique de la liste (boîtier, support amovible) n'est pas
-	// publié, comme pour l'état (« disque » a le même sens partout).
-	hard := make([]aacraid.DiskInfo, 0, len(inv))
+	// Information absente, partielle ou incomplète : états déduits des
+	// membres, et tout disque qu'une réponse lue déclare en panne est
+	// publié en panne, membre ou non (plus prudent que de ne rien publier
+	// pour lui ; un périphérique qui n'est pas un disque reste hors des
+	// disques).
+	st := map[uint32]aacraid.DiskStatus{}
+	for n, ds := range ev.Disks {
+		st[n] = aacraid.DiskStatus{State: ds}
+	}
 	for _, i := range inv {
-		if i.HardDrive() {
-			hard = append(hard, i)
+		if i.Failed() && i.HardDrive() {
+			st[i.Number] = aacraid.DiskStatus{State: aacraid.DiskFailed}
 		}
 	}
-	for _, i := range hard {
-		r.DiskInventory = append(r.DiskInventory, module.DiskInfo{ID: diskID(i.Number), Vendor: i.Vendor, Model: i.Model,
-			Firmware: i.Firmware, Serial: i.Serial, WWN: i.WWN, CapacityBytes: i.CapacityBytes()})
-	}
-	r.DiskOSDevices = osDevices(h, hard)
-	locs, err := m.locations(key, d, hard)
-	r.Collected[DiskLocationCollector] = err == nil
-	if err != nil {
-		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("disk location: %w", err))
-		return
-	}
-	r.DiskLocations = locs
+	r.Disks = diskStatesOf(st)
 }
 
 func diskID(n uint32) string { return fmt.Sprintf("d%d", n) }
@@ -511,62 +622,95 @@ func readInventory(d reader, nums []uint32) ([]aacraid.DiskInfo, error) {
 	return out, nil
 }
 
-func readConfiguration(d reader) ([]aacraid.Container, []uint32, error) {
-	raw, err := d.ReadPaged(aacraid.ReadContainerList, 0, 0, aacraid.ContainerListNeed)
+// readContainers lit la chaîne des volumes : MaxContainers, la liste des
+// conteneurs à la taille qu'il fixe (8 + 4 × MaxContainers, comme l'outil de
+// référence ; CDC, section 6.11, forme 1), puis l'information de chacun.
+func (m *Module) readContainers(d reader, key string) ([]aacraid.Container, error) {
+	count, err := m.containerCount(key, d)
 	if err != nil {
-		return nil, nil, err
+		return nil, fmt.Errorf("container count: %w", err)
+	}
+	maxContainers := count.Max()
+	// Taille liée au comptage validé de cette carte, vérifiée par le
+	// transport au moment de l'envoi.
+	d.ExpectContainerList(count)
+	// Une liste qui annonce plus d'entrées que MaxContainers est refusée dès
+	// le morceau qui porte ce nombre : need rend alors plus que tout
+	// transfert accepté, et le transport arrête la lecture sans demander de
+	// morceau suivant.
+	var announced uint32
+	need := func(b []byte) int {
+		if len(b) >= 8 {
+			if announced = binary.LittleEndian.Uint32(b[4:]); announced > maxContainers {
+				return math.MaxInt32
+			}
+		}
+		return aacraid.ContainerListNeed(b)
+	}
+	raw, err := d.ReadPaged(aacraid.ReadContainerList, 0, count.ListSize(), need)
+	if announced > maxContainers {
+		return nil, fmt.Errorf("container list: %d entries, MaxContainers %d", announced, maxContainers)
+	}
+	if err != nil {
+		return nil, err
 	}
 	nums, err := aacraid.DecodeContainerList(raw)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	var cs []aacraid.Container
 	for _, n := range nums {
 		raw, err := d.ReadPaged(aacraid.ReadContainerInfo, n, 0, func([]byte) int { return aacraid.ContainerInfoNeed })
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		info, err := aacraid.DecodeContainerInfo(raw)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		for _, prev := range cs {
 			if prev.Info.UID == info.UID {
-				return nil, nil, fmt.Errorf("duplicate container UID %#x (containers %d and %d)", info.UID, prev.Number, n)
+				return nil, fmt.Errorf("duplicate container UID %#x (containers %d and %d)", info.UID, prev.Number, n)
 			}
 		}
 		cs = append(cs, aacraid.Container{Number: n, Info: info})
 	}
-	raw, err = d.ReadPaged(aacraid.ReadDiskList, 0, 0, aacraid.DiskListNeed)
+	return cs, nil
+}
+
+// readDiskList lit la liste des disques présents (247).
+func readDiskList(d reader) ([]uint32, error) {
+	raw, err := d.ReadPaged(aacraid.ReadDiskList, 0, 0, aacraid.DiskListNeed)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	disks, err := aacraid.DecodeDiskList(raw)
-	if err != nil {
-		return nil, nil, err
-	}
+	return aacraid.DecodeDiskList(raw)
+}
+
+// readMembers lit la liste des membres de chaque conteneur (249).
+func readMembers(d reader, cs []aacraid.Container) error {
 	for i := range cs {
 		size := aacraid.MemberListSize(cs[i].Info.Members)
 		raw, err := d.ReadPaged(aacraid.ReadMemberList, cs[i].Info.UID, size, func([]byte) int { return int(size) })
 		if err != nil {
-			return nil, nil, err
+			return err
 		}
 		if cs[i].Members, err = aacraid.DecodeMemberList(raw); err != nil {
-			return nil, nil, err
+			return err
 		}
 		if len(cs[i].Members) != cs[i].Info.Members {
-			return nil, nil, fmt.Errorf("container %#x: %d members announced, %d listed", cs[i].Info.UID, cs[i].Info.Members, len(cs[i].Members))
+			return fmt.Errorf("container %#x: %d members announced, %d listed", cs[i].Info.UID, cs[i].Info.Members, len(cs[i].Members))
 		}
 		seen := map[[2]uint32]bool{}
 		for _, mb := range cs[i].Members {
 			k := [2]uint32{mb.Disk, mb.ChildUID}
 			if seen[k] {
-				return nil, nil, fmt.Errorf("container %#x: member listed twice (disk %#x, container %#x)", cs[i].Info.UID, mb.Disk, mb.ChildUID)
+				return fmt.Errorf("container %#x: member listed twice (disk %#x, container %#x)", cs[i].Info.UID, mb.Disk, mb.ChildUID)
 			}
 			seen[k] = true
 		}
 	}
-	return cs, disks, nil
+	return nil
 }
 
 func uidID(uid uint32) string { return fmt.Sprintf("%08x", uid) }
@@ -745,6 +889,7 @@ func (m *Module) forgetOtherKeys(addr, key string) {
 	if old, ok := m.keyOf[addr]; ok && old != key {
 		delete(m.supplement, old)
 		delete(m.adapterInfo, old)
+		delete(m.maxContainers, old)
 		delete(m.connectors, old)
 	}
 	m.keyOf[addr] = key
@@ -770,6 +915,28 @@ func (m *Module) supplementInfo(key string, d reader) (aacraid.SupplementInfo, e
 	}
 	m.supplement[key] = s
 	return s, nil
+}
+
+// containerCount rend MaxContainers, gardé comme la réponse 706 ; une lecture
+// en échec n'est pas gardée.
+func (m *Module) containerCount(key string, d reader) (aacraid.ContainerCount, error) {
+	m.mu.Lock()
+	n, ok := m.maxContainers[key]
+	m.mu.Unlock()
+	if ok {
+		return n, nil
+	}
+	n, err := d.ContainerCount()
+	if err != nil || key == "" {
+		return n, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.maxContainers == nil {
+		m.maxContainers = map[string]aacraid.ContainerCount{}
+	}
+	m.maxContainers[key] = n
+	return n, nil
 }
 
 // pciIdentity relève l'identité attendue de la carte dans sysfs.

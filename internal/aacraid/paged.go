@@ -51,7 +51,9 @@ const (
 type PagedRead uint32
 
 // Sous-commandes de lecture qualifiées, avec la marque (mot 4) et la taille
-// (mot 7) de leur ouverture.
+// (mot 7) de leur ouverture ; taille 0 : fixée par l'appelant et vérifiée
+// par sizeOK (liste des conteneurs : ContainerListSize ; liste des membres :
+// MemberListSize).
 const (
 	ReadContainerList PagedRead = 229 // liste des conteneurs, paramètre 0
 	ReadContainerInfo PagedRead = 234 // information de conteneur, paramètre : numéro
@@ -61,17 +63,18 @@ const (
 )
 
 type pagedForm struct {
-	mark  uint32
-	size  uint32
-	param func(uint32) bool
+	mark   uint32
+	size   uint32
+	param  func(uint32) bool
+	sizeOK func(uint32) bool // taille fixée par l'appelant (size = 0)
 }
 
 var pagedForms = map[PagedRead]pagedForm{
-	ReadContainerList: {markDA, 0x408, func(p uint32) bool { return p == 0 }},
-	ReadContainerInfo: {markDA, 0x1000, func(p uint32) bool { return p <= 0xffff }},
-	ReadDiskList:      {0, 0x1004, func(p uint32) bool { return p == 0 }},
-	ReadDiskInfo:      {0, 0x1000, func(p uint32) bool { return p <= 0xffff }},
-	ReadMemberList:    {0, 0, func(p uint32) bool { return p != 0 && p != 0xffffffff }},
+	ReadContainerList: {markDA, 0, func(p uint32) bool { return p == 0 }, validContainerListSize},
+	ReadContainerInfo: {markDA, 0x1000, func(p uint32) bool { return p <= 0xffff }, nil},
+	ReadDiskList:      {0, 0x1004, func(p uint32) bool { return p == 0 }, nil},
+	ReadDiskInfo:      {0, 0x1000, func(p uint32) bool { return p <= 0xffff }, nil},
+	ReadMemberList:    {0, 0, func(p uint32) bool { return p != 0 && p != 0xffffffff }, validMemberListSize},
 }
 
 // MaxMembers borne le nombre de membres d'un conteneur accepté dans une
@@ -81,6 +84,10 @@ const MaxMembers = 64
 // MemberListSize est la taille demandée pour la liste de n membres, comme le
 // fait l'outil de référence : en-tête de 8 octets et 32 octets par membre.
 func MemberListSize(n int) uint32 { return uint32(8 + 32*n) }
+
+func validMemberListSize(size uint32) bool {
+	return size >= MemberListSize(1) && size <= MemberListSize(MaxMembers) && (size-8)%32 == 0
+}
 
 func pagedRequest(words ...uint32) []byte {
 	b := make([]byte, FIBSize)
@@ -97,7 +104,8 @@ func pagedRequest(words ...uint32) []byte {
 }
 
 // OpenRequest construit l'ouverture d'une lecture paginée. size n'est
-// utilisé que pour la liste des membres (MemberListSize).
+// utilisé que pour la liste des conteneurs (ContainerListSize) et la liste
+// des membres (MemberListSize).
 func OpenRequest(r PagedRead, param uint32, size uint32) ([]byte, error) {
 	f, ok := pagedForms[r]
 	if !ok || !f.param(param) {
@@ -105,7 +113,7 @@ func OpenRequest(r PagedRead, param uint32, size uint32) ([]byte, error) {
 	}
 	if f.size != 0 {
 		size = f.size
-	} else if size < MemberListSize(1) || size > MemberListSize(MaxMembers) || (size-8)%32 != 0 {
+	} else if !f.sizeOK(size) {
 		return nil, fmt.Errorf("read %d: size %d not qualified", r, size)
 	}
 	return pagedRequest(vmContainerConfig, uint32(r), param, 0, f.mark, 0xffffffff, 0, size), nil
@@ -156,6 +164,8 @@ func checkPagedRequest(b []byte) bool {
 		return false
 	}
 	switch sub := w(1); sub {
+	case ctGetContainerCount:
+		return w(2) == 0 && w(3) == 0 && w(4) == 0 && w(5) == 0xffffffff && w(6) == 0 && w(7) == 0
 	case ctContinueData, ctStopData:
 		total, n := w(3), w(6)
 		if total == 0 || total > 0x1004 || w(7) != total || w(4) != markDA || n >= chunks(total) {
@@ -175,8 +185,7 @@ func checkPagedRequest(b []byte) bool {
 		if f.size != 0 {
 			return w(7) == f.size
 		}
-		size := w(7)
-		return size >= MemberListSize(1) && size <= MemberListSize(MaxMembers) && (size-8)%32 == 0
+		return f.sizeOK(w(7))
 	}
 }
 

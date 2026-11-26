@@ -125,6 +125,8 @@ func TestDecodeConnectorMapRejects(t *testing.T) {
 			return b
 		},
 		"taille trop petite": func(b []byte) []byte { le.PutUint16(b[fibSize:], 40); return b },
+		// Filtre de l'outil : aucune entrée.
+		"aucune entrée":      func(b []byte) []byte { b[FIBHeaderSize+cmapEntries] = 0; return b },
 		"connecteur inconnu": func(b []byte) []byte { b[FIBHeaderSize+cmapEntryBase+4] = 5; return b },
 		"disque en double":   func(b []byte) []byte { b[FIBHeaderSize+cmapEntryBase+16] = 3; return b },
 		// Deux connecteurs numérotés 0, toutes les entrées sur le 0 : seul le
