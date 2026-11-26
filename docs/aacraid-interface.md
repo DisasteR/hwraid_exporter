@@ -522,13 +522,14 @@ L'exporter n'envoie que des commandes de l'outil de référence (versions 2.05 e
 
 | Sujet | Outil de référence | Exporter, couple validé | Exporter, autre carte lue |
 |---|---|---|---|
-| Ordre des lectures | à chaque ouverture : 704, 701, 703, 706 (si bit 16) ; puis 803, comptage, 708, 247 puis les 248, comptage, 229 puis les 234 puis les 249, protection du cache | premier cycle : `GET_HBA_INFO`, 704, 701, 703, 706 (si bit 16), 803, comptage, 708, 247, les 248 dans l'ordre de la liste rendue, 229, les 234, les 249, protection du cache, puis les tâches (101 par conteneur, 103 pour la première tâche de chacun) ; ensuite sans les réponses gardées ; une seule passe ; échec d'échange ou comptage refusé : arrêt au même point que l'outil | idem |
+| Ordre des lectures | à chaque ouverture : 704, 701, 703, 706 (si bit 16) ; puis 803, comptage, `GET_HBA_INFO`, 708, 247 puis les 248, comptage, 229 puis les 234 puis les 249, protection du cache | premier cycle : `GET_HBA_INFO`, 704, 701, 703, 706 (si bit 16), 803, comptage, 708, 247, les 248 dans l'ordre de la liste rendue, 229, les 234, les 249, protection du cache, puis les tâches (101 par conteneur, 103 pour la première tâche de chacun) ; ensuite sans les réponses gardées ; une seule passe ; échec d'échange ou comptage refusé : arrêt au même point que l'outil | idem |
 | Réponses gardées | aucune d'un appel de l'outil à l'autre (la 708 est gardée pendant un appel) | 701 acceptée, 706, 703, comptage et 708 gardés sous l'identité complète de la carte (704 à chaque cycle) (708 relue quand l'ensemble des disques change) | idem |
 | Morceaux d'un transfert | tous, puis clôture | seulement ceux qui portent les champs décodés, puis clôture (**E1**) | tous, puis clôture |
 | Arrêt du service pendant un transfert | non établi (l'outil n'a pas d'arrêt en cours de lecture) | morceau 0 s'il n'est pas parti, puis clôture | morceaux restants, puis clôture (au plus 10 morceaux et une clôture) ; nouveaux envois admis pendant 2 s comptées depuis l'arrêt (l'échéance du cycle, ou le constat du signal d'arrêt par le transport), sinon abandon sans clôture |
 | Clôture confirmée par `0xc5` | lecture rejetée, non refaite | lecture rejetée, refaite une fois dans le cycle si ses morceaux étaient conformes et si le cycle n'est ni échu ni arrêté (**E2**) | lecture rejetée, non refaite |
 | Statut ou écho incorrect sur un morceau | abandon sans clôture | abandon sans clôture | abandon sans clôture |
-| Autre écart sur un morceau (ioctl en échec, identifiant, numéro, marque, taille) ou données rejetées avant la clôture | non établi | abandon sans clôture | abandon sans clôture |
+| Ioctl en échec (ouverture, morceau ou clôture), `EINTR` compris | un seul essai, aucune relance ; pas de morceau suivant ni de clôture | abandon sans clôture, arrêt de la carte pour le cycle | idem |
+| Autre écart sur un morceau (identifiant, numéro, marque, taille) ou données rejetées avant la clôture | non établi | abandon sans clôture | abandon sans clôture |
 | Ouverture sans transfert (identifiant `0xffffffff`, marque hors parcours) | aucune commande | aucune commande | aucune commande |
 | Ouverture au code `0xe2` (marque `0xc8` ou `0xc9`) | clôture immédiate | clôture immédiate, même forme (section 4) | idem |
 | Ouverture `0xc9` à total nul (hors `0xe2`) | clôture sans morceau | clôture sans morceau, même forme | idem |
@@ -538,7 +539,9 @@ L'exporter n'envoie que des commandes de l'outil de référence (versions 2.05 e
 | Mots de la réponse précédente | repris dans la requête suivante (mots 2, 3, 4, 7 pour un morceau) | parcours `0xc9` : `0xda` au mot 4 et total au mot 7 exigés pour lire les morceaux, dans la réponse d'ouverture et dans chaque réponse de morceau (valeurs de toutes les réponses capturées pour ces lectures), sinon clôture après l'ouverture (section 4) ou abandon ; parcours `0xc8` : marque, total, `0xda`, identifiant et numéro exigés dans chaque réponse de morceau, mot 7 des demandes = taille demandée `\| 0x80000000` comme l'outil : les requêtes restent celles de l'outil | idem |
 | Comptage sans le bit 9 de `FeatureBits` | envoyé (ouverture) | envoyé, à l'ouverture | idem |
 | Refus d'un objet pendant les lectures de configuration (248, 234, 249) | objet sauté, boucle poursuivie | idem | idem |
-| Échec d'échange pendant les lectures de configuration | abandon de l'ouverture | arrêt de la carte pour le cycle, au même point | idem |
+| Échec d'échange pendant les lectures de configuration | abandon de l'ouverture (247, 248, 234, 249) ; 229 : exception rattrapée, consultation poursuivie | arrêt de la carte pour le cycle, au même point (229 comprise : moins) | idem |
+| Identité de la carte (`GET_HBA_INFO`, réponse du pilote) | après le comptage ; seul le retour de l'ioctl est contrôlé, un repli (`FSACTL_GET_PCI_INFO`), ouverture poursuivie dans tous les cas | à chaque cycle, avant la 704 ; numéro, bus, slot, fonction et identifiants PCI comparés à sysfs, sinon aucune commande firmware ; pas de repli | idem |
+| Température (803) | trois envois par consultation (un à l'ouverture, deux dans les informations générales) ; échec d'ioctl : plus aucun | un par cycle | idem |
 | 708 en échec | poursuite (envoi sans exception) | emplacement en échec, poursuite | idem |
 | 703 en échec (ioctl) | ouverture abandonnée | plus aucune commande au cycle | idem |
 | Carte en pause (704), révision refusée (701) | carte non ouverte | plus aucune commande au cycle | idem |
