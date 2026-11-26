@@ -105,7 +105,7 @@ func ContainerListOpenSize(b []byte) (size uint32, ok bool) {
 	if le.Uint32(d[0:]) != vmContainerConfig || le.Uint32(d[4:]) != uint32(ReadContainerList) {
 		return 0, false
 	}
-	return le.Uint32(d[28:]), true
+	return le.Uint32(d[28:]) &^ SizeHighBit, true
 }
 
 // validContainerListSize accepte les tailles 8 + 4 × n, n dans

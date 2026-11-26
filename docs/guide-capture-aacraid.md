@@ -7,7 +7,7 @@ Cette annexe donne les commandes du [guide de capture](guide-capture.md) pour un
 | Situation | Signe dans les métriques de l'exporter | Ce que la capture apporte |
 |---|---|---|
 | Modèle non qualifié | `hwraid_controller_qualified 0` ; sans `-allow-unqualified`, tous les collecteurs à `hwraid_collector_supported 0` | les réponses de ce modèle, avant toute qualification |
-| Forme de transfert non implémentée | `hwraid_collector_supported 0` pour un collecteur autre que `cache_protection`, sur une carte lue | la forme demandée par la carte (bit 13 de `FeatureBits`, bit 15 de `SupportedOptions` : [aacraid-interface.md](aacraid-interface.md), section 7) ; sans capture, elle ne peut pas être ajoutée |
+| Forme de transfert non implémentée | `hwraid_collector_supported 0` pour les collecteurs des volumes et des disques à la fois, sur une carte lue (d'autres capacités absentes donnent aussi des collecteurs à 0 : la capture le départage) | la forme demandée par la carte (blocs de 2 048 octets, bit 15 de `SupportedOptions` : [aacraid-interface.md](aacraid-interface.md), section 7) ; une capture suffit à établir le format de ses réponses ; sans capture, elle ne peut pas être ajoutée |
 | Module de protection du cache non décodé | `hwraid_collector_supported{collector="cache_protection"} 0` | le format de ce module |
 | Lecture implémentée sans preuve matérielle | — | voir ci-dessous |
 
@@ -16,6 +16,7 @@ Lectures implémentées d'après l'outil de référence, mais jamais observées 
 - l'avancement d'une tâche de fond (reconstruction, vérification, mise à zéro, migration…), sous-commande 103 ([aacraid-interface.md](aacraid-interface.md), section 5) ;
 - la batterie classique (BBU), dans ses états `optimal`, `failed`, `maintenance` (section 6) ;
 - le module ZMM en charge ou tout juste posé ;
+- les transferts d'une carte qui annonce le bit 13 de `FeatureBits`, ou qui répond à l'ouverture avec la marque `0xc8` (section 4 de l'interface) ;
 - un volume dégradé, un disque en panne ou de secours.
 
 ## 2. Prérequis

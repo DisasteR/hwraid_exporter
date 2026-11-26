@@ -46,6 +46,7 @@ type device interface {
 	ConnectorMap(ctx context.Context) (aacraid.ConnectorMap, error)
 	CloseUnconfirmed() int
 	SetValidatedCouple(v bool)
+	SetPagedHighBit(v bool)
 	Close() error
 }
 
@@ -62,6 +63,7 @@ type reader interface {
 	CacheProtection() (aacraid.CacheProtectionReading, error)
 	ContainerCount() (aacraid.ContainerCount, error)
 	ExpectContainerList(c aacraid.ContainerCount)
+	SetPagedHighBit(v bool)
 	ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error)
 	ConnectorMap() (aacraid.ConnectorMap, error)
 }
@@ -230,6 +232,7 @@ func (b bound) ContainerCount() (aacraid.ContainerCount, error) {
 	return b.dev.ContainerCount(b.ctx)
 }
 func (b bound) ExpectContainerList(c aacraid.ContainerCount) { b.dev.ExpectContainerList(c) }
+func (b bound) SetPagedHighBit(v bool)                       { b.dev.SetPagedHighBit(v) }
 func (b bound) ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error) {
 	return b.dev.ReadPaged(b.ctx, r, param, size, need)
 }
@@ -365,19 +368,18 @@ func pagedCollectors() []string {
 }
 
 // collectArcIo applique les prérequis des transferts paginés (CDC, section
-// 6.11), puis lit volumes et disques. Formes à bit de poids fort (bit 13 de
-// FeatureBits) ou en blocs de 2 048 octets (bit 15 de SupportedOptions) :
-// non implémentées, collecteurs non pris en charge, rien n'est envoyé. La
-// 703 est toujours lue à ce stade (ouverture de la carte).
+// 6.11), puis lit volumes et disques. Bit 13 de FeatureBits : le transport
+// porte le bit de poids fort sur les ouvertures et le comptage, comme
+// l'outil. Blocs de 2 048 octets (bit 15 de SupportedOptions) : non
+// implémentés (format des réponses non établi), collecteurs non pris en
+// charge, rien n'est envoyé. La 703 est toujours lue à ce stade
+// (ouverture de la carte).
 func (m *Module) collectArcIo(r *module.Result, d reader, key string, h sysfs.SCSIHost, sup aacraid.SupplementInfo, ainfo aacraid.AdapterInfo) {
-	switch {
-	case sup.PagedHighBit():
-		r.Unsupported = append(r.Unsupported, pagedCollectors()...)
-		return
-	case ainfo.LargeTransfers():
+	if ainfo.LargeTransfers() {
 		r.Unsupported = append(r.Unsupported, pagedCollectors()...)
 		return
 	}
+	d.SetPagedHighBit(sup.PagedHighBit())
 	caps := aacraid.DiskCaps{DirectDisks: sup.DirectDisks(), JBOD: sup.JBOD(), NativeHBA: ainfo.NativeHBA(), NativeKnown: true}
 	cs, read := m.collectVolumes(r, d, key, h, sup.ContainerReads(), sup.ConnectorMapRead(), caps)
 	collectTasks(r, d, cs, read, sup.ContainerReads())

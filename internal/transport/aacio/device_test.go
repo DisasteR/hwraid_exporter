@@ -404,25 +404,26 @@ func TestCacheProtectionSequence(t *testing.T) {
 // l'hôte de référence (marques 0xc9 / 0xc8 / 0xc6, 448 octets par morceau),
 // et journalise les requêtes reçues.
 type fakeFirmware struct {
-	payload   []byte
-	xfer      uint32
-	failAt    int // numéro de morceau en erreur (-1 : aucun)
-	requests  [][]byte
-	openMark  uint32   // marque d'ouverture (0 : 0xc9)
-	total     uint32   // taille annoncée (0 : taille de payload)
-	stopXfer  uint32   // transfert annoncé à la clôture (0 : écho)
-	stopMark  uint32   // marque de la clôture (0 : 0xc6)
-	stopMarks []uint32 // marques des clôtures successives, prioritaires sur stopMark
-	chunkMark uint32   // marque des réponses de morceau (0 : 0xc8)
-	chunkSize uint16   // champ Size des réponses de morceau (0 : 496)
-	payloads  [][]byte // contenus des transferts successifs, prioritaires sur payload
-	onStop    func()   // appelé à chaque clôture reçue
-	onChunk   func()   // appelé à chaque demande de morceau reçue
-	onOpen    func()   // appelé à chaque ouverture reçue
-	openCode  uint32   // mot 4 de la réponse d'ouverture (0 : 0xda)
-	openSize  uint16   // champ Size de la réponse d'ouverture (0 : 496)
-	stopSize  uint16   // champ Size de la réponse de clôture (0 : 496)
-	failErr   error    // erreur du morceau failAt (nil : EIO)
+	payload    []byte
+	xfer       uint32
+	failAt     int // numéro de morceau en erreur (-1 : aucun)
+	requests   [][]byte
+	openMark   uint32   // marque d'ouverture (0 : 0xc9)
+	total      uint32   // taille annoncée (0 : taille de payload)
+	stopXfer   uint32   // transfert annoncé à la clôture (0 : écho)
+	stopMark   uint32   // marque de la clôture (0 : 0xc6)
+	stopMarks  []uint32 // marques des clôtures successives, prioritaires sur stopMark
+	chunkMark  uint32   // marque des réponses de morceau (0 : 0xc8)
+	chunkSize  uint16   // champ Size des réponses de morceau (0 : 496)
+	payloads   [][]byte // contenus des transferts successifs, prioritaires sur payload
+	onStop     func()   // appelé à chaque clôture reçue
+	onChunk    func()   // appelé à chaque demande de morceau reçue
+	onOpen     func()   // appelé à chaque ouverture reçue
+	openCode   uint32   // mot 4 de la réponse d'ouverture (0 : 0xda)
+	openSize   uint16   // champ Size de la réponse d'ouverture (0 : 496)
+	openSender uint16   // champ SenderSize de la réponse d'ouverture (0 : celui de la requête)
+	stopSize   uint16   // champ Size de la réponse de clôture (0 : 496)
+	failErr    error    // erreur du morceau failAt (nil : EIO)
 	// chunkHook modifie la réponse au morceau n une fois construite.
 	chunkHook func(n uint32, d []byte)
 	// openHook modifie la réponse d'ouverture une fois construite.
@@ -513,6 +514,9 @@ func (f *fakeFirmware) ioctl(t *testing.T) {
 			le.PutUint16(buf[8:], 496)
 			if f.openSize != 0 {
 				le.PutUint16(buf[8:], f.openSize)
+			}
+			if f.openSender != 0 {
+				le.PutUint16(buf[10:], f.openSender)
 			}
 			code := uint32(0xda)
 			if f.openCode != 0 {
@@ -1526,5 +1530,197 @@ func TestReadPagedStopAfterOpenWindowAndAnswers(t *testing.T) {
 				t.Fatalf("séquence %v, attendu l'ouverture et la clôture seules", got)
 			}
 		})
+	}
+}
+
+// inline prépare une ouverture du parcours 0xc8 : marque 0xc8, pas step au
+// mot 6, premières données (step octets du contenu) dans la réponse.
+func inline(f *fakeFirmware, step uint32) {
+	f.openMark = 0xc8
+	f.openHook = func(d []byte) {
+		binary.LittleEndian.PutUint32(d[24:], step)
+		copy(d[32:32+aacraid.ChunkData], f.payload[:min(int(step), len(f.payload))])
+	}
+}
+
+// Parcours 0xc8 (ligne 7 du déroulement), comme l'outil de référence
+// (variante V9 sur carte émulée ; 2.05 CT_SendReceiveFIB 0x8ddf56) : les
+// données de l'ouverture sont reprises, puis les morceaux 1 à 9 d'un
+// transfert de 4 096 octets en pas de 432, sans clôture, sur le couple
+// validé comme ailleurs ; chaque demande porte la marque 0xc8, le total,
+// CT_OK, le transfert, son numéro et la taille demandée | 0x80000000 (la
+// taille de l'ouverture, bit 13 compris ou non). Données rendues : le
+// contenu exact.
+func TestReadPagedInlinePath(t *testing.T) {
+	payload := make([]byte, 0x1000)
+	for i := range payload {
+		payload[i] = byte(i * 7)
+	}
+	for _, tc := range []struct {
+		validated, highBit bool
+	}{{false, false}, {true, false}, {false, true}} {
+		t.Run(fmt.Sprintf("validé %v, bit 13 %v", tc.validated, tc.highBit), func(t *testing.T) {
+			f := &fakeFirmware{payload: payload, xfer: 0x2061e, failAt: -1}
+			inline(f, 432)
+			f.ioctl(t)
+			d, err := Open("/dev/null", devNull, list(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			d.SetValidatedCouple(tc.validated)
+			d.SetPagedHighBit(tc.highBit)
+			data, err := d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return aacraid.ContainerInfoNeed })
+			if err != nil || !bytes.Equal(data, payload) {
+				t.Fatalf("err=%v, %d octets, contenu identique %v", err, len(data), bytes.Equal(data, payload))
+			}
+			want := append([]uint32{234}, slices.Repeat([]uint32{83}, 9)...)
+			if got := f.subs(); !slices.Equal(got, want) {
+				t.Fatalf("séquence %v, attendu l'ouverture et les morceaux 1 à 9, sans clôture", got)
+			}
+			le := binary.LittleEndian
+			if w7 := le.Uint32(f.requests[0][aacraid.FIBHeaderSize+28:]); w7 != 0x1000|map[bool]uint32{true: aacraid.SizeHighBit}[tc.highBit] {
+				t.Fatalf("ouverture : mot 7 %#x", w7)
+			}
+			for i, r := range f.requests[1:] {
+				want := make([]byte, aacraid.FIBSize)
+				copy(want, f.requests[0][:aacraid.FIBHeaderSize])
+				for k, v := range []uint32{2, 83, 0xc8, 0x1000, 0xda, 0x2061e, uint32(i + 1), 0x80001000} {
+					le.PutUint32(want[aacraid.FIBHeaderSize+4*k:], v)
+				}
+				if !bytes.Equal(r, want) {
+					t.Fatalf("morceau %d :\n got %x\nwant %x", i+1, r[:64], want[:64])
+				}
+			}
+		})
+	}
+}
+
+// Parcours 0xc8, cas limites : pas nul (l'outil lirait octet par octet) ou
+// supérieur aux 432 octets écrits par la carte : aucune commande ; total
+// plus court que le pas : données de l'ouverture seules, sans morceau ;
+// réponse de morceau incohérente : abandon, ni morceau suivant ni clôture ;
+// arrêt pendant le parcours : morceaux restants dans la fenêtre, lecture
+// non rendue, sans clôture ; fenêtre dépassée : abandon.
+func TestReadPagedInlineLimits(t *testing.T) {
+	read := func(t *testing.T, f *fakeFirmware, ctx context.Context) ([]byte, error) {
+		t.Helper()
+		f.xfer, f.failAt = 9, -1
+		f.ioctl(t)
+		d, err := Open("/dev/null", devNull, list(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { d.Close() })
+		return d.ReadPaged(ctx, aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return 0 })
+	}
+	for name, step := range map[string]uint32{"pas nul": 0, "pas de 433": 433} {
+		f := &fakeFirmware{payload: make([]byte, 0x1000)}
+		inline(f, step)
+		if _, err := read(t, f, context.Background()); err == nil || !slices.Equal(f.subs(), []uint32{234}) {
+			t.Fatalf("%s : err=%v, séquence %v", name, err, f.subs())
+		}
+	}
+	short := &fakeFirmware{payload: []byte("donnees courtes")}
+	inline(short, 432)
+	if data, err := read(t, short, context.Background()); err != nil || string(data) != "donnees courtes" || !slices.Equal(short.subs(), []uint32{234}) {
+		t.Fatalf("total court : %q, %v, séquence %v", data, err, short.subs())
+	}
+	for name, hook := range map[string]func(uint32, []byte){
+		"transfert": func(n uint32, d []byte) {
+			if n == 2 {
+				binary.LittleEndian.PutUint32(d[20:], 10)
+			}
+		},
+		"numéro": func(n uint32, d []byte) {
+			if n == 2 {
+				binary.LittleEndian.PutUint32(d[24:], 3)
+			}
+		},
+		"code": func(n uint32, d []byte) {
+			if n == 2 {
+				binary.LittleEndian.PutUint32(d[16:], 0xdb)
+			}
+		},
+		"total": func(n uint32, d []byte) {
+			if n == 2 {
+				binary.LittleEndian.PutUint32(d[12:], 0xfff)
+			}
+		},
+		"marque": func(n uint32, d []byte) {
+			if n == 2 {
+				binary.LittleEndian.PutUint32(d[8:], 0xc9)
+			}
+		},
+	} {
+		f := &fakeFirmware{payload: make([]byte, 0x1000), chunkHook: hook}
+		inline(f, 432)
+		if _, err := read(t, f, context.Background()); err == nil || !slices.Equal(f.subs(), []uint32{234, 83, 83}) {
+			t.Fatalf("%s incohérent : err=%v, séquence %v", name, err, f.subs())
+		}
+	}
+	old := stopGrace
+	stopGrace = 20 * time.Millisecond
+	defer func() { stopGrace = old }()
+	for name, slow := range map[string]time.Duration{"arrêt": 0, "fenêtre dépassée": 60 * time.Millisecond} {
+		ctx, cancel := context.WithCancel(context.Background())
+		chunks := 0
+		f := &fakeFirmware{payload: make([]byte, 0x1000), onChunk: func() {
+			if chunks++; chunks == 2 {
+				cancel()
+				time.Sleep(slow)
+			}
+		}}
+		inline(f, 432)
+		data, err := read(t, f, ctx)
+		cancel()
+		want := append([]uint32{234}, slices.Repeat([]uint32{83}, 9)...)
+		if slow > 0 {
+			want = []uint32{234, 83, 83}
+		}
+		if err == nil || data != nil || !slices.Equal(f.subs(), want) {
+			t.Fatalf("%s : err=%v, données %v, séquence %v", name, err, data != nil, f.subs())
+		}
+	}
+}
+
+// Parcours 0xc8 : pas tiré aussi du SenderSize de la réponse, comme l'outil
+// (SenderSize 256 : pas de 192, morceaux 1 à 21 pour 4 096 octets ; 64 :
+// refusé sans commande) ; mot 7 des morceaux = taille demandée à
+// l'ouverture (0x1000 pour la 234) même quand la carte annonce un autre
+// total (0xfa0).
+func TestReadPagedInlineSenderSizeAndRequested(t *testing.T) {
+	read := func(t *testing.T, f *fakeFirmware) error {
+		t.Helper()
+		f.xfer, f.failAt = 9, -1
+		f.ioctl(t)
+		d, err := Open("/dev/null", devNull, list(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { d.Close() })
+		_, err = d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return 0 })
+		return err
+	}
+	f := &fakeFirmware{payload: make([]byte, 0x1000), openSender: 256}
+	inline(f, 432)
+	if err := read(t, f); err != nil || !slices.Equal(f.subs(), append([]uint32{234}, slices.Repeat([]uint32{83}, 21)...)) {
+		t.Fatalf("SenderSize 256 : err=%v, séquence %v", err, f.subs())
+	}
+	f = &fakeFirmware{payload: make([]byte, 0x1000), openSender: 64}
+	inline(f, 432)
+	if err := read(t, f); err == nil || !slices.Equal(f.subs(), []uint32{234}) {
+		t.Fatalf("SenderSize 64 : err=%v, séquence %v", err, f.subs())
+	}
+	f = &fakeFirmware{payload: make([]byte, 0x1000), total: 0xfa0}
+	inline(f, 432)
+	if err := read(t, f); err != nil || len(f.requests) != 10 {
+		t.Fatalf("total 0xfa0 : err=%v, %d requêtes", err, len(f.requests))
+	}
+	le := binary.LittleEndian
+	for i, r := range f.requests[1:] {
+		if total, w7 := le.Uint32(r[aacraid.FIBHeaderSize+12:]), le.Uint32(r[aacraid.FIBHeaderSize+28:]); total != 0xfa0 || w7 != 0x80001000 {
+			t.Fatalf("morceau %d : total %#x, mot 7 %#x (attendu 0xfa0 et 0x80001000)", i+1, total, w7)
+		}
 	}
 }

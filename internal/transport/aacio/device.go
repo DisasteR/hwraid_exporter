@@ -92,6 +92,9 @@ type Device struct {
 	// section 6.11, écarts E1 et E2). Faux par défaut : suite de commandes
 	// de l'outil de référence.
 	validated bool
+	// highBit : la carte annonce le bit 13 de FeatureBits ; ouvertures et
+	// CT_GET_CONTAINER_COUNT portent SizeHighBit au mot 7, comme l'outil.
+	highBit bool
 }
 
 // CloseUnconfirmed renvoie le nombre de lectures paginées rejetées depuis
@@ -304,6 +307,9 @@ func (d *Device) ContainerCount(ctx context.Context) (aacraid.ContainerCount, er
 		return aacraid.ContainerCount{}, err
 	}
 	buf := aacraid.ContainerCountRequest()
+	if d.highBit {
+		buf = aacraid.WithSizeHighBit(buf)
+	}
 	if err := d.do(ctx, allowlist.Request{Ioctl: aacraid.IoctlSendFIB, Buf: buf}); err != nil {
 		return aacraid.ContainerCount{}, err
 	}
@@ -418,6 +424,12 @@ func (d *Device) stopWith(window context.Context, r aacraid.PagedRead, head aacr
 // morceaux, puis la clôture, sans relecture (CDC, section 6.11, règle de
 // conduite). Par défaut : non validé.
 func (d *Device) SetValidatedCouple(v bool) { d.validated = v }
+
+// SetPagedHighBit indique que la carte annonce le bit 13 de FeatureBits
+// (706) : le mot 7 des ouvertures de transfert et de CT_GET_CONTAINER_COUNT
+// porte alors aacraid.SizeHighBit, comme chez l'outil de référence. Par
+// défaut : absent.
+func (d *Device) SetPagedHighBit(v bool) { d.highBit = v }
 
 // pagedAttempts : sur un couple validé (E2), une lecture rejetée à la
 // clôture (0xc5) est refaite une fois dans le même cycle ; un second rejet
@@ -534,6 +546,9 @@ func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size 
 	if err != nil {
 		return nil, false, err
 	}
+	if d.highBit {
+		open = aacraid.WithSizeHighBit(open)
+	}
 	// Hors couple validé : fenêtre d'arrêt, close stopGrace après la fin de
 	// ctx (comptée depuis l'arrêt lui-même : installée avant l'ouverture).
 	// Chaque morceau et la clôture y sont admis sur le thread dédié, juste
@@ -563,6 +578,9 @@ func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size 
 			return nil, false, fmt.Errorf("read %d: open not nominal (mark %#x, code %#x, size %d); %w", r, head.Mark, head.Code, head.Total, stopErr)
 		}
 		return nil, false, fmt.Errorf("read %d: open not nominal (mark %#x, code %#x, size %d); transfer %#x stopped", r, head.Mark, head.Code, head.Total, head.Xfer)
+	}
+	if head.Mark == aacraid.MarkChunk && head.Code == aacraid.CodeOK && head.Xfer != aacraid.XferNone && head.Total != 0 && head.Total <= maxPagedTotal {
+		return d.readInline(ctx, r, open, head, need)
 	}
 	if head.Xfer == aacraid.XferNone || head.Mark != 0xc9 || head.Code != aacraid.CodeOK || head.Total == 0 || head.Total > maxPagedTotal || head.Size != head.Total {
 		// Autre ouverture hors du parcours nominal (sans transfert, marque
@@ -651,6 +669,55 @@ func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size 
 	// clôture) est allée au bout, mais la lecture n'est pas rendue.
 	if err := admit(ctx); err != nil {
 		return nil, false, fmt.Errorf("read %d: %w", r, err)
+	}
+	return data, false, nil
+}
+
+// readInline mène le parcours 0xc8 (ligne 7 du déroulement, CDC section
+// 6.11) : l'ouverture porte déjà les premières données ; les morceaux 1 à
+// n suivent, puis rien (l'outil ne clôture pas ce parcours). Comme l'outil
+// (2.05 CT_SendReceiveFIB 0x8ddf56) : pas = mot 6 de la réponse
+// d'ouverture, tous les morceaux sont lus, mot 7 des demandes = taille
+// demandée | SizeHighBit. Plus strict que l'outil : pas nul ou supérieur
+// aux octets écrits par la carte refusé sans commande ; chaque réponse de
+// morceau doit porter la marque 0xc8, le transfert, son numéro, le total
+// et CT_OK (les mots que la demande suivante reprend), sinon abandon. Les
+// morceaux restants passent par la fenêtre d'arrêt, sur toute carte : sans
+// clôture, arrêter en route laisserait le transfert à mi-chemin.
+func (d *Device) readInline(ctx context.Context, r aacraid.PagedRead, open []byte, head aacraid.PagedResponse, need func([]byte) int) ([]byte, bool, error) {
+	step, ok := head.InlineStep()
+	if !ok {
+		return nil, false, fmt.Errorf("read %d: open with inline data refused (step %d, at most %d); transfer %#x not continued", r, step, aacraid.ChunkData, head.Xfer)
+	}
+	w := &stopWindow{stop: ctx, grace: stopGrace}
+	release := context.AfterFunc(ctx, w.mark)
+	defer release()
+	requested := aacraid.RequestedSize(open)
+	take := func(b []byte, left uint32) []byte { return b[:min(step, left)] }
+	data := append([]byte(nil), take(head.Data, head.Total)...)
+	count := (head.Total + step - 1) / step
+	for n := uint32(1); n < count; n++ {
+		req := aacraid.InlineChunkRequest(head.Total, head.Xfer, n, requested)
+		rsp, err := d.fib(w, append([]byte(nil), req...))
+		if err != nil {
+			return nil, false, fmt.Errorf("read %d: %w; transfer %#x abandoned", r, err, head.Xfer)
+		}
+		c, err := aacraid.DecodePagedResponse(req, rsp)
+		if err != nil {
+			return nil, false, fmt.Errorf("read %d: %w; transfer %#x abandoned", r, err, head.Xfer)
+		}
+		if c.Mark != aacraid.MarkChunk || c.Xfer != head.Xfer || c.Chunk != n || c.Total != head.Total || c.Code != aacraid.CodeOK {
+			return nil, false, fmt.Errorf("read %d: inconsistent inline chunk %d (mark %#x, transfer %#x, chunk %d, total %d, code %#x); transfer %#x abandoned", r, n, c.Mark, c.Xfer, c.Chunk, c.Total, c.Code, head.Xfer)
+		}
+		data = append(data, take(c.Data, head.Total-uint32(len(data)))...)
+	}
+	// Arrêt pendant le parcours : la suite est allée au bout, mais la
+	// lecture n'est pas rendue.
+	if err := admit(ctx); err != nil {
+		return nil, false, fmt.Errorf("read %d: %w", r, err)
+	}
+	if want := need(data); want > len(data) {
+		return nil, false, fmt.Errorf("read %d: %d bytes needed, transfer of %d", r, want, len(data))
 	}
 	return data, false, nil
 }

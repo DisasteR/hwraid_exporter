@@ -69,6 +69,7 @@ func TestNodesFollowUniqueID(t *testing.T) {
 type fakeDev struct {
 	// validated : dernière valeur reçue par SetValidatedCouple.
 	validated, validatedSet bool
+	highBit, highBitSet     bool
 	info                    aacraid.HBAInfo
 	err                     error
 	sup                     aacraid.SupplementInfo
@@ -280,6 +281,7 @@ func (f *fakeDev) SupplementInfo(ctx context.Context) (aacraid.SupplementInfo, e
 func (f *fakeDev) Close() error              { f.closed = true; return nil }
 func (f *fakeDev) CloseUnconfirmed() int     { return f.closeOther }
 func (f *fakeDev) SetValidatedCouple(v bool) { f.validated, f.validatedSet = v, true }
+func (f *fakeDev) SetPagedHighBit(v bool)    { f.highBit, f.highBitSet = v, true }
 
 func (f *fakeDev) CacheProtection(ctx context.Context) (aacraid.CacheProtectionReading, error) {
 	if f.stopped(ctx) {
@@ -2031,8 +2033,20 @@ func TestPagedPrerequisites(t *testing.T) {
 	high := arcIo
 	high.FeatureBits |= aacraid.FeaturePagedHighBit
 	large := aacraid.AdapterInfo{SupportedOptions: aacraid.SupportedHeatSensor | aacraid.SupportedLargeTransfers}
+	// Bit 13 de FeatureBits : lu, le transport reçoit l'indication (il
+	// porte le bit de poids fort sur ouvertures et comptage) ; sans le bit,
+	// l'indication est donnée à faux.
+	for _, tc := range []struct {
+		sup  aacraid.SupplementInfo
+		want bool
+	}{{high, true}, {arcIo, false}} {
+		d := &fakeDev{info: hba, sup: tc.sup}
+		r := withDev(d, nil).Collect(context.Background(), c, ref)
+		if !d.highBitSet || d.highBit != tc.want || len(d.reads) == 0 || d.countCall != 1 || !r.Collected["volumes"] || len(r.Unsupported) != 0 {
+			t.Errorf("bit 13 %v : indication %v (donnée %v), lectures %d, comptage %d, %v / %v", tc.want, d.highBit, d.highBitSet, len(d.reads), d.countCall, r.Collected, r.Unsupported)
+		}
+	}
 	for name, d := range map[string]*fakeDev{
-		"bit 13 de FeatureBits":      {info: hba, sup: high},
 		"bit 15 de SupportedOptions": {info: hba, sup: arcIo, ai: &large},
 	} {
 		r := withDev(d, nil).Collect(context.Background(), c, ref)

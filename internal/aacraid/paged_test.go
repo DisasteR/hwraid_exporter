@@ -308,3 +308,93 @@ func TestStopAfterOpen(t *testing.T) {
 		t.Fatalf("résidu accepté : %v", err)
 	}
 }
+
+// Bit 13 de FeatureBits et parcours 0xc8 (formes 2 et 4, CDC section 6.11),
+// liste blanche : ouvertures et comptage avec le bit de poids fort admis
+// pour leurs seules tailles qualifiées ; morceau du parcours 0xc8 admis
+// avec n ≥ 1, marque 0xc8, CT_OK, total et taille demandée bornés ;
+// chacune de leurs variantes refusée. WithSizeHighBit ne touche que le
+// mot 7 ; RequestedSize l'ôte.
+func TestHighBitAndInlineForms(t *testing.T) {
+	l := mustList(t)
+	check := func(b []byte) bool {
+		_, err := l.Check(allowlist.Request{Ioctl: IoctlSendFIB, Buf: b})
+		if err != nil && !errors.Is(err, allowlist.ErrDenied) {
+			t.Fatal(err)
+		}
+		return err == nil
+	}
+	le := binary.LittleEndian
+	base, _ := OpenRequest(ReadDiskList, 0, 0)
+	high := WithSizeHighBit(base)
+	if le.Uint32(high[FIBHeaderSize+28:]) != 0x80001004 || RequestedSize(high) != 0x1004 || le.Uint32(base[FIBHeaderSize+28:]) != 0x1004 {
+		t.Fatalf("mot 7 : %#x (original %#x)", le.Uint32(high[FIBHeaderSize+28:]), le.Uint32(base[FIBHeaderSize+28:]))
+	}
+	high[FIBHeaderSize+28] = base[FIBHeaderSize+28]
+	if !bytes.Equal(high[:FIBHeaderSize+28], base[:FIBHeaderSize+28]) || !bytes.Equal(high[FIBHeaderSize+32:], base[FIBHeaderSize+32:]) {
+		t.Fatal("WithSizeHighBit modifie autre chose que le mot 7")
+	}
+	for _, mk := range []func() ([]byte, error){
+		func() ([]byte, error) { return OpenRequest(ReadContainerList, 0, ContainerListSize(256)) },
+		func() ([]byte, error) { return OpenRequest(ReadContainerInfo, 0xfd, 0) },
+		func() ([]byte, error) { return OpenRequest(ReadDiskList, 0, 0) },
+		func() ([]byte, error) { return OpenRequest(ReadDiskInfo, 7, 0) },
+		func() ([]byte, error) { return OpenRequest(ReadMemberList, 0x1d000000, MemberListSize(4)) },
+		func() ([]byte, error) { return ContainerCountRequest(), nil },
+	} {
+		b, _ := mk()
+		if !check(WithSizeHighBit(b)) {
+			t.Fatalf("forme du bit 13 refusée : %x", b[FIBHeaderSize:FIBHeaderSize+32])
+		}
+	}
+	wrong := WithSizeHighBit(base)
+	le.PutUint32(wrong[FIBHeaderSize+28:], 0x80001000) // 247 : taille 0x1004 seulement
+	if check(wrong) {
+		t.Fatal("ouverture 247 de taille 0x1000 avec le bit de poids fort acceptée")
+	}
+	count := ContainerCountRequest()
+	le.PutUint32(count[FIBHeaderSize+28:], 0x80000001)
+	if check(count) {
+		t.Fatal("comptage avec une taille non nulle acceptée")
+	}
+	ok := InlineChunkRequest(0x1000, 0x2061e, 1, 0x1000)
+	if !check(ok) || !check(InlineChunkRequest(0x1004, 0x2061e, 0x1003, 0x1004)) {
+		t.Fatal("morceau du parcours 0xc8 refusé")
+	}
+	for name, mut := range map[string]func([]byte){
+		"morceau 0":                              func(b []byte) { le.PutUint32(b[FIBHeaderSize+24:], 0) },
+		"marque 0xc9":                            func(b []byte) { le.PutUint32(b[FIBHeaderSize+8:], 0xc9) },
+		"code 0xdb":                              func(b []byte) { le.PutUint32(b[FIBHeaderSize+16:], 0xdb) },
+		"sans transfert":                         func(b []byte) { le.PutUint32(b[FIBHeaderSize+20:], XferNone) },
+		"total nul":                              func(b []byte) { le.PutUint32(b[FIBHeaderSize+12:], 0) },
+		"total au-delà":                          func(b []byte) { le.PutUint32(b[FIBHeaderSize+12:], 0x1005) },
+		"numéro au-delà du total":                func(b []byte) { le.PutUint32(b[FIBHeaderSize+24:], 0x1000) },
+		"taille demandée nulle":                  func(b []byte) { le.PutUint32(b[FIBHeaderSize+28:], SizeHighBit) },
+		"taille demandée au-delà":                func(b []byte) { le.PutUint32(b[FIBHeaderSize+28:], SizeHighBit|0x1005) },
+		"taille demandée d'un octet":             func(b []byte) { le.PutUint32(b[FIBHeaderSize+28:], SizeHighBit|1) },
+		"taille demandée non qualifiée":          func(b []byte) { le.PutUint32(b[FIBHeaderSize+28:], SizeHighBit|0x0ffd) },
+		"numéro au-delà du total (bien au-delà)": func(b []byte) { le.PutUint32(b[FIBHeaderSize+24:], 0x2000) },
+		"résidu":                                 func(b []byte) { b[FIBHeaderSize+40] = 1 },
+		"clôture avec le bit":                    func(b []byte) { le.PutUint32(b[FIBHeaderSize+4:], 84) },
+	} {
+		b := append([]byte(nil), ok...)
+		mut(b)
+		if check(b) {
+			t.Errorf("%s : accepté", name)
+		}
+	}
+	// Pas du parcours 0xc8 : min(mot 6, SenderSize − 64), comme l'outil ;
+	// refusé si nul, si SenderSize ≤ 64 ou au-delà de ChunkData.
+	for _, tc := range []struct {
+		word6, sender, step uint32
+		ok                  bool
+	}{
+		{432, 512, 432, true}, {1, 512, 1, true}, {500, 400, 336, true}, {432, 256, 192, true},
+		{0, 512, 0, false}, {433, 512, 0, false}, {432, 64, 0, false}, {432, 0, 0, false}, {600, 600, 0, false},
+	} {
+		step, ok := (PagedResponse{Chunk: tc.word6, SenderSize: tc.sender}).InlineStep()
+		if ok != tc.ok || (ok && step != tc.step) {
+			t.Errorf("mot 6 %d, SenderSize %d : pas %d %v, attendu %d %v", tc.word6, tc.sender, step, ok, tc.step, tc.ok)
+		}
+	}
+}

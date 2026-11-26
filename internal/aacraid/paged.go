@@ -16,6 +16,11 @@ import (
 //	morceau   : [2, 83, 0xc9 (premier) | 0xc8, total, 0xda, transfert, n, total]
 //	clôture   : [2, 84, 0xc8, total, 0xda, transfert, dernier n, total]
 //	clôture après l'ouverture : [2, 84, mots 2 à 7 de la réponse d'ouverture]
+//	morceau du parcours 0xc8 : [2, 83, 0xc8, total, 0xda, transfert, n ≥ 1,
+//	                            taille demandée | 0x80000000]
+//
+// FeatureBits (706) bit 13 : mot 7 de l'ouverture (et du comptage des
+// conteneurs) | 0x80000000 (SizeHighBit).
 //
 // reste à zéro. Les octets que l'outil laisse au-delà des huit mots sont des
 // résidus de ses propres tampons : ils ne sont pas reproduits.
@@ -171,6 +176,63 @@ func StopAfterOpenRequest(open PagedResponse) []byte {
 	return pagedRequest(vmContainerConfig, ctStopData, open.Mark, open.Total, open.Code, open.Xfer, open.Chunk, open.Size)
 }
 
+// SizeHighBit est le bit de poids fort que l'outil de référence ajoute à la
+// taille demandée (mot 7) : sur l'ouverture et sur CT_GET_CONTAINER_COUNT
+// quand FeatureBits (706) porte le bit 13 (sens non établi), et sur chaque
+// morceau du parcours 0xc8, quel que soit ce bit.
+const SizeHighBit = 0x80000000
+
+// WithSizeHighBit rend une copie de la requête b (ouverture ou
+// CT_GET_CONTAINER_COUNT) dont le mot 7 porte SizeHighBit (forme de
+// l'outil pour une carte qui annonce le bit 13 de FeatureBits).
+func WithSizeHighBit(b []byte) []byte {
+	out := append([]byte(nil), b...)
+	le := binary.LittleEndian
+	le.PutUint32(out[FIBHeaderSize+28:], le.Uint32(out[FIBHeaderSize+28:])|SizeHighBit)
+	return out
+}
+
+// RequestedSize rend la taille demandée (mot 7, sans SizeHighBit) d'une
+// requête d'ouverture.
+func RequestedSize(open []byte) uint32 {
+	return binary.LittleEndian.Uint32(open[FIBHeaderSize+28:]) &^ SizeHighBit
+}
+
+// InlineStep rend le pas du parcours 0xc8 (données portées par
+// l'ouverture), calculé comme l'outil de référence (2.05 0x8ddf56..0x8ddf78,
+// 3.07 0x8b03cb..0x8b03e7) : min(mot 6, SenderSize de la réponse − 64).
+// ok est faux, et l'exporter refuse sans commande, pour un mot 6 nul
+// (l'outil prend alors un pas d'un octet, jusqu'à 4 100 morceaux), un
+// SenderSize d'au plus 64 (l'outil divise alors par zéro) ou un pas
+// supérieur aux ChunkData octets que la carte écrit dans une réponse de
+// 496.
+func (r PagedResponse) InlineStep() (step uint32, ok bool) {
+	if r.Chunk == 0 || r.SenderSize <= 64 {
+		return 0, false
+	}
+	step = min(r.Chunk, r.SenderSize-64)
+	return step, step <= ChunkData
+}
+
+// InlineChunkRequest construit la demande du morceau n (n ≥ 1) du parcours
+// 0xc8, comme l'outil de référence : marque 0xc8, total, code CT_OK et
+// transfert repris de la réponse précédente (que le transport exige
+// identiques), taille demandée à l'ouverture | SizeHighBit au mot 7.
+func InlineChunkRequest(total, xfer, n, requested uint32) []byte {
+	return pagedRequest(vmContainerConfig, ctContinueData, markNext, total, markDA, xfer, n, requested|SizeHighBit)
+}
+
+// qualifiedOpenSize indique une taille demandée par l'une des ouvertures
+// qualifiées (pagedForms) : taille fixe, ou taille calculée bornée.
+func qualifiedOpenSize(size uint32) bool {
+	for _, f := range pagedForms {
+		if (f.size != 0 && size == f.size) || (f.size == 0 && f.sizeOK(size)) {
+			return true
+		}
+	}
+	return false
+}
+
 // chunks est le nombre de morceaux d'un transfert de total octets.
 func chunks(total uint32) uint32 { return (total + ChunkData - 1) / ChunkData }
 
@@ -202,12 +264,19 @@ func checkPagedRequest(b []byte) bool {
 	}
 	switch sub := w(1); sub {
 	case ctGetContainerCount:
-		return w(2) == 0 && w(3) == 0 && w(4) == 0 && w(5) == 0xffffffff && w(6) == 0 && w(7) == 0
+		return w(2) == 0 && w(3) == 0 && w(4) == 0 && w(5) == 0xffffffff && w(6) == 0 && (w(7) == 0 || w(7) == SizeHighBit)
 	case ctContinueData, ctStopData:
 		if sub == ctStopData && (PagedResponse{Mark: w(2), Total: w(3), Code: w(4), Xfer: w(5), Chunk: w(6), Size: w(7)}).StopAfterOpen() {
 			return true
 		}
 		total, n := w(3), w(6)
+		if sub == ctContinueData && w(7)&SizeHighBit != 0 {
+			// Morceau du parcours 0xc8 : n ≥ 1, marque 0xc8, taille demandée
+			// égale à celle d'une ouverture qualifiée ; n < total (pas d'au
+			// moins un octet).
+			return w(2) == markNext && total != 0 && total <= 0x1004 && w(4) == markDA && w(5) != XferNone &&
+				n >= 1 && n < total && qualifiedOpenSize(w(7)&^SizeHighBit)
+		}
 		if total == 0 || total > 0x1004 || w(7) != total || w(4) != markDA || w(5) == XferNone || n >= chunks(total) {
 			return false
 		}
@@ -222,10 +291,11 @@ func checkPagedRequest(b []byte) bool {
 		if !ok || !f.param(w(2)) || w(3) != 0 || w(4) != f.mark || w(5) != 0xffffffff || w(6) != 0 {
 			return false
 		}
+		size := w(7) &^ SizeHighBit // bit 13 de FeatureBits : SizeHighBit admis
 		if f.size != 0 {
-			return w(7) == f.size
+			return size == f.size
 		}
-		return f.sizeOK(w(7))
+		return f.sizeOK(size)
 	}
 }
 
@@ -244,7 +314,10 @@ type PagedResponse struct {
 	// précédente dans la requête suivante : le transport exige ici les
 	// valeurs que ses requêtes portent.
 	Size uint32
-	Data []byte // données du morceau (CT_CONTINUE_DATA)
+	// SenderSize : champ SenderSize de l'en-tête de la réponse ; l'outil
+	// en tire le pas du parcours 0xc8 (InlineStep).
+	SenderSize uint32
+	Data       []byte // données du morceau, ou portées par l'ouverture (parcours 0xc8)
 }
 
 // DecodePagedResponse vérifie la réponse à une requête paginée req et
@@ -273,10 +346,12 @@ func DecodePagedResponse(req, rsp []byte) (PagedResponse, error) {
 	if sz := le.Uint16(rsp[fibSize:]); sz != ChunkRspSize {
 		return PagedResponse{}, fmt.Errorf("paged response: size field %d, expected %d", sz, ChunkRspSize)
 	}
-	r := PagedResponse{Mark: le.Uint32(d[8:]), Total: le.Uint32(d[12:]), Code: le.Uint32(d[16:]), Xfer: le.Uint32(d[20:]), Chunk: le.Uint32(d[24:]), Size: le.Uint32(d[28:])}
-	if le.Uint32(q[4:]) == ctContinueData {
-		// Données du morceau : jusqu'à la fin annoncée par Size, jamais
-		// au-delà (octets non écrits par la carte).
+	r := PagedResponse{Mark: le.Uint32(d[8:]), Total: le.Uint32(d[12:]), Code: le.Uint32(d[16:]), Xfer: le.Uint32(d[20:]), Chunk: le.Uint32(d[24:]), Size: le.Uint32(d[28:]),
+		SenderSize: uint32(le.Uint16(rsp[fibSenderSize:]))}
+	if le.Uint32(q[4:]) != ctStopData {
+		// Données du morceau, ou portées par l'ouverture (parcours 0xc8) :
+		// jusqu'à la fin annoncée par Size, jamais au-delà (octets non écrits
+		// par la carte).
 		r.Data = d[32 : 32+ChunkData]
 	}
 	return r, nil

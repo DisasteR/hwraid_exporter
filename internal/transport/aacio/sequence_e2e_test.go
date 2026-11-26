@@ -513,9 +513,9 @@ func containerConfigSent(t *testing.T, log []string) (subs [][2]uint32, connecto
 }
 
 // Refus par capacité (CDC, section 6.11, prérequis), vérifiés sur les ioctl
-// effectivement émis par le module et le transport réels : 703 en échec,
-// bit 13 de FeatureBits ou bit 15 de SupportedOptions : aucune commande
-// VM_ContainerConfig (comptage, transferts) ni 708 n'atteint le noyau.
+// effectivement émis par le module et le transport réels : 703 en échec ou
+// bit 15 de SupportedOptions : aucune commande VM_ContainerConfig
+// (comptage, transferts) ni 708 n'atteint le noyau.
 func TestCapabilityRefusalsSendNothing(t *testing.T) {
 	list, err := aacraid.NewAllowlist()
 	if err != nil {
@@ -523,7 +523,6 @@ func TestCapabilityRefusalsSendNothing(t *testing.T) {
 	}
 	for name, fw := range map[string]*cardFirmware{
 		"703 en échec":               {fail703: true},
-		"bit 13 de FeatureBits":      {extraFeatureBits: aacraid.FeaturePagedHighBit},
 		"bit 15 de SupportedOptions": {extraOptions: aacraid.SupportedLargeTransfers},
 	} {
 		fw.t = t
@@ -1040,5 +1039,58 @@ func TestBatteryIoctls(t *testing.T) {
 	cp := r.CacheProtection
 	if cp == nil || !cp.Present || cp.Type != "battery" || cp.Vendor != "bbu" || cp.State != "maintenance" || !r.Collected["cache_protection"] {
 		t.Fatalf("protection du cache : %+v, %v", cp, r.Collected)
+	}
+}
+
+// Bit 13 de FeatureBits (forme 2, CDC section 6.11), sur les ioctl émis par
+// le module et le transport réels : le mot 7 de CT_GET_CONTAINER_COUNT et de
+// chaque ouverture (229, 234, 247, 248, 249) porte 0x80000000 en plus de la
+// taille de la forme habituelle ; morceaux et clôtures reprennent le total
+// de la réponse, sans ce bit (confirmé sur carte émulée, variante V2) ; la
+// collecte aboutit. Sans le bit 13, aucun mot 7 ne porte ce bit.
+func TestHighBitIoctls(t *testing.T) {
+	list, err := aacraid.NewAllowlist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	le := binary.LittleEndian
+	for _, high := range []bool{true, false} {
+		fw := &cardFirmware{t: t}
+		if high {
+			fw.extraFeatureBits = aacraid.FeaturePagedHighBit
+		}
+		aacio.ReplaceIoctl(t, fw.ioctl)
+		c, refs := e2eCard()
+		c.Hosts[0].SerialNumber, c.Hosts[0].Model = "TEST0001", "ASR6805"
+		r := aacmod.New(list).Collect(context.Background(), c, refs)
+		if !r.Collected["volumes"] || !r.Collected["disks"] {
+			t.Fatalf("bit 13 %v : collecteurs %v", high, r.Collected)
+		}
+		opens := 0
+		for _, l := range fw.log {
+			req, h, _ := strings.Cut(l, " ")
+			b, _ := hex.DecodeString(h)
+			if req != fmt.Sprintf("%#x", aacraid.IoctlSendFIB) || le.Uint16(b[4:]) != 500 || le.Uint32(b[aacraid.FIBHeaderSize:]) != 2 {
+				continue
+			}
+			sub, w7 := le.Uint32(b[aacraid.FIBHeaderSize+4:]), le.Uint32(b[aacraid.FIBHeaderSize+28:])
+			switch sub {
+			case 83, 84:
+				if w7&aacraid.SizeHighBit != 0 {
+					t.Errorf("bit 13 %v : sous-commande %d avec le bit de poids fort (%#x)", high, sub, w7)
+				}
+			default:
+				opens++
+				if (w7&aacraid.SizeHighBit != 0) != high {
+					t.Errorf("bit 13 %v : sous-commande %d, mot 7 %#x", high, sub, w7)
+				}
+				if sub == 4 && w7&^aacraid.SizeHighBit != 0 {
+					t.Errorf("comptage : taille %#x", w7)
+				}
+			}
+		}
+		if opens < 10 {
+			t.Fatalf("bit 13 %v : %d ouvertures vues", high, opens)
+		}
 	}
 }
