@@ -91,7 +91,7 @@ func CheckFIBRequest(b []byte) error {
 			return nil
 		}
 	}
-	if checkPagedRequest(b) {
+	if checkPagedRequest(b) || checkTaskRequest(b) {
 		return nil
 	}
 	cmd := -1

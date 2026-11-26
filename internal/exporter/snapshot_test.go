@@ -533,3 +533,29 @@ func TestControllerQualified(t *testing.T) {
 		t.Fatalf("qualification publiée pour un module qui ne qualifie pas ses cartes :\n%s", out)
 	}
 }
+
+// Avancement des tâches : une série par tâche publiée, absente sans tâche
+// et sur un cycle hors délai (valeur non observée).
+func TestTaskProgressRender(t *testing.T) {
+	p := plan(aacHost("host0", "0000:01:00.0", "S1"))
+	res := map[string]module.Result{"0000:01:00.0": {NodeValid: true,
+		Tasks: []module.Task{{Volume: "1d000003", Task: "rebuild", Ratio: 0.42}, {Volume: "1d000001", Task: "verify", Ratio: 0}}}}
+	out := Render(Build(p, true, res, nil, 0))
+	for _, line := range []string{
+		`hwraid_task_progress_ratio{controller="serial:S1",volume="1d000003",task="rebuild"} 0.42`,
+		`hwraid_task_progress_ratio{controller="serial:S1",volume="1d000001",task="verify"} 0`,
+	} {
+		if !strings.Contains(out, line+"\n") {
+			t.Fatalf("ligne absente : %s\n%s", line, out)
+		}
+	}
+	for name, r := range map[string]module.Result{
+		"sans tâche": {NodeValid: true},
+		"hors délai": {TimedOut: true, Collected: map[string]bool{"tasks": false}, Tasks: []module.Task{{Volume: "1d000003", Task: "rebuild", Ratio: 0.42}}},
+	} {
+		res["0000:01:00.0"] = r
+		if out := Render(Build(p, true, res, nil, 0)); strings.Contains(out, "hwraid_task_progress_ratio{") {
+			t.Fatalf("%s : avancement publié :\n%s", name, out)
+		}
+	}
+}

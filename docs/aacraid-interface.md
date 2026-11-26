@@ -207,6 +207,21 @@ L'outil de référence (versions 2.05 et 3.07) n'envoie cette commande que si `A
 
 Les données suivantes ne sont pas interprétées. Concordance avec l'affichage de l'outil de référence dans les mêmes captures : 49 et 48 °C. Lue à chaque cycle.
 
+### Tâches de fond (commande 700, `AifRequest`) [interopérabilité]
+
+Commande publique (FreeBSD `aacreg.h` : `AifRequest`, `AifReqJobsForCtr` = 101, `AifReqJobReport` = 103, types `AAC_AifJobType` et statuts `AAC_AifJobStatus`). L'outil de référence (versions 2.05 et 3.07) l'emploie ainsi pour afficher l'avancement d'un volume qu'il a construit, et l'exporter fait de même, après la lecture des volumes, seulement si leur configuration (liste des conteneurs et listes des membres) a été entièrement lue ; sinon, rien n'est envoyé et le collecteur `tasks` est en échec. Un échec de l'inventaire des disques ou de la carte des connecteurs n'empêche pas la lecture des tâches, comme chez l'outil :
+
+1. **Liste des tâches d'un conteneur**, pour chaque conteneur de la liste : `XferState` = `0x100001`, `Size` = 0x48, données : mot 0 = 101, mot 2 = numéro du conteneur, le reste à zéro (l'outil ne l'initialise pas). Réponse : deux mots (sur l'hôte de référence, sans tâche : 0 et 1, `Size` = 40), puis un bloc de 48 octets par tâche.
+2. **Rapport de la première tâche listée** pour chaque conteneur, comme l'outil, qui n'affiche qu'une tâche par volume (il redemande la liste avec un tampon plus grand si elle déborde, puis ne lit que la première) : même forme, mot 0 = 103, mot 2 = identifiant de la tâche (bloc, octets 0-3). Réponse : deux mots, puis le rapport dans un bloc de 48 octets. Une tâche déjà lue sous un autre conteneur n'est pas relue.
+
+L'outil refuse un rapport (103) dont le mot 1 vaut 4 ou 5, et ne contrôle pas le mot 1 de la liste (101). L'exporter refuse ces deux valeurs dans les deux réponses, et exige en plus que `Size` couvre exactement les deux mots et un nombre entier de blocs, et que le rapport porte la tâche demandée.
+
+Bloc de 48 octets, positions lues par l'outil : identifiant (0-3), type (4-7), conteneur visé (8-11), statut (16-19), compteur final (24-31) et compteur courant (32-39), sur 64 bits (la structure publique `aac_AifJobProgressReport` les décrit sur 32 bits). L'outil calcule l'avancement en dixièmes de pour cent (compteur courant × 1 000 / compteur final), puis l'affiche en pour cent entiers.
+
+Règles de l'exporter (cahier des charges) : avancement = courant / final, entre 0 et 1, pour une tâche en cours (statut 102) ou suspendue (101) ; une tâche terminée (statuts 1 et 2, que l'outil affiche à 100 %) n'est plus publiée : sa série disparaît (une anomalie est journalisée si ses compteurs sont invalides) ; non publié, avec une anomalie au journal, si le compteur final est nul, si le compteur courant le dépasse, ou pour un autre statut (abandonnée, échouée, inconnu). Une liste de plusieurs tâches est signalée au journal (seule la première est lue). Le volume publié est celui du conteneur visé par le rapport. Types (`task`), regroupés comme l'outil les affiche : 103, 106, 110 et 115 (création ou reconstruction d'un miroir, reconstruction RAID 5 et RAID 6) → `rebuild` ; 105, 107 et 116 (vérification) → `verify` ; 101 → `zero` ; 108 → `migration` ; 112 → `copyback` ; 113 → `compaction` ; 114 → `expansion` ; 117 → `snapshot_backup` ; tout autre → `other`. Les tâches propres aux disques (102 par disque, envoyée par l'outil pour `GETSTATUS`) ne sont pas lues. Les sous-commandes 104 à 110 agissent sur les tâches (arrêt, suspension…) : la liste blanche ne les accepte pas.
+
+Aucun rapport de tâche n'a encore été capturé sur l'hôte de référence (aucune tâche en cours) : la disposition du bloc vient de l'analyse de l'outil ; la prochaine reconstruction servira de vérification.
+
 ### Statistiques du contrôleur (sous-commande 244, paramètre : 0) [observé]
 
 Transfert paginé (section 4) de 2 788 octets sur l'hôte de référence, quand la collecte des statistiques est activée sur la carte. Compteurs cumulés depuis la dernière remise à zéro, entiers de 8 octets. Positions dans les données reconstituées au pas de 432 octets ; celles du troisième morceau ont été corrigées le 2026-11-23 (relevé initial au pas de 448, décalé de 32 octets). Le relevé des valeurs contre l'outil témoin reste à refaire avant toute publication de ces compteurs :
@@ -297,6 +312,17 @@ Règle appliquée à R, dans cet ordre :
 | sinon | optimal |
 
 Cette règle est celle de l'outil de référence (état de la batterie construit à partir de R, masques `0x1`, `0x4` et `0x8`). Sur l'hôte de référence : R = `0x40000081`, module en panne, conforme à l'affichage de l'outil témoin. Les états « en charge » et « optimal » restent à observer sur matériel. Les conditions sont appliquées dans l'ordre du tableau : un module sans le bit `0x8` est en panne quels que soient ses autres bits (c'est le cas de `0x40000081`) ; un module prêt (`0x8`) portant un bit autre que `0x1`, `0x4` et `0x8`, comme `0x80`, est indéterminé plutôt qu'optimal ou en charge.
+
+**Batterie classique** (réponse de présence sans le bit `0x2000`) : la lecture d'état n'est pas envoyée ; l'état est décodé de la réponse de présence, comme le fait l'outil de référence. Le mot de 16 bits à l'octet 42 dit quels octets d'état sont présents : octet 20 (présence, indicateur `0x1`), 21 (batterie utilisable, `0x2`), 22 (mode maintenance, `0x4`). Un octet n'est lu que si son indicateur est présent.
+
+| Octet 20 | Octet 21 | Octet 22 | Présence publiée | État publié |
+|---|---|---|---|---|
+| 0 | — | — | 0 | aucun (batterie absente) |
+| 1 | 0 | — | 1 | `failed` |
+| 1 | 1 | 0 | 1 | `optimal` |
+| 1 | 1 | 1 | 1 | `maintenance` |
+
+Indicateur requis absent, ou valeur autre que 0 et 1 : état `unknown` ; la présence n'est publiée que si l'octet 20 a été lu et vaut 0 ou 1. Type publié : `battery`, `vendor_type` `bbu`. La commande complémentaire que l'outil envoie quand l'indicateur `0x8` est présent (`0xa0000`, champ inutile à l'état) n'est pas envoyée. Aucune batterie réelle n'a été lue par l'exporter : décodage établi sur l'outil, observé sur des réponses construites.
 
 ## 6 bis. Règles de l'outil de référence pour tous les niveaux [interopérabilité]
 
@@ -448,6 +474,8 @@ Formes ajoutées depuis la v0.2.0 (exigence S3 : référence de chaque forme, m�
 | Ouverture de la liste des conteneurs à 8 + 4 × `MaxContainers` octets (section 4) | (a) capture pour `MaxContainers` = 256 (1 032 octets) ; (b) règle de construction de l'outil (versions 2.05 et 3.07) pour les autres valeurs, confirmée en observant son comportement face à une réponse de comptage construite (64 conteneurs : 264 octets, `0x108`) ; portée : la taille demandée, le reste de l'ouverture étant celui de la capture | mêmes conditions, après un comptage validé pour cette carte | ouverture | liste blanche : 8 + 4 × n, n de 1 à 1 023 ; transport, au point d'envoi : taille égale à celle qui découle d'un comptage décodé (refusée sans comptage décodé) ; le module garantit que ce comptage a été lu sur cette carte et gardé sous son identité complète |
 | `IsAdapterPaused` (704, section 5) | (a) capture : 7 requêtes de l'outil sur l'hôte de référence, identiques à celle de l'exporter une fois mis à zéro les octets d'adresse de l'en-tête | carte lue (modèle qualifié ou option), à chaque cycle | ouverture | réponse : commande, taille ; premier octet non nul : rien d'autre au cycle |
 | `CheckRevision` (701, section 5) | (a) capture : 7 requêtes de l'outil, identiques à celle de l'exporter une fois mis à zéro les octets d'adresse et les octets au-delà de `Size`, que l'outil n'initialise pas | après une 704 « pas en pause » ; réponse acceptée gardée pour cette identité | ouverture | réponse : commande, taille ; premier mot nul ou build inférieur à 2120 : rien d'autre au cycle |
+| `AifReqJobsForCtr` (700/101, section 5) | (a) capture : 87 requêtes de l'outil sur l'hôte de référence, identiques à celle de l'exporter une fois mis à zéro l'octet 7 de l'en-tête et les mots que l'outil n'initialise pas | conteneurs lus (bit 9 de `FeatureBits`), une par conteneur et par cycle | tâches | réponse : commande, taille (deux mots et blocs entiers), mot 1 différent de 4 et 5 |
+| `AifReqJobReport` (700/103, section 5) | (b) règle de construction de l'outil (versions 2.05 et 3.07) : même forme que la 101, sous-commande 103 et identifiant de tâche au mot 2 ; jamais capturée (aucune tâche en cours) | première tâche listée de chaque conteneur, une fois par tâche | tâches | idem, et rapport portant la tâche demandée |
 
 ### Modèles qualifiés
 
@@ -476,7 +504,7 @@ L'exporter n'envoie que des commandes de l'outil de référence (versions 2.05 e
 
 | Sujet | Outil de référence | Exporter, couple validé | Exporter, autre carte lue |
 |---|---|---|---|
-| Ordre des lectures | à chaque ouverture : 704, 701, 703, 706 (si bit 16) ; puis 803, comptage, 708, 247 puis les 248, comptage, 229 puis les 234 puis les 249, protection du cache | premier cycle : `GET_HBA_INFO`, 704, 701, 703, 706 (si bit 16), 803, protection du cache, comptage, 229, les 234, 247, les 249, les 248, 708 ; ensuite sans les réponses gardées | idem |
+| Ordre des lectures | à chaque ouverture : 704, 701, 703, 706 (si bit 16) ; puis 803, comptage, 708, 247 puis les 248, comptage, 229 puis les 234 puis les 249, protection du cache | premier cycle : `GET_HBA_INFO`, 704, 701, 703, 706 (si bit 16), 803, protection du cache, comptage, 229, les 234, 247, les 249, les 248, 708, puis les tâches (101 par conteneur, 103 pour la première tâche de chacun) ; ensuite sans les réponses gardées | idem |
 | Réponses gardées | aucune d'un appel de l'outil à l'autre (la 708 est gardée pendant un appel) | 701 acceptée, 706, 703, comptage et 708 gardés sous l'identité complète de la carte (704 à chaque cycle) (708 relue quand l'ensemble des disques change) | idem |
 | Morceaux d'un transfert | tous, puis clôture | seulement ceux qui portent les champs décodés, puis clôture (**E1**) | tous, puis clôture |
 | Arrêt du service pendant un transfert | non établi (l'outil n'a pas d'arrêt en cours de lecture) | morceau 0 s'il n'est pas parti, puis clôture | morceaux restants, puis clôture (au plus 10 morceaux et une clôture) ; nouveaux envois admis pendant 2 s comptées depuis l'arrêt (l'échéance du cycle, ou le constat du signal d'arrêt par le transport), sinon abandon sans clôture |
@@ -495,5 +523,7 @@ L'exporter n'envoie que des commandes de l'outil de référence (versions 2.05 e
 | Carte en pause (704), révision refusée (701) | carte non ouverte | plus aucune commande au cycle | idem |
 | Interruption d'une commande (`EINTR`) | non établi | lecture en échec, sans nouvel essai immédiat | idem |
 | Protection du cache en échec | même requête renvoyée une fois si son envoi échoue (le statut de la carte est jugé ensuite) | non renvoyée | idem |
+| Batterie classique (sans bit `0x2000`) | état décodé de la réponse de présence ; `0xa0000` si l'indicateur `0x8` est présent | état décodé de la même façon ; `0xa0000` non envoyée | idem |
+| Tâches de fond | 101 par conteneur, mêlées de conversions d'identifiant (165), plusieurs fois par appel ; 103 pour la première tâche de chaque volume affiché ; 102 par disque pour `GETSTATUS` | 101 une fois par conteneur lu et par cycle ; 103 pour la première tâche de chaque conteneur, une fois par tâche ; ni 165 ni 102 | idem |
 | Transferts en blocs de 2 048 octets (bit 15 de `SupportedOptions`), bit de poids fort (bit 13 de `FeatureBits`) | gérés | non implémentés : collecteurs non pris en charge, rien n'est envoyé | idem |
 | Ouverture portant déjà des données (marque `0xc8`, hors `0xe2`) | morceaux suivants, sans clôture | aucune commande après l'ouverture, lecture en échec | idem |

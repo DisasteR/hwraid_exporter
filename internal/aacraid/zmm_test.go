@@ -135,3 +135,49 @@ func TestDecodeZMMRejects(t *testing.T) {
 		t.Fatalf("présence sans le bit : %v %v", p, err)
 	}
 }
+
+// batteryRsp part de la réponse de présence capturée, sans le bit 0x2000,
+// avec le mot d'indicateurs flags et les octets d'état 20, 21 et 22.
+func batteryRsp(t *testing.T, flags uint16, b20, b21, b22 byte) []byte {
+	b := recordedFIB(t, capPresenceRspHdr, capPresenceRspData)
+	d := b[FIBHeaderSize:]
+	binary.LittleEndian.PutUint16(d[42:], flags)
+	d[20], d[21], d[22] = b20, b21, b22
+	return b
+}
+
+// Batterie classique : table du CDC (section 6.11), indicateurs 0x17 comme
+// dans les cas observés, puis indicateurs absents et valeurs hors 0 et 1.
+func TestDecodeBattery(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		flags         uint16
+		b20, b21, b22 byte
+		want          Battery
+	}{
+		{"absente", 0x17, 0, 0, 0, Battery{PresenceKnown: true}},
+		{"absente, octets suivants ignorés", 0x17, 0, 1, 1, Battery{PresenceKnown: true}},
+		{"en panne", 0x17, 1, 0, 0, Battery{PresenceKnown: true, Present: true, State: "failed"}},
+		{"en panne, octet 22 ignoré", 0x17, 1, 0, 7, Battery{PresenceKnown: true, Present: true, State: "failed"}},
+		{"optimale", 0x17, 1, 1, 0, Battery{PresenceKnown: true, Present: true, State: "optimal"}},
+		{"maintenance", 0x17, 1, 1, 1, Battery{PresenceKnown: true, Present: true, State: "maintenance"}},
+		{"sans indicateur de présence", 0x16, 1, 1, 0, Battery{State: "unknown"}},
+		{"présence hors 0 et 1", 0x17, 2, 1, 0, Battery{State: "unknown"}},
+		{"sans indicateur d'usage", 0x15, 1, 1, 0, Battery{PresenceKnown: true, Present: true, State: "unknown"}},
+		{"usage hors 0 et 1", 0x17, 1, 2, 0, Battery{PresenceKnown: true, Present: true, State: "unknown"}},
+		{"sans indicateur de maintenance", 0x13, 1, 1, 0, Battery{PresenceKnown: true, Present: true, State: "unknown"}},
+		{"maintenance hors 0 et 1", 0x17, 1, 1, 2, Battery{PresenceKnown: true, Present: true, State: "unknown"}},
+		{"en panne sans indicateur de maintenance", 0x13, 1, 0, 0, Battery{PresenceKnown: true, Present: true, State: "failed"}},
+	} {
+		got, err := DecodeBattery(batteryRsp(t, tc.flags, tc.b20, tc.b21, tc.b22))
+		if err != nil || got != tc.want {
+			t.Errorf("%s : %+v, %v ; attendu %+v", tc.name, got, err, tc.want)
+		}
+	}
+	// Réponse invalide : lecture en échec, sans état.
+	b := batteryRsp(t, 0x17, 1, 1, 0)
+	binary.LittleEndian.PutUint32(b[FIBHeaderSize:], 1)
+	if _, err := DecodeBattery(b); err == nil {
+		t.Error("statut non nul accepté")
+	}
+}

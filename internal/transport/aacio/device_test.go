@@ -376,17 +376,20 @@ func TestCacheProtectionSequence(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		present, st, err := dev.CacheProtection(context.Background())
+		rd, err := dev.CacheProtection(context.Background())
 		dev.Close()
-		if err != nil || present != described {
-			t.Fatalf("décrit=%v : present=%v err=%v", described, present, err)
+		if err != nil || rd.Flash != described {
+			t.Fatalf("décrit=%v : flash=%v err=%v", described, rd.Flash, err)
 		}
 		want := 1
 		if described {
 			want = 2
-			if st.State != aacraid.CacheProtectionOptimal {
-				t.Fatalf("état %+v", st)
+			if rd.ZMM.State != aacraid.CacheProtectionOptimal {
+				t.Fatalf("état %+v", rd.ZMM)
 			}
+		} else if rd.Battery.State != aacraid.CacheProtectionUnknown || rd.Battery.PresenceKnown {
+			// Sans indicateur : batterie décodée, présence non établie.
+			t.Fatalf("batterie %+v", rd.Battery)
 		}
 		if len(sent) != want || !bytes.Equal(sent[0], aacraid.CacheProtectionPresenceRequest()) ||
 			(described && !bytes.Equal(sent[1], aacraid.CacheProtectionStateRequest())) {
@@ -1024,7 +1027,7 @@ func TestStoppedContextSendsNothing(t *testing.T) {
 	cancel()
 	_, e1 := d.SupplementInfo(ctx)
 	_, e2 := d.ConnectorMap(ctx)
-	_, _, e3 := d.CacheProtection(ctx)
+	_, e3 := d.CacheProtection(ctx)
 	_, e4 := d.ReadPaged(ctx, aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return aacraid.ContainerInfoNeed })
 	_, e5 := d.AdapterInfo(ctx)
 	_, e6 := d.Environment(ctx)
@@ -1061,9 +1064,9 @@ func TestCacheProtectionStopsBetweenReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer dev.Close()
-	present, _, err := dev.CacheProtection(ctx)
-	if !errors.Is(err, ErrStopped) || !present || sent != 1 {
-		t.Fatalf("present=%v err=%v, %d requête(s)", present, err, sent)
+	rd, err := dev.CacheProtection(ctx)
+	if !errors.Is(err, ErrStopped) || !rd.Flash || sent != 1 {
+		t.Fatalf("flash=%v err=%v, %d requête(s)", rd.Flash, err, sent)
 	}
 }
 

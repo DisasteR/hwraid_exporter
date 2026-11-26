@@ -184,3 +184,82 @@ func zmmState(r uint32) CacheProtectionState {
 		return CacheProtectionOptimal
 	}
 }
+
+// CacheProtectionMaintenance : batterie en cycle de maintenance
+// (reconditionnement), terme de l'outil de référence ; pas un état sain.
+const CacheProtectionMaintenance CacheProtectionState = "maintenance"
+
+// Batterie classique (CDC, section 6.11, « Protection du cache par
+// batterie ») : réponse à la lecture de présence sans le bit 0x2000. Le mot
+// d'indicateurs (octets 42-43) dit quels octets d'état sont présents ;
+// l'outil de référence n'en lit aucun sans son indicateur.
+const (
+	batteryPresentOff  = 20 // présence, indicateur 0x1
+	batteryUsableOff   = 21 // batterie utilisable, indicateur 0x2
+	batteryMaintOff    = 22 // mode maintenance, indicateur 0x4
+	batteryFlagPresent = 0x1
+	batteryFlagUsable  = 0x2
+	batteryFlagMaint   = 0x4
+)
+
+// Battery est l'état décodé d'une batterie classique.
+type Battery struct {
+	// PresenceKnown : octet de présence lu et valant 0 ou 1 ; Present : 1.
+	PresenceKnown, Present bool
+	// State : vide si la batterie est absente (présence établie) ;
+	// optimal, failed, maintenance, ou unknown (indicateur requis absent ou
+	// valeur autre que 0 et 1).
+	State CacheProtectionState
+}
+
+// batteryByte lit un octet d'état seulement si son indicateur est présent.
+func batteryByte(d []byte, flags uint16, flag uint16, off int) (v byte, ok bool) {
+	if flags&flag == 0 {
+		return 0, false
+	}
+	return d[off], true
+}
+
+// DecodeBattery décode la batterie de la réponse à la lecture de présence
+// (b), selon la table du CDC.
+func DecodeBattery(b []byte) (Battery, error) {
+	d, err := vmIoctlResponse(b, ioctlCacheProtectionPresence, presenceFlagsOff+2)
+	if err != nil {
+		return Battery{}, err
+	}
+	flags := binary.LittleEndian.Uint16(d[presenceFlagsOff:])
+	var bat Battery
+	if v, ok := batteryByte(d, flags, batteryFlagPresent, batteryPresentOff); ok && v <= 1 {
+		bat.PresenceKnown, bat.Present = true, v == 1
+		if v == 0 {
+			return bat, nil
+		}
+	}
+	bat.State = CacheProtectionUnknown
+	if !bat.Present {
+		return bat, nil
+	}
+	usable, ok := batteryByte(d, flags, batteryFlagUsable, batteryUsableOff)
+	switch {
+	case !ok || usable > 1:
+	case usable == 0:
+		bat.State = CacheProtectionFailed
+	default:
+		if m, ok := batteryByte(d, flags, batteryFlagMaint, batteryMaintOff); ok && m <= 1 {
+			bat.State = CacheProtectionOptimal
+			if m == 1 {
+				bat.State = CacheProtectionMaintenance
+			}
+		}
+	}
+	return bat, nil
+}
+
+// CacheProtectionReading est le résultat des lectures de la protection du
+// cache : module décrit par la lecture d'état (bit 0x2000, ZMM), ou
+// batterie décodée de la seule lecture de présence.
+type CacheProtectionReading struct {
+	Flash   bool
+	ZMM     ZMMStatus
+	Battery Battery
+}

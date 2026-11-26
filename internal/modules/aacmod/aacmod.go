@@ -35,9 +35,11 @@ type device interface {
 	SupplementInfo(ctx context.Context) (aacraid.SupplementInfo, error)
 	AdapterInfo(ctx context.Context) (aacraid.AdapterInfo, error)
 	Paused(ctx context.Context) (bool, error)
+	TaskList(ctx context.Context, container uint32) ([]aacraid.Task, error)
+	TaskReport(ctx context.Context, job uint32) (aacraid.Task, error)
 	Revision(ctx context.Context) (aacraid.Revision, error)
 	Environment(ctx context.Context) (aacraid.Environment, error)
-	CacheProtection(ctx context.Context) (bool, aacraid.ZMMStatus, error)
+	CacheProtection(ctx context.Context) (aacraid.CacheProtectionReading, error)
 	ContainerCount(ctx context.Context) (aacraid.ContainerCount, error)
 	ExpectContainerList(c aacraid.ContainerCount)
 	ReadPaged(ctx context.Context, r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error)
@@ -53,9 +55,11 @@ type reader interface {
 	SupplementInfo() (aacraid.SupplementInfo, error)
 	AdapterInfo() (aacraid.AdapterInfo, error)
 	Paused() (bool, error)
+	TaskList(container uint32) ([]aacraid.Task, error)
+	TaskReport(job uint32) (aacraid.Task, error)
 	Revision() (aacraid.Revision, error)
 	Environment() (aacraid.Environment, error)
-	CacheProtection() (bool, aacraid.ZMMStatus, error)
+	CacheProtection() (aacraid.CacheProtectionReading, error)
 	ContainerCount() (aacraid.ContainerCount, error)
 	ExpectContainerList(c aacraid.ContainerCount)
 	ReadPaged(r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error)
@@ -85,6 +89,11 @@ const CacheProtectionCollector = "cache_protection"
 // TemperatureCollector est le collecteur du capteur de température de la
 // carte (AdapterEnvironmentInfo, si RequestAdapterInfo l'annonce).
 const TemperatureCollector = "temperature"
+
+// TasksCollector est le collecteur de l'avancement des tâches de fond des
+// volumes (reconstruction, vérification…), lu par conteneur comme l'outil
+// de référence : il repose sur la liste des conteneurs.
+const TasksCollector = "tasks"
 
 // Module implémente module.Module pour aacraid.
 type Module struct {
@@ -141,7 +150,7 @@ func (*Module) Match(c module.Card) bool { return c.PCI.Driver == "aacraid" }
 
 // Collectors liste tous les collecteurs du module.
 func (*Module) Collectors() []string {
-	return append([]string{CapabilitiesCollector, CacheProtectionCollector, TemperatureCollector, DiskInventoryCollector, DiskLocationCollector}, StateCollectors...)
+	return append([]string{CapabilitiesCollector, CacheProtectionCollector, TemperatureCollector, DiskInventoryCollector, DiskLocationCollector, TasksCollector}, StateCollectors...)
 }
 
 // Capabilities : CAP_SYS_RAWIO, exigée par le pilote à chaque ioctl.
@@ -184,9 +193,13 @@ func (b bound) SupplementInfo() (aacraid.SupplementInfo, error) {
 }
 func (b bound) AdapterInfo() (aacraid.AdapterInfo, error) { return b.dev.AdapterInfo(b.ctx) }
 func (b bound) Paused() (bool, error)                     { return b.dev.Paused(b.ctx) }
-func (b bound) Revision() (aacraid.Revision, error)       { return b.dev.Revision(b.ctx) }
-func (b bound) Environment() (aacraid.Environment, error) { return b.dev.Environment(b.ctx) }
-func (b bound) CacheProtection() (bool, aacraid.ZMMStatus, error) {
+func (b bound) TaskList(container uint32) ([]aacraid.Task, error) {
+	return b.dev.TaskList(b.ctx, container)
+}
+func (b bound) TaskReport(job uint32) (aacraid.Task, error) { return b.dev.TaskReport(b.ctx, job) }
+func (b bound) Revision() (aacraid.Revision, error)         { return b.dev.Revision(b.ctx) }
+func (b bound) Environment() (aacraid.Environment, error)   { return b.dev.Environment(b.ctx) }
+func (b bound) CacheProtection() (aacraid.CacheProtectionReading, error) {
 	return b.dev.CacheProtection(b.ctx)
 }
 func (b bound) ContainerCount() (aacraid.ContainerCount, error) {
@@ -258,7 +271,7 @@ func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeR
 	// carte ne reçoit rien au-delà de GET_HBA_INFO (réponse du pilote) ; ses
 	// collecteurs sont publiés non pris en charge. Ce classement ne dépend
 	// que de sysfs et de l'option.
-	all := append([]string{CapabilitiesCollector}, append(append([]string(nil), StateCollectors...), DiskInventoryCollector, DiskLocationCollector, CacheProtectionCollector, TemperatureCollector)...)
+	all := append([]string{CapabilitiesCollector}, append(append([]string(nil), StateCollectors...), DiskInventoryCollector, DiskLocationCollector, TasksCollector, CacheProtectionCollector, TemperatureCollector)...)
 	if !QualifiedModel(c) && !m.allowAll {
 		r.Unsupported = all
 		return r
@@ -307,7 +320,7 @@ func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeR
 		r.Cached = nil
 	}
 	if !sup.ArcIoReads() {
-		r.Unsupported = append(append(r.Unsupported, StateCollectors...), DiskInventoryCollector, DiskLocationCollector)
+		r.Unsupported = append(r.Unsupported, pagedCollectors()...)
 	}
 	m.collectTemperature(&r, d, ainfo)
 	// L'outil de référence lit la protection du cache sur une carte qu'il a
@@ -324,7 +337,7 @@ func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeR
 // paginés : états des volumes et des disques, inventaire et emplacement des
 // disques (la 708 n'est lue qu'après un inventaire réussi).
 func pagedCollectors() []string {
-	return append(append([]string(nil), StateCollectors...), DiskInventoryCollector, DiskLocationCollector)
+	return append(append([]string(nil), StateCollectors...), DiskInventoryCollector, DiskLocationCollector, TasksCollector)
 }
 
 // collectArcIo applique les prérequis des transferts paginés (CDC, section
@@ -342,7 +355,92 @@ func (m *Module) collectArcIo(r *module.Result, d reader, key string, h sysfs.SC
 		return
 	}
 	caps := aacraid.DiskCaps{DirectDisks: sup.DirectDisks(), JBOD: sup.JBOD(), NativeHBA: ainfo.NativeHBA(), NativeKnown: true}
-	m.collectVolumes(r, d, key, h, sup.ContainerReads(), sup.ConnectorMapRead(), caps)
+	cs, read := m.collectVolumes(r, d, key, h, sup.ContainerReads(), sup.ConnectorMapRead(), caps)
+	collectTasks(r, d, cs, read, sup.ContainerReads())
+}
+
+// collectTasks lit les tâches de fond comme l'outil de référence, après
+// les volumes : AifReqJobsForCtr (101) pour chaque conteneur lu, puis
+// AifReqJobReport (103) pour la première tâche listée seulement (l'outil
+// n'affiche qu'une tâche par volume), une seule fois par tâche. Sans
+// lecture des conteneurs annoncée, le collecteur n'est pas pris en charge ;
+// si la configuration des volumes (liste des conteneurs, listes des
+// membres) n'a pas été entièrement lue, rien n'est envoyé et il est en
+// échec. Une tâche terminée n'est
+// pas publiée (la série disparaît) ; un avancement non établi (CDC :
+// finalTick nul, currentTick au-delà, tâche abandonnée ou échouée) n'est
+// pas publié et l'anomalie est journalisée, sans échec de lecture.
+func collectTasks(r *module.Result, d reader, cs []aacraid.Container, read, supported bool) {
+	if !supported {
+		r.Unsupported = append(r.Unsupported, TasksCollector)
+		return
+	}
+	if !read {
+		r.Collected[TasksCollector] = false
+		return
+	}
+	fail := func(err error) {
+		r.Collected[TasksCollector] = false
+		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("tasks: %w", err))
+	}
+	uid := make(map[uint32]uint32, len(cs))
+	for _, c := range cs {
+		uid[c.Number] = c.Info.UID
+	}
+	var tasks []module.Task
+	var anomalies []error
+	seen := map[uint32]bool{}
+	published := map[[2]string]bool{}
+	for _, c := range cs {
+		list, err := d.TaskList(c.Number)
+		if err != nil {
+			fail(fmt.Errorf("container %d: %w", c.Number, err))
+			return
+		}
+		if len(list) > 1 {
+			anomalies = append(anomalies, fmt.Errorf("container %d: %d tasks listed, only the first is read", c.Number, len(list)))
+		}
+		for _, t := range list[:min(len(list), 1)] {
+			if seen[t.Job] {
+				continue
+			}
+			seen[t.Job] = true
+			rep, err := d.TaskReport(t.Job)
+			if err != nil {
+				fail(fmt.Errorf("task %#x: %w", t.Job, err))
+				return
+			}
+			u, ok := uid[rep.Container]
+			if !ok {
+				fail(fmt.Errorf("task %#x: container %d not in the container list", rep.Job, rep.Container))
+				return
+			}
+			if rep.Finished() {
+				// Série retirée ; des compteurs invalides restent signalés (CDC).
+				if rep.Final == 0 || rep.Current > rep.Final {
+					anomalies = append(anomalies, fmt.Errorf("task %#x (type %d) on container %d: finished with invalid counters (final %d, current %d)", rep.Job, rep.Type, rep.Container, rep.Final, rep.Current))
+				}
+				continue
+			}
+			ratio, ok, why := rep.Ratio()
+			if !ok {
+				anomalies = append(anomalies, fmt.Errorf("task %#x (type %d) on container %d: progress not published: %s", rep.Job, rep.Type, rep.Container, why))
+				continue
+			}
+			k := [2]string{uidID(u), rep.Name()}
+			if published[k] {
+				anomalies = append(anomalies, fmt.Errorf("task %#x: a %s task of volume %s is already published", rep.Job, k[1], k[0]))
+				continue
+			}
+			published[k] = true
+			tasks = append(tasks, module.Task{Volume: k[0], Task: k[1], Ratio: ratio})
+		}
+	}
+	r.Collected[TasksCollector] = true
+	r.Tasks = tasks
+	if len(anomalies) > 0 {
+		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("tasks: %w", errors.Join(anomalies...)))
+	}
 }
 
 // Qualification est un modèle (quatre identifiants PCI) dont les lectures
@@ -414,8 +512,7 @@ func hostOf(c module.Card) (int, sysfs.SCSIHost, error) {
 //
 // Toute erreur annule la publication de ce qu'elle concerne pour ce cycle :
 // jamais de configuration ni d'inventaire partiels.
-func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.SCSIHost, containers, connectors bool, caps aacraid.DiskCaps) {
-	var cs []aacraid.Container
+func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.SCSIHost, containers, connectors bool, caps aacraid.DiskCaps) (cs []aacraid.Container, containersRead bool) {
 	var volErr error
 	// Sans carte des connecteurs annoncée, l'emplacement est non pris en
 	// charge, quel que soit le sort des autres lectures.
@@ -441,6 +538,11 @@ func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.
 	if containers && volErr == nil && diskErr == nil {
 		if err := readMembers(d, cs); err != nil {
 			volErr = fmt.Errorf("member lists: %w", err)
+		} else {
+			// Configuration des volumes complète : condition de la lecture
+			// des tâches (l'outil de référence abandonne la construction de
+			// ses volumes sur un échec de leur configuration).
+			containersRead = true
 		}
 	}
 	states := containers && volErr == nil && diskErr == nil
@@ -498,6 +600,7 @@ func (m *Module) collectVolumes(r *module.Result, d reader, key string, h sysfs.
 		return
 	}
 	r.DiskLocations = locs
+	return
 }
 
 // publishStates calcule les états des volumes et des disques à partir de la
@@ -855,13 +958,21 @@ func disksOf(ev aacraid.Evaluation) []module.Disk {
 // collectCacheProtection lit l'état du module de protection du cache, à
 // chaque cycle : cet état change (charge, panne) sans redémarrage.
 func collectCacheProtection(r *module.Result, d reader) {
-	described, st, err := d.CacheProtection()
+	rd, err := d.CacheProtection()
+	st := rd.ZMM
 	switch {
 	case err != nil:
 		r.Collected[CacheProtectionCollector] = false
 		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("cache protection: %w", err))
-	case !described || st.State == aacraid.CacheProtectionOtherType:
-		// Format non décrit ou autre type de module : non décodé.
+	case !rd.Flash:
+		// Batterie classique (CDC, section 6.11) : présence publiée si elle
+		// est établie ; état unknown si un indicateur requis manque.
+		b := rd.Battery
+		r.Collected[CacheProtectionCollector] = true
+		r.CacheProtection = &module.CacheProtection{Present: b.Present, PresenceUnknown: !b.PresenceKnown,
+			Type: "battery", Vendor: "bbu", State: string(b.State)}
+	case st.State == aacraid.CacheProtectionOtherType:
+		// Autre type de module décrit par la lecture d'état : non décodé.
 		r.Unsupported = append(r.Unsupported, CacheProtectionCollector)
 	case st.State == aacraid.CacheProtectionNotInstalled:
 		r.Collected[CacheProtectionCollector] = true

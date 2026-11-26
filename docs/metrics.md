@@ -18,10 +18,11 @@ Les métriques sont **les mêmes quel que soit le pilote, le contrôleur ou le c
 |---|---|---|
 | `hwraid_volume_state` / `state` | `optimal`, `degraded`, `degraded_rebuilding`, `reduced_redundancy` et `reduced_redundancy_rebuilding` (volume à double redondance privé d'un membre, qui tolère encore une panne ; un assemblage en hérite de son volume membre le plus touché, sans garantie de tolérance pour lui-même), `failed`, `unknown` | toutes ; règle : [aacraid-interface.md](aacraid-interface.md), section 6 |
 | `hwraid_disk_state` / `state` | `online`, `rebuilding`, `failed`, `ready` (disponible), `spare` (secours), `copyback` (copie de retour vers un disque remplacé), `passthrough` (disque « brut » pour la carte : JBOD, mode HBA ; sa présentation effective au système n'est pas vérifiée), `unsupported` (refusé par la carte) | toutes (observé sur matériel : `online`) ; règle : [aacraid-interface.md](aacraid-interface.md), section 6 bis |
-| `hwraid_cache_protection_state` / `state` | `optimal`, `charging`, `failed`, `unknown` | toutes (`charging` et `optimal` non encore observés sur matériel). Priorité : un module installé sans le bit « prêt » est `failed`, quels que soient ses autres bits (cas du module en panne de l'hôte de référence, `0x40000081`) ; parmi les autres mots, toute combinaison de bits non qualifiée est `unknown`, jamais publiée comme saine |
+| `hwraid_cache_protection_state` / `state` | `optimal`, `charging`, `failed`, `maintenance` (batterie en cycle de reconditionnement : pas un état sain), `unknown` | toutes (`charging` et `optimal` du module ZMM, et tous les états de batterie, non encore observés sur matériel). Priorité : un module installé sans le bit « prêt » est `failed`, quels que soient ses autres bits (cas du module en panne de l'hôte de référence, `0x40000081`) ; parmi les autres mots, toute combinaison de bits non qualifiée est `unknown`, jamais publiée comme saine |
 | `hwraid_volume_info` / `raid_level` | `raid0`, `raid1`, `raid1e`, `raid5`, `raid6`, `raid10`, `raid50`, `raid60`, `concat` (concaténation de disques ou de volumes), `single` (volume posé sur un seul disque, sans découpage), `unknown` | toutes (observées sur matériel : `raid1`, `concat`) ; table de correspondance : [aacraid-interface.md](aacraid-interface.md), section 6 bis |
 | `hwraid_volume_write_cache_policy` / `policy` | `write_back_always` (cache actif même sans protection), `write_back_when_protected` (actif seulement si le module de protection est opérationnel), `write_through` (désactivé), `unknown` | toutes (les trois réglages connus observés sur matériel ; `unknown`, avec la valeur brute dans `vendor_policy`, pour toute autre valeur) |
-| `hwraid_cache_protection_present` / `type` | `flash_supercap` (supercondensateur et mémoire flash : ZMM/AFM, CacheVault, FBWC), `battery` (BBU) | `flash_supercap` |
+| `hwraid_cache_protection_present` / `type` | `flash_supercap` (supercondensateur et mémoire flash : ZMM/AFM, CacheVault, FBWC), `battery` (BBU) | les deux (`vendor_type` : `zmm`, `bbu`) |
+| `hwraid_task_progress_ratio` / `task` | `rebuild` (création ou reconstruction d'un miroir, reconstruction RAID 5 et RAID 6), `verify` (vérification), `zero` (mise à zéro), `migration`, `copyback` (copie de retour), `compaction`, `expansion`, `snapshot_backup`, `other` (tout autre type) | toutes ; types : [aacraid-interface.md](aacraid-interface.md), section 5 |
 
 `unknown` signifie que la carte a répondu, mais que l'exporter ne sait pas interpréter la réponse avec certitude (niveau non établi, migration, drapeau inconnu, assemblage incohérent). C'est un état à surveiller, pas une panne.
 
@@ -60,7 +61,7 @@ Les variantes propres à un constructeur se rattachent au terme commun le plus p
 
 L'intervalle permet d'écrire des règles qui s'adaptent au réglage, par exemple « aucun succès depuis plus de trois cycles » : `time() - hwraid_collection_last_success_timestamp_seconds > on (job, instance, controller) group_left 3 * hwraid_collection_interval_seconds`. Joindre toujours aussi sur `job` et `instance` : deux hôtes peuvent publier le même identifiant `pci:`.
 
-Collecteurs du module aacraid : `capabilities` (capacités de la carte, réponse 706 ; non pris en charge si la carte ne l'annonce pas), `volumes`, `disks`, `disk_inventory`, `disk_location`, `cache_protection`, `temperature` (non pris en charge si la carte n'annonce pas de capteur).
+Collecteurs du module aacraid : `capabilities` (capacités de la carte, réponse 706 ; non pris en charge si la carte ne l'annonce pas), `volumes`, `disks`, `disk_inventory`, `disk_location`, `tasks` (avancement des tâches de fond ; non pris en charge sans lecture des conteneurs, en échec si la configuration des volumes n'a pas été entièrement lue), `cache_protection`, `temperature` (non pris en charge si la carte n'annonce pas de capteur).
 
 ### Volumes
 
@@ -72,6 +73,7 @@ Collecteurs du module aacraid : `capabilities` (capacités de la carte, réponse
 | `hwraid_volume_member` | `controller`, `volume`, `member` | 1 ; `member` est un disque (`d<n>`) ou un volume (identifiant) |
 | `hwraid_volume_write_cache_policy` | `controller`, `volume`, `policy`, `vendor_policy` | 1 ; réglage configuré du cache d'écriture, normalisé dans `policy` et dans les termes de l'outil du constructeur dans `vendor_policy` |
 | `hwraid_volume_write_cache_enabled` | `controller`, `volume` | 1 si le cache d'écriture est actif à cet instant (écriture différée), 0 sinon ; absente si la carte rend une valeur non qualifiée |
+| `hwraid_task_progress_ratio` | `controller`, `volume`, `task` | avancement de la tâche de fond du volume, entre 0 et 1 ; absente sans tâche, une fois la tâche terminée, et quand l'avancement n'est pas établi (tâche en cours ou suspendue à compteur final nul ou dépassé, tâche abandonnée ou échouée : anomalie au journal ; tâche terminée : série retirée, anomalie seulement si ses compteurs sont invalides). Une tâche active à 0 % est publiée 0. Non encore observée sur matériel |
 
 Le réglage et l'état du cache d'écriture viennent de la même lecture que le reste du volume : aucune commande de plus. Le réglage dit ce que l'administrateur a demandé ; l'état dit ce que la carte fait, par exemple un cache coupé parce que le module de protection est en panne. Chaque volume, membres d'un assemblage compris, est lu et publié séparément ; sur l'hôte de référence, les volumes membres ont toujours eu le même réglage et le même état que leur volume de premier niveau, sans que rien ne le garantisse. Le cache de lecture n'est pas publié.
 
@@ -117,7 +119,6 @@ Prévues au cahier des charges, pas encore publiées :
 
 | Métrique | Dépend de |
 |---|---|
-| `hwraid_task_progress_ratio` (reconstruction, vérification…) | décodage de la réponse aux requêtes de tâches (à capturer pendant une reconstruction) |
 | `hwraid_controller_state` | lecture d'état de la carte |
 | Emplacement des disques derrière un expandeur ou un fond de panier (boîtier, emplacement) | matériel correspondant et capture de l'outil témoin |
 

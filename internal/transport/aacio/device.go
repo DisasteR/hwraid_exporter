@@ -232,6 +232,32 @@ func (d *Device) Revision(ctx context.Context) (aacraid.Revision, error) {
 	return aacraid.DecodeRevision(buf)
 }
 
+// TaskList envoie AifReqJobsForCtr (101) pour un conteneur et rend ses
+// tâches. Soumise à ctx.
+func (d *Device) TaskList(ctx context.Context, container uint32) ([]aacraid.Task, error) {
+	if err := admit(ctx); err != nil {
+		return nil, err
+	}
+	buf := aacraid.TaskListRequest(container)
+	if err := d.do(ctx, allowlist.Request{Ioctl: aacraid.IoctlSendFIB, Buf: buf}); err != nil {
+		return nil, err
+	}
+	return aacraid.DecodeTaskList(buf)
+}
+
+// TaskReport envoie AifReqJobReport (103) pour une tâche et rend son
+// rapport de progression. Soumise à ctx.
+func (d *Device) TaskReport(ctx context.Context, job uint32) (aacraid.Task, error) {
+	if err := admit(ctx); err != nil {
+		return aacraid.Task{}, err
+	}
+	buf := aacraid.TaskReportRequest(job)
+	if err := d.do(ctx, allowlist.Request{Ioctl: aacraid.IoctlSendFIB, Buf: buf}); err != nil {
+		return aacraid.Task{}, err
+	}
+	return aacraid.DecodeTaskReport(buf, job)
+}
+
 // SupplementInfo envoie RequestSupplementAdapterInfo (706) au firmware et
 // décode la réponse.
 func (d *Device) SupplementInfo(ctx context.Context) (aacraid.SupplementInfo, error) {
@@ -321,25 +347,32 @@ func (d *Device) fib(ctx context.Context, req []byte) ([]byte, error) {
 // présence, puis lecture d'état si la carte y décrit son module. present
 // vaut false si la carte ne décrit pas de module dans ce format. Chacune des
 // deux lectures est soumise à ctx.
-func (d *Device) CacheProtection(ctx context.Context) (present bool, st aacraid.ZMMStatus, err error) {
+func (d *Device) CacheProtection(ctx context.Context) (rd aacraid.CacheProtectionReading, err error) {
 	if err := admit(ctx); err != nil {
-		return false, st, err
+		return rd, err
 	}
 	rsp, err := d.fib(ctx, aacraid.CacheProtectionPresenceRequest())
 	if err != nil {
-		return false, st, err
+		return rd, err
 	}
-	if present, err = aacraid.DecodeCacheProtectionPresence(rsp); err != nil || !present {
-		return false, st, err
+	if rd.Flash, err = aacraid.DecodeCacheProtectionPresence(rsp); err != nil {
+		return rd, err
+	}
+	if !rd.Flash {
+		// Sans le bit 0x2000 : batterie classique, décodée de cette seule
+		// réponse (0xa0000, que l'outil envoie pour un champ inutile à
+		// l'état, n'est pas envoyée).
+		rd.Battery, err = aacraid.DecodeBattery(rsp)
+		return rd, err
 	}
 	if err := admit(ctx); err != nil {
-		return true, st, err
+		return rd, err
 	}
 	if rsp, err = d.fib(ctx, aacraid.CacheProtectionStateRequest()); err != nil {
-		return true, st, err
+		return rd, err
 	}
-	st, err = aacraid.DecodeCacheProtectionState(rsp)
-	return true, st, err
+	rd.ZMM, err = aacraid.DecodeCacheProtectionState(rsp)
+	return rd, err
 }
 
 // stop clôture le transfert après le morceau n et vérifie la confirmation

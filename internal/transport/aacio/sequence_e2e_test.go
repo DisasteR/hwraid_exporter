@@ -55,6 +55,12 @@ type cardFirmware struct {
 	paused       bool
 	revBuild     uint32
 	noSupplement bool
+	// jobs : tâches de fond par conteneur (101), rapports rendus par la
+	// 103 ; sans entrée, réponse capturée sans tâche.
+	jobs map[uint32][][]byte
+	// battery : batterie classique (réponse 0x30000 sans 0x2000, indicateurs
+	// 0x17, octets 20 à 22) ; nil : module ZMM de la carte de référence.
+	battery *[3]byte
 	// subsystem : identifiant de sous-système annoncé par GET_HBA_INFO
 	// (0 : 0x0301, carte de référence).
 	subsystem uint32
@@ -121,6 +127,32 @@ func (f *cardFirmware) ioctl(req uint32, buf []byte) error {
 		for i, w := range []uint32{1, 0x05030400, build, 0xffffffff} {
 			le.PutUint32(d[4*i:], w)
 		}
+	case aacraid.CmdAifRequest: // réponse capturée : deux mots (0, 1), puis les blocs
+		sub, arg := le.Uint32(d[0:]), le.Uint32(d[8:])
+		var blocks [][]byte
+		switch sub {
+		case aacraid.AifReqJobsForCtr:
+			blocks = f.jobs[arg]
+		case aacraid.AifReqJobReport:
+			for _, bs := range f.jobs {
+				for _, b := range bs {
+					if le.Uint32(b) == arg {
+						blocks = [][]byte{b}
+					}
+				}
+			}
+		default:
+			f.t.Fatalf("sous-commande AifRequest inattendue %d", sub)
+		}
+		le.PutUint32(buf[0:], 0)
+		for i := range d[:aacraid.FIBSize-aacraid.FIBHeaderSize] {
+			d[i] = 0
+		}
+		le.PutUint32(d[4:], 1)
+		for i, b := range blocks {
+			copy(d[8+48*i:], b)
+		}
+		le.PutUint16(buf[8:], uint16(aacraid.FIBHeaderSize+8+48*len(blocks)))
 	case aacraid.CmdRequestSupplementAdapterInfo:
 		if f.fail706 {
 			return unix.EIO
@@ -153,6 +185,10 @@ func (f *cardFirmware) ioctl(req uint32, buf []byte) error {
 			switch le.Uint32(d[16:]) {
 			case 0x30000:
 				le.PutUint16(d[42:], 0x2000)
+				if f.battery != nil {
+					le.PutUint16(d[42:], 0x17)
+					copy(d[20:23], f.battery[:])
+				}
 			case 0x700000:
 				le.PutUint32(d[20:], 1)
 				le.PutUint32(d[48:], 0x40000089)
@@ -242,10 +278,11 @@ func containerCountRequest() string {
 // et la 703 avant la 706) ; la protection du cache (0x30000 puis 0x700000)
 // lue après la 703 et la 803 de chaque cycle, et non plus juste après la
 // 706 ; la requête CT_GET_CONTAINER_COUNT avant la première ouverture de la
-// 229 du premier cycle (réponse gardée au second).
+// 229 du premier cycle (réponse gardée au second) ; à la fin de chaque
+// cycle, la liste des tâches (101) de chaque conteneur lu.
 func expectedSequence(t *testing.T, golden []byte) []byte {
 	t.Helper()
-	lines := openAsTool(t, moveCacheAfter803(t, strings.SplitAfter(string(golden), "\n")))
+	lines := appendTaskLists(t, openAsTool(t, moveCacheAfter803(t, strings.SplitAfter(string(golden), "\n"))))
 	// Ouverture de la 229 : en-tête des requêtes paginées, puis [2, 229, …].
 	open229 := fmt.Sprintf("%#x 01001000f4010100e0010002%s02000000e5000000", aacraid.IoctlSendFIB, strings.Repeat("00", aacraid.FIBHeaderSize-12))
 	for i, l := range lines {
@@ -267,6 +304,33 @@ func capturedRequest(head, data string) string {
 	copy(b, h)
 	copy(b[aacraid.FIBHeaderSize:], d)
 	return fmt.Sprintf("%#x %s\n", aacraid.IoctlSendFIB, hex.EncodeToString(b))
+}
+
+// appendTaskLists ajoute à la fin de chaque cycle les requêtes 101 des cinq
+// conteneurs de la carte de référence, dans l'ordre de sa liste (0, puis
+// 0xfc à 0xff) ; en-tête et mots écrits en clair d'après la capture (octet
+// 7 et mots non initialisés par l'outil mis à zéro).
+func appendTaskLists(t *testing.T, lines []string) []string {
+	t.Helper()
+	var tl []string
+	for _, c := range []string{"00000000", "fc000000", "fd000000", "fe000000", "ff000000"} {
+		tl = append(tl, capturedRequest("01001000bc02010048000002", "6500000000000000"+c))
+	}
+	var out []string
+	cycles := 0
+	for i, l := range lines {
+		if strings.HasPrefix(l, "# cycle") && i > 0 {
+			out = append(out, tl...)
+		}
+		if strings.HasPrefix(l, "# cycle") {
+			cycles++
+		}
+		out = append(out, l)
+	}
+	if cycles != 2 {
+		t.Fatalf("%d cycles", cycles)
+	}
+	return append(out, tl...)
 }
 
 // openAsTool applique l'ouverture de l'outil à la séquence de la v0.2.0 :
@@ -911,5 +975,70 @@ func TestOpeningIoctls(t *testing.T) {
 	}
 	if subs, cm := containerConfigSent(t, fw.log); len(subs) != 0 || cm || cacheProtectionSent(t, fw.log) == 0 {
 		t.Errorf("sans bit 16 : VM_ContainerConfig %v, 708 %v, cache %d", subs, cm, cacheProtectionSent(t, fw.log))
+	}
+}
+
+// Tâches vérifiées sur les ioctl émis : une reconstruction sur le
+// conteneur 0xfe ; la 103 part une fois, après les 101, avec l'identifiant
+// de la tâche (requête écrite en clair), et l'avancement est publié.
+func TestTaskIoctls(t *testing.T) {
+	list, err := aacraid.NewAllowlist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	blk := make([]byte, 48)
+	le := binary.LittleEndian
+	le.PutUint32(blk[0:], 0x2a)         // identifiant
+	le.PutUint32(blk[4:], 110)          // reconstruction d'un miroir
+	le.PutUint32(blk[8:], 0xfe)         // conteneur
+	le.PutUint32(blk[0x10:], 102)       // en cours
+	le.PutUint64(blk[0x18:], 4_000_000) // finalTick
+	le.PutUint64(blk[0x20:], 1_000_000) // currentTick
+	fw := &cardFirmware{t: t, jobs: map[uint32][][]byte{0xfe: {blk}}}
+	aacio.ReplaceIoctl(t, fw.ioctl)
+	c, refs := e2eCard()
+	c.Hosts[0].SerialNumber, c.Hosts[0].Model = "TEST0001", "ASR6805"
+	r := aacmod.New(list).Collect(context.Background(), c, refs)
+	want := capturedRequest("01001000bc02010048000002", "67000000000000002a000000")
+	n := 0
+	for _, l := range fw.log {
+		if l+"\n" == want {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("103 envoyée %d fois", n)
+	}
+	if len(r.Tasks) != 1 || r.Tasks[0].Task != "rebuild" || r.Tasks[0].Ratio != 0.25 || !r.Collected["tasks"] {
+		t.Fatalf("tâches : %+v, %v", r.Tasks, r.Collected)
+	}
+}
+
+// Batterie classique vérifiée sur les ioctl émis : seule la lecture de
+// présence part (ni 0x700000 ni 0xa0000), l'état est décodé de sa réponse.
+func TestBatteryIoctls(t *testing.T) {
+	list, err := aacraid.NewAllowlist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := &cardFirmware{t: t, battery: &[3]byte{1, 1, 1}}
+	aacio.ReplaceIoctl(t, fw.ioctl)
+	c, refs := e2eCard()
+	c.Hosts[0].SerialNumber, c.Hosts[0].Model = "TEST0001", "ASR6805"
+	r := aacmod.New(list).Collect(context.Background(), c, refs)
+	var cmds []uint32
+	for _, l := range fw.log {
+		_, h, _ := strings.Cut(l, " ")
+		b, _ := hex.DecodeString(h)
+		if binary.LittleEndian.Uint16(b[4:]) == 500 && binary.LittleEndian.Uint32(b[aacraid.FIBHeaderSize:]) == 3 {
+			cmds = append(cmds, binary.LittleEndian.Uint32(b[aacraid.FIBHeaderSize+16:]))
+		}
+	}
+	if !slices.Equal(cmds, []uint32{0x30000}) {
+		t.Fatalf("VM_Ioctl envoyés : %#x", cmds)
+	}
+	cp := r.CacheProtection
+	if cp == nil || !cp.Present || cp.Type != "battery" || cp.Vendor != "bbu" || cp.State != "maintenance" || !r.Collected["cache_protection"] {
+		t.Fatalf("protection du cache : %+v, %v", cp, r.Collected)
 	}
 }

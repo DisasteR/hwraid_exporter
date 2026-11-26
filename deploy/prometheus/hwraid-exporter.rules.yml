@@ -130,13 +130,23 @@ groups:
           summary: "État de la protection du cache non déterminé ({{ $labels.controller }})"
           description: "Le module répond avec une combinaison d'état non qualifiée : sa protection n'est pas garantie. Vérifier avec l'outil du constructeur."
 
+      - alert: HwraidCacheProtectionMaintenance
+        expr: hwraid_cache_protection_state{state="maintenance"} == 1
+        keep_firing_for: 10m
+        for: 12h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Batterie de protection du cache en maintenance depuis plus de 12 h ({{ $labels.controller }})"
+          description: "La batterie est en cycle de maintenance (reconditionnement) : autonomie réduite, cache d'écriture en principe en écriture directe pendant le cycle (HwraidVolumeWriteCacheUnprotected signale un cache resté actif). Un cycle dure habituellement quelques heures ; au-delà de 12 h, vérifier la batterie avec l'outil du constructeur."
+
       # Cache d'écriture : chaque volume est évalué, membres d'un assemblage
       # compris (le gestionnaire d'alertes les regroupe par contrôleur).
       - alert: HwraidVolumeWriteCacheUnprotected
         expr: |
           hwraid_volume_write_cache_enabled == 1
             and on (job, instance, controller) (
-              hwraid_cache_protection_state{state=~"failed|charging"} == 1
+              hwraid_cache_protection_state{state=~"failed|charging|maintenance"} == 1
               or hwraid_cache_protection_present == 0
             )
         for: 5m
@@ -145,7 +155,7 @@ groups:
           severity: critical
         annotations:
           summary: "Cache d'écriture actif sans protection, volume {{ $labels.volume }} ({{ $labels.controller }})"
-          description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne ou en charge : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
+          description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
 
       - alert: HwraidVolumeWriteCacheProtectionUnknown
         expr: |

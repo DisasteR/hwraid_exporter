@@ -100,6 +100,9 @@ type Result struct {
 	DiskLocations []DiskLocation
 	// DiskOSDevices : nœud Linux de chaque disque présenté par le pilote.
 	DiskOSDevices []DiskOSDevice
+	// Tasks : tâches de fond des volumes dont l'avancement est établi,
+	// publiées seulement si leur lecture a abouti.
+	Tasks []Task
 	// Collected donne, pour chaque collecteur tenté pendant le cycle, le
 	// résultat de sa lecture (hwraid_collection_success). Un collecteur
 	// absent n'a pas été tenté.
@@ -145,6 +148,14 @@ type Volume struct {
 	WriteCacheEnabled *bool
 }
 
+// Task est une tâche de fond d'un volume (reconstruction, vérification…)
+// et son avancement, entre 0 et 1.
+type Task struct {
+	Volume string // ID du volume visé
+	Task   string // nom normalisé (docs/metrics.md) : rebuild, verify… ou other
+	Ratio  float64
+}
+
 // Disk est un disque de la carte (présent, ou désigné par un volume mais
 // absent) et son état.
 type Disk struct {
@@ -182,7 +193,7 @@ type DiskOSDevice struct {
 type CacheProtection struct {
 	Present bool   // module installé
 	Type    string // type normalisé : flash_supercap, battery
-	Vendor  string // nom constructeur du module : « zmm »
+	Vendor  string // nom constructeur du module : « zmm », « bbu »
 	State   string // état normalisé, vide si Present est faux et la présence établie
 	// PresenceUnknown : la carte décrit un module sans que sa présence soit
 	// établie (état non qualifié) ; la présence n'est pas publiée, l'état

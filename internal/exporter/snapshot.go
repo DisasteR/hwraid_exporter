@@ -54,6 +54,7 @@ type Controller struct {
 	DiskInventory    []module.DiskInfo
 	DiskLocations    []module.DiskLocation
 	DiskOSDevices    []module.DiskOSDevice
+	Tasks            []module.Task
 }
 
 // Snapshot est une vue complète et immuable.
@@ -216,6 +217,7 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 				c.Temperature = r.Temperature
 				c.LastSuccess = hist.Last(addr)
 				c.Volumes, c.Disks, c.DiskInventory, c.DiskLocations, c.DiskOSDevices = r.Volumes, r.Disks, r.DiskInventory, r.DiskLocations, r.DiskOSDevices
+				c.Tasks = r.Tasks
 				if r.CollectErr != nil {
 					c.CollectError = r.CollectErr.Error()
 				}
@@ -364,6 +366,12 @@ func Render(s Snapshot) string {
 			if d.CapacityBytes > 0 {
 				fmt.Fprintf(&b, "hwraid_disk_capacity_bytes{%s} %d\n", labels("controller", c.Label, "disk", d.ID), d.CapacityBytes)
 			}
+		}
+	}
+	gauge("hwraid_task_progress_ratio", "Progress of a background task of a volume, between 0 and 1 (absent when no task reports progress).")
+	for _, c := range s.Controllers {
+		for _, t := range c.Tasks {
+			fmt.Fprintf(&b, "hwraid_task_progress_ratio{%s} %g\n", labels("controller", c.Label, "volume", t.Volume, "task", t.Task), t.Ratio)
 		}
 	}
 	gauge("hwraid_controller_temperature_celsius", "Controller temperature sensor reading, in degrees Celsius.")

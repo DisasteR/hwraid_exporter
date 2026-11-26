@@ -41,10 +41,11 @@ The cost of this approach:
 | Controller | identity (model, firmware, serial, PCI address), driver and module, temperature and its thresholds | identity, temperature and thresholds | — |
 | Volumes | RAID level, state, capacity, members, write-cache policy and actual write-cache state | optimal state; RAID 1 mirrors and an assembly of mirrors; with a failed ZMM, write cache on under `wb`, off under `wbb` and `wt` | degraded, rebuilding, failed and reduced-redundancy states; RAID 0, 1E, 5, 5EE, 6, 10, 50, 60, simple volumes, spanned volumes made of disks |
 | Disks | state, inventory (vendor, model, firmware, serial, WWN), capacity, location on the controller, Linux device | online state, inventory, location, Linux device | rebuilding, failed, ready, spare, copyback, passthrough and unsupported states |
-| Cache protection | presence, type and state of the module (ZMM) | failed state | charging and optimal states |
+| Background tasks | progress of rebuild, verification and other tasks per volume | no task running | every task type and progress (reports never captured yet: the next rebuild on the reference host is the hardware check) |
+| Cache protection | presence, type and state of the module (ZMM, or classic battery) | failed ZMM state | charging and optimal ZMM states; every battery state, including `maintenance` |
 | Collection | success and last success time per collector, collection interval | successful collection | — |
 
-Not yet observed on hardware: the write cache turning on again under `wbb` once the ZMM is optimal. Not yet available: background task progress (rebuild, verification), overall controller state and controller statistics.
+Not yet observed on hardware: the write cache turning on again under `wbb` once the ZMM is optimal. Not yet available: overall controller state and controller statistics.
 
 Reading levels ([details](docs/aacraid-interface.md#niveaux-de-lecture-dune-carte)):
 - **Validated model and firmware** (Adaptec 6805, 5.3-0[19204]): everything above, with two differences from the vendor tool kept for this card only: reading only the chunks it needs (accepted by this card's firmware) and one re-read after a rejected close.

@@ -107,6 +107,47 @@ type fakeDev struct {
 	rev        *aacraid.Revision
 	revErr     error
 	revCall    int
+	// Tâches de fond (101, 103).
+	tasks         map[uint32][]aacraid.Task
+	reports       map[uint32]aacraid.Task
+	taskListErr   error
+	reportErr     error
+	taskListCalls []uint32
+	reportCalls   []uint32
+}
+
+// Tâches : tasks[conteneur] = tâches listées par la 101 ; reports[job] =
+// rapport rendu par la 103 (absent : la tâche listée elle-même).
+func (f *fakeDev) TaskList(ctx context.Context, container uint32) ([]aacraid.Task, error) {
+	if f.stopped(ctx) {
+		return nil, aacio.ErrStopped
+	}
+	f.taskListCalls = append(f.taskListCalls, container)
+	if f.taskListErr != nil {
+		return nil, f.taskListErr
+	}
+	return f.tasks[container], nil
+}
+
+func (f *fakeDev) TaskReport(ctx context.Context, job uint32) (aacraid.Task, error) {
+	if f.stopped(ctx) {
+		return aacraid.Task{}, aacio.ErrStopped
+	}
+	f.reportCalls = append(f.reportCalls, job)
+	if f.reportErr != nil {
+		return aacraid.Task{}, f.reportErr
+	}
+	if t, ok := f.reports[job]; ok {
+		return t, nil
+	}
+	for _, ts := range f.tasks {
+		for _, t := range ts {
+			if t.Job == job {
+				return t, nil
+			}
+		}
+	}
+	return aacraid.Task{}, errors.New("unknown task")
 }
 
 func (f *fakeDev) Paused(ctx context.Context) (bool, error) {
@@ -240,15 +281,15 @@ func (f *fakeDev) Close() error              { f.closed = true; return nil }
 func (f *fakeDev) CloseUnconfirmed() int     { return f.closeOther }
 func (f *fakeDev) SetValidatedCouple(v bool) { f.validated, f.validatedSet = v, true }
 
-func (f *fakeDev) CacheProtection(ctx context.Context) (bool, aacraid.ZMMStatus, error) {
+func (f *fakeDev) CacheProtection(ctx context.Context) (aacraid.CacheProtectionReading, error) {
 	if f.stopped(ctx) {
-		return false, aacraid.ZMMStatus{}, aacio.ErrStopped
+		return aacraid.CacheProtectionReading{}, aacio.ErrStopped
 	}
 	f.cpCall++
 	if f.cp == nil {
-		return true, aacraid.ZMMStatus{Word: 0x40000081, State: aacraid.CacheProtectionFailed}, nil
+		return aacraid.CacheProtectionReading{Flash: true, ZMM: aacraid.ZMMStatus{Word: 0x40000081, State: aacraid.CacheProtectionFailed}}, nil
 	}
-	return f.cp.described, f.cp.st, f.cp.err
+	return aacraid.CacheProtectionReading{Flash: f.cp.described, ZMM: f.cp.st, Battery: f.cp.bat}, f.cp.err
 }
 
 func (f *fakeDev) ReadPaged(ctx context.Context, r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, error) {
@@ -320,8 +361,9 @@ func checkMemberListSize(r aacraid.PagedRead, size uint32, b []byte) ([]byte, er
 }
 
 type cpAnswer struct {
-	described bool
+	described bool // bit 0x2000 : module flash décrit par la lecture d'état
 	st        aacraid.ZMMStatus
+	bat       aacraid.Battery // sans le bit : batterie classique
 	err       error
 }
 
@@ -427,8 +469,8 @@ func TestCollectSupplementGate(t *testing.T) {
 		"version 1":  {Version: 1, SupportedOptions2: 0x08},
 	} {
 		r := withDev(&fakeDev{info: hba, sup: sup}, nil).Collect(context.Background(), c, ref)
-		if !r.NodeValid || len(r.Unsupported) != 4 || r.Unsupported[0] != "volumes" || r.Unsupported[1] != "disks" ||
-			r.Unsupported[2] != DiskInventoryCollector || r.Unsupported[3] != DiskLocationCollector {
+		if !r.NodeValid || len(r.Unsupported) != 5 || r.Unsupported[0] != "volumes" || r.Unsupported[1] != "disks" ||
+			r.Unsupported[2] != DiskInventoryCollector || r.Unsupported[3] != DiskLocationCollector || r.Unsupported[4] != TasksCollector {
 			t.Fatalf("%s : %+v", name, r)
 		}
 	}
@@ -462,7 +504,7 @@ func TestCollectReportsCapabilitiesCollection(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
 	c := card("0000:01:00.0", "0")
 	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
-	after := []string{"volumes", "disks", DiskInventoryCollector, DiskLocationCollector, CacheProtectionCollector, TemperatureCollector}
+	after := []string{"volumes", "disks", DiskInventoryCollector, DiskLocationCollector, TasksCollector, CacheProtectionCollector, TemperatureCollector}
 
 	unq, unqHBA := otherModel(hba)
 	fu := &fakeDev{info: unqHBA, supErr: errors.New("EIO")}
@@ -529,7 +571,10 @@ func TestCollectCacheProtection(t *testing.T) {
 		{"non installé", cpAnswer{described: true, st: aacraid.ZMMStatus{State: aacraid.CacheProtectionNotInstalled}}, &module.CacheProtection{Type: "flash_supercap", Vendor: "zmm"}, ptr(true), false},
 		{"état inconnu, installé", cpAnswer{described: true, st: aacraid.ZMMStatus{Word: 0x40000019, State: aacraid.CacheProtectionUnknown}}, &module.CacheProtection{Present: true, Type: "flash_supercap", Vendor: "zmm", State: "unknown"}, ptr(true), false},
 		{"état inconnu, présence non établie", cpAnswer{described: true, st: aacraid.ZMMStatus{Word: 0x40000008, State: aacraid.CacheProtectionUnknown}}, &module.CacheProtection{PresenceUnknown: true, Type: "flash_supercap", Vendor: "zmm", State: "unknown"}, ptr(true), false},
-		{"non décrit", cpAnswer{described: false}, nil, nil, true},
+		{"batterie optimale", cpAnswer{bat: aacraid.Battery{PresenceKnown: true, Present: true, State: aacraid.CacheProtectionOptimal}}, &module.CacheProtection{Present: true, Type: "battery", Vendor: "bbu", State: "optimal"}, ptr(true), false},
+		{"batterie en maintenance", cpAnswer{bat: aacraid.Battery{PresenceKnown: true, Present: true, State: aacraid.CacheProtectionMaintenance}}, &module.CacheProtection{Present: true, Type: "battery", Vendor: "bbu", State: "maintenance"}, ptr(true), false},
+		{"batterie absente", cpAnswer{bat: aacraid.Battery{PresenceKnown: true}}, &module.CacheProtection{Type: "battery", Vendor: "bbu"}, ptr(true), false},
+		{"batterie, présence non établie", cpAnswer{bat: aacraid.Battery{State: aacraid.CacheProtectionUnknown}}, &module.CacheProtection{PresenceUnknown: true, Type: "battery", Vendor: "bbu", State: "unknown"}, ptr(true), false},
 		{"autre type", cpAnswer{described: true, st: aacraid.ZMMStatus{State: aacraid.CacheProtectionOtherType}}, nil, nil, true},
 		{"échec", cpAnswer{err: errors.New("EIO")}, nil, ptr(false), false},
 	}
@@ -2277,5 +2322,131 @@ func TestAllowedUnqualifiedOpeningRefusals(t *testing.T) {
 		if d.pausedCall != 1 || d.aiCall+d.supCall+d.cpCall+d.envCall+d.countCall+d.cmCall != 0 || len(d.reads) != 0 || r.CollectErr == nil {
 			t.Errorf("%s : 704 %d, 701 %d, 703 %d, 706 %d, cache %d, paginées %v ; %v", name, d.pausedCall, d.revCall, d.aiCall, d.supCall, d.cpCall, d.reads, r.CollectErr)
 		}
+	}
+}
+
+// Tâches de fond (CDC, section 6.11, « Progression ») : 101 pour chaque
+// conteneur lu, dans l'ordre de la liste, 103 une fois par tâche ; volume
+// désigné par l'UID du conteneur de la tâche (données de référence
+// pseudonymisées : 0xfd → 1d000003, écrit en clair).
+func TestCollectTasks(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	c := card("0000:01:00.0", "0")
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
+	rebuild := aacraid.Task{Job: 7, Type: 110, Container: 0xfd, Status: 102, Final: 1000, Current: 420}
+	d := &fakeDev{info: hba, sup: arcIo, paged: referencePaged, tasks: map[uint32][]aacraid.Task{
+		0:    {rebuild}, // la même tâche listée sous l'assemblage et sous le miroir
+		0xfd: {rebuild},
+	}}
+	r := withDev(d, nil).Collect(context.Background(), c, ref)
+	if !slices.Equal(d.taskListCalls, []uint32{0, 0xfc, 0xfd, 0xfe, 0xff}) || !slices.Equal(d.reportCalls, []uint32{7}) {
+		t.Fatalf("101 %v, 103 %v", d.taskListCalls, d.reportCalls)
+	}
+	if !r.Collected[TasksCollector] || len(r.Tasks) != 1 || r.Tasks[0] != (module.Task{Volume: "1d000003", Task: "rebuild", Ratio: 0.42}) {
+		t.Fatalf("tâches : %+v, %v", r.Tasks, r.Collected)
+	}
+
+	// Rapport 103 : c'est lui qui désigne la cible et le type.
+	d = &fakeDev{info: hba, sup: arcIo, paged: referencePaged,
+		tasks:   map[uint32][]aacraid.Task{0xfd: {{Job: 7, Type: 0, Container: 0}}},
+		reports: map[uint32]aacraid.Task{7: rebuild}}
+	if r := withDev(d, nil).Collect(context.Background(), c, ref); len(r.Tasks) != 1 || r.Tasks[0].Volume != "1d000003" || r.Tasks[0].Task != "rebuild" {
+		t.Fatalf("cible du rapport : %+v", r.Tasks)
+	}
+
+	// Deux tâches listées sous le même conteneur : 103 pour la première
+	// seulement, comme l'outil (une tâche affichée par volume).
+	verify := aacraid.Task{Job: 8, Type: 107, Container: 0xfd, Status: 102, Final: 10, Current: 1}
+	d = &fakeDev{info: hba, sup: arcIo, paged: referencePaged, tasks: map[uint32][]aacraid.Task{0xfd: {rebuild, verify}}}
+	r = withDev(d, nil).Collect(context.Background(), c, ref)
+	if !slices.Equal(d.reportCalls, []uint32{7}) || len(r.Tasks) != 1 || r.Tasks[0].Task != "rebuild" {
+		t.Fatalf("deux tâches : 103 %v, %+v", d.reportCalls, r.Tasks)
+	}
+
+	// Tâche terminée : série retirée, sans anomalie ; aux compteurs
+	// invalides, retirée aussi, avec l'anomalie au journal (CDC).
+	done := rebuild
+	done.Status = 2
+	d = &fakeDev{info: hba, sup: arcIo, paged: referencePaged, tasks: map[uint32][]aacraid.Task{0xfd: {done}}}
+	r = withDev(d, nil).Collect(context.Background(), c, ref)
+	if !r.Collected[TasksCollector] || len(r.Tasks) != 0 || r.CollectErr != nil {
+		t.Fatalf("tâche terminée : %+v, %v", r.Tasks, r.CollectErr)
+	}
+	done.Status, done.Final, done.Current = 1, 0, 0
+	d = &fakeDev{info: hba, sup: arcIo, paged: referencePaged, tasks: map[uint32][]aacraid.Task{0xfd: {done}}}
+	r = withDev(d, nil).Collect(context.Background(), c, ref)
+	if !r.Collected[TasksCollector] || len(r.Tasks) != 0 || r.CollectErr == nil || !strings.Contains(r.CollectErr.Error(), "invalid counters") {
+		t.Fatalf("tâche terminée, compteurs invalides : %+v, %v", r.Tasks, r.CollectErr)
+	}
+
+	// Avancement non établi : non publié, journalisé, lecture réussie.
+	zero := rebuild
+	zero.Final = 0
+	d = &fakeDev{info: hba, sup: arcIo, paged: referencePaged, tasks: map[uint32][]aacraid.Task{0xfd: {zero}}}
+	r = withDev(d, nil).Collect(context.Background(), c, ref)
+	if !r.Collected[TasksCollector] || len(r.Tasks) != 0 || r.CollectErr == nil || !strings.Contains(r.CollectErr.Error(), "finalTick") {
+		t.Fatalf("finalTick nul : %+v, %v, %v", r.Tasks, r.Collected[TasksCollector], r.CollectErr)
+	}
+
+	// Échecs : 101, 103, conteneur inconnu.
+	for name, d := range map[string]*fakeDev{
+		"101 en échec":      {taskListErr: errors.New("EIO")},
+		"103 en échec":      {tasks: map[uint32][]aacraid.Task{0xfd: {rebuild}}, reportErr: errors.New("EIO")},
+		"conteneur inconnu": {tasks: map[uint32][]aacraid.Task{0xfd: {{Job: 7, Type: 110, Container: 0x55, Status: 102, Final: 10, Current: 1}}}},
+	} {
+		d.info, d.sup, d.paged = hba, arcIo, referencePaged
+		r := withDev(d, nil).Collect(context.Background(), c, ref)
+		if ok, seen := r.Collected[TasksCollector]; !seen || ok || len(r.Tasks) != 0 || r.CollectErr == nil {
+			t.Errorf("%s : %v, %+v", name, r.Collected, r.Tasks)
+		}
+		if !r.Collected["volumes"] {
+			t.Errorf("%s : volumes en échec", name)
+		}
+		// Rien n'est envoyé après l'échec, ni 101 ni 103 : 101 sur 0 seulement
+		// si elle échoue ; sinon 101 sur 0, 0xfc, 0xfd, puis une seule 103.
+		wantList, wantRep := []uint32{0, 0xfc, 0xfd}, []uint32{7}
+		if name == "101 en échec" {
+			wantList, wantRep = []uint32{0}, nil
+		}
+		if !slices.Equal(d.taskListCalls, wantList) || !slices.Equal(d.reportCalls, wantRep) {
+			t.Errorf("%s : commandes : 101 %v, 103 %v", name, d.taskListCalls, d.reportCalls)
+		}
+	}
+
+	// Configuration des volumes incomplète (liste des conteneurs, liste des
+	// disques qui empêche celle des membres, liste des membres) : aucune
+	// 101, collecteur en échec.
+	for _, failing := range []aacraid.PagedRead{aacraid.ReadContainerList, aacraid.ReadDiskList, aacraid.ReadMemberList} {
+		d = &fakeDev{info: hba, sup: arcIo, paged: func(rd aacraid.PagedRead, p, size uint32) ([]byte, error) {
+			if rd == failing {
+				return nil, errors.New("EIO")
+			}
+			return referencePaged(rd, p, size)
+		}}
+		r = withDev(d, nil).Collect(context.Background(), c, ref)
+		if ok, seen := r.Collected[TasksCollector]; !seen || ok || len(d.taskListCalls) != 0 {
+			t.Fatalf("lecture %d en échec : %v, 101 %v", failing, r.Collected, d.taskListCalls)
+		}
+	}
+	// Inventaire des disques (248) en échec : configuration des volumes
+	// complète, tâches lues.
+	d = &fakeDev{info: hba, sup: arcIo, paged: func(rd aacraid.PagedRead, p, size uint32) ([]byte, error) {
+		if rd == aacraid.ReadDiskInfo {
+			return nil, errors.New("EIO")
+		}
+		return referencePaged(rd, p, size)
+	}}
+	r = withDev(d, nil).Collect(context.Background(), c, ref)
+	if !r.Collected[TasksCollector] || len(d.taskListCalls) != 5 {
+		t.Fatalf("248 en échec : %v, 101 %v", r.Collected, d.taskListCalls)
+	}
+
+	// Sans lecture des conteneurs annoncée (bit 9) : non pris en charge.
+	noVol := arcIo
+	noVol.FeatureBits = aacraid.FeatureConnectorMap
+	d = &fakeDev{info: hba, sup: noVol, paged: referencePaged}
+	r = withDev(d, nil).Collect(context.Background(), c, ref)
+	if _, seen := r.Collected[TasksCollector]; seen || !slices.Contains(r.Unsupported, TasksCollector) || len(d.taskListCalls) != 0 {
+		t.Fatalf("sans bit 9 : %v, %v, 101 %v", r.Collected, r.Unsupported, d.taskListCalls)
 	}
 }
