@@ -6,6 +6,7 @@ package exporter
 import (
 	"context"
 	"errors"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/DisasteR/hwraid_exporter/internal/module"
+	"github.com/DisasteR/hwraid_exporter/internal/sysfs"
 )
 
 // Une carte bloquée ne retarde pas les autres, n'est pas relancée tant
@@ -919,5 +921,40 @@ func TestNodeErrorDoesNotInheritHeldCapabilities(t *testing.T) {
 	out := Render(Build(plan(aacHost("host0", addr, "S2")), true, nodeErr, tr, time.Minute))
 	if want := `hwraid_collection_success{controller="serial:S2",collector="capabilities"} 0`; !strings.Contains(out, want+"\n") {
 		t.Fatalf("réponse gardée d'une autre carte reprise : %s\n%s", want, out)
+	}
+}
+
+// Remember rend les changements d'identité à une même adresse, champs
+// nommés sans valeurs : aucun au premier cycle, ni pour une identité
+// inchangée, ni pour un champ devenu illisible ; le numéro, puis le modèle
+// et le firmware ensemble quand ils changent ; une autre adresse n'est pas
+// concernée.
+func TestRememberReportsIdentityChanges(t *testing.T) {
+	const addr, other = "0000:01:00.0", "0000:02:00.0"
+	host := func(addr, serial, model, fw string) sysfs.SCSIHost {
+		h := aacHost("host0", addr, serial)
+		h.Model, h.Firmware = model, fw
+		return h
+	}
+	tr := NewTracker()
+	step := func(name string, want []IdentityChange, hosts ...sysfs.SCSIHost) {
+		t.Helper()
+		p := plan(hosts...)
+		got := tr.Remember(Build(p, true, valid(p), tr, time.Minute))
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s : %+v, attendu %+v", name, got, want)
+		}
+	}
+	step("premier cycle", nil, host(addr, "S1", "6805", "5.3-0[19204]"), host(other, "S9", "6805", "5.3-0[19204]"))
+	step("inchangée", nil, host(addr, "S1", "6805", "5.3-0[19204]"), host(other, "S9", "6805", "5.3-0[19204]"))
+	step("numéro illisible", nil, host(addr, "", "6805", "5.3-0[19204]"), host(other, "S9", "6805", "5.3-0[19204]"))
+	step("numéro changé", []IdentityChange{{PCIAddress: addr, Fields: []string{"serial"}}},
+		host(addr, "S2", "6805", "5.3-0[19204]"), host(other, "S9", "6805", "5.3-0[19204]"))
+	step("modèle et firmware changés", []IdentityChange{{PCIAddress: addr, Fields: []string{"model", "firmware"}}},
+		host(addr, "S2", "6405", "5.2-0[18000]"), host(other, "S9", "6805", "5.3-0[19204]"))
+	step("firmware changé, numéro illisible", []IdentityChange{{PCIAddress: addr, Fields: []string{"firmware"}}},
+		host(addr, "", "6405", "5.3-0[19204]"), host(other, "S9", "6805", "5.3-0[19204]"))
+	if s := strings.Join(changedFields("a|b", "a|c"), ","); s != "identity" {
+		t.Fatalf("identités de formes différentes : %q", s)
 	}
 }

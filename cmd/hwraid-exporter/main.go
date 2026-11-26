@@ -106,13 +106,19 @@ func serve(args []string) int {
 	interval := fs.Duration("interval", time.Minute, "collection interval")
 	timeout := fs.Duration("collect-timeout", 0, "maximum time to wait for one card in a cycle (default: the smaller of 30s and -interval)")
 	var allow []string
-	fs.Func("allow-unqualified", "also read the cards of this module whose model is not qualified, with the vendor tool's command sequence (risks: docs/deploiement.md); repeatable; value: a module name (aacraid)", func(v string) error {
+	fs.Func("allow-unqualified", "also read the cards of this module whose model is not qualified, with the vendor tool's command sequence (risks: docs/deploiement.md); repeatable; value: a module name (aacraid), or serial:<number> for the card whose sysfs serial number is <number> (as in its controller label)", func(v string) error {
 		allow = append(allow, v)
 		return nil
 	})
 	_ = fs.Parse(args)
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	exporter.Version, exporter.Revision = version, revision
+	// Les options s'arrêtent au premier argument positionnel : en accepter
+	// un laisserait passer, sans la valider, une option placée après.
+	if fs.NArg() > 0 {
+		log.Error("unexpected argument: options only", "position", len(args)-fs.NArg()+1)
+		return 2
+	}
 	if *interval <= 0 {
 		log.Error("invalid interval", "interval", *interval)
 		return 2
@@ -154,7 +160,7 @@ func serve(args []string) int {
 	}
 	// Chaque module déclare ses nœuds et ses capacités ; le cœur crée seul.
 	registry := []module.Module{aacmod.New(list)}
-	allowed, err := allowUnqualified(allow, registry)
+	allowed, serials, err := allowUnqualified(allow, registry)
 	if err != nil {
 		log.Error("invalid -allow-unqualified", "err", err)
 		return 2
@@ -162,7 +168,19 @@ func serve(args []string) int {
 	for _, name := range allowed {
 		log.Warn("cards of an unqualified model will be read: commands the vendor does not document, checked only against constructed answers on such a model", "module", name)
 	}
-	plan := module.Build(hosts, registry)
+	plan := buildPlan(hosts, herrs, nil, registry)
+	// Journaux sans numéro de série (exigence S9) : le sélecteur est désigné
+	// par son rang dans les valeurs serial: de l'option.
+	for i, s := range serials {
+		log.Warn("the card selected by serial number may be read even if its model is not qualified: commands the vendor does not document, checked only against constructed answers on such a model", "serial_selector", i+1)
+		if !slices.ContainsFunc(plan.Cards, func(pc module.Planned) bool {
+			fields, _ := pc.Card.Identity()
+			_, qualifies := pc.Module.(module.Qualifier)
+			return qualifies && pc.Card.UniqueSerial && fields[0] == s
+		}) {
+			log.Warn("no card of a module that qualifies its cards announces this serial number alone in a complete inventory: this selector designates no card until one does", "serial_selector", i+1)
+		}
+	}
 	specs := plan.Specs(majors)
 	complete := len(herrs) == 0
 	for _, pc := range plan.Cards {
@@ -238,7 +256,7 @@ func serve(args []string) int {
 			}
 			lastHostErrs = cur
 		}
-		cur := module.Build(hosts, registry)
+		cur := buildPlan(hosts, herrs, err, registry)
 		// L'ensemble des nœuds attendus a-t-il changé depuis la préparation ?
 		// (carte ajoutée ou retirée, module rechargé, major réattribué) Si
 		// oui, ou si le major ne peut être confirmé, aucun nœud n'est ouvert.
@@ -305,7 +323,9 @@ func serve(args []string) int {
 			tracker.Update(results, addrs, time.Now())
 		}
 		s := exporter.Build(cur, ok, results, tracker, *interval)
-		tracker.Remember(s)
+		for _, ch := range tracker.Remember(s) {
+			log.Warn("card identity changed at the same PCI address while running: a card is neither replaced nor updated hot; driver reload or anomaly, kept answers and history of the address discarded", "pci", ch.PCIAddress, "fields", strings.Join(ch.Fields, ","))
+		}
 		for _, c := range s.Controllers {
 			if c.NodeChecked && !c.NodeValid {
 				// Adresse PCI et non label : le label peut contenir la série (S9).
@@ -402,14 +422,48 @@ func readMajors() (map[string]uint32, error) {
 	return nodes.CharMajors(f)
 }
 
+// buildPlan construit le plan d'une découverte (hôtes, hôtes illisibles,
+// erreur globale) et y établit l'unicité des numéros de série (sélecteur
+// -allow-unqualified=serial:) : seulement si la découverte n'a eu ni
+// erreur globale ni hôte illisible.
+func buildPlan(hosts []sysfs.SCSIHost, herrs []sysfs.HostError, err error, registry []module.Module) module.Plan {
+	p := module.Build(hosts, registry)
+	p.ResolveSerials(err == nil && len(herrs) == 0)
+	return p
+}
+
 // allowUnqualified applique les valeurs de -allow-unqualified (CDC, section
-// 6.12) : chacune nomme un module du registre qui qualifie ses cartes. Une
-// valeur inconnue fait échouer le démarrage. Rend les modules autorisés.
-func allowUnqualified(values []string, registry []module.Module) ([]string, error) {
+// 6.12) : chacune nomme un module du registre qui qualifie ses cartes, ou
+// un numéro de série (serial:<numéro>, transmis à chacun de ces modules).
+// Une valeur invalide fait échouer le démarrage, sans rien autoriser. Rend
+// les modules et les numéros autorisés.
+func allowUnqualified(values []string, registry []module.Module) (modules, serials []string, err error) {
+	var qualifiers []module.Qualifier
+	for _, m := range registry {
+		if q, ok := m.(module.Qualifier); ok {
+			qualifiers = append(qualifiers, q)
+		}
+	}
 	var allowed []string
+	var apply []func()
 	for _, v := range values {
-		if strings.HasPrefix(v, "serial:") {
-			return nil, fmt.Errorf("%q: the serial:<number> form is not available yet", v)
+		if s, ok := strings.CutPrefix(v, "serial:"); ok {
+			switch {
+			// Messages sans le numéro (exigence S9).
+			case s == "" || s != strings.TrimSpace(s):
+				return nil, nil, errors.New("serial: empty serial number, or surrounded by spaces")
+			case strings.HasPrefix(s, "pci:") || strings.HasPrefix(s, "serial:"):
+				return nil, nil, errors.New("serial: a label prefix follows serial:; give the serial number only (a card labelled pci: cannot be selected by serial number)")
+			case len(qualifiers) == 0:
+				return nil, nil, errors.New("serial: no module qualifies its cards")
+			}
+			if !slices.Contains(serials, s) {
+				serials = append(serials, s)
+				for _, q := range qualifiers {
+					apply = append(apply, func() { q.AllowUnqualifiedSerial(s) })
+				}
+			}
+			continue
 		}
 		var found module.Module
 		for _, m := range registry {
@@ -420,14 +474,17 @@ func allowUnqualified(values []string, registry []module.Module) ([]string, erro
 		q, ok := found.(module.Qualifier)
 		switch {
 		case found == nil:
-			return nil, fmt.Errorf("%q: unknown module", v)
+			return nil, nil, errors.New("unknown module (a serial number is given as serial:<number>, in lower case)")
 		case !ok:
-			return nil, fmt.Errorf("%q: module does not qualify its cards", v)
+			return nil, nil, fmt.Errorf("%q: module does not qualify its cards", v)
 		}
 		if !slices.Contains(allowed, v) {
-			q.AllowUnqualified()
+			apply = append(apply, q.AllowUnqualified)
 			allowed = append(allowed, v)
 		}
 	}
-	return allowed, nil
+	for _, f := range apply {
+		f()
+	}
+	return allowed, serials, nil
 }

@@ -122,8 +122,11 @@ type Module struct {
 	// rétrogradé, carte remise) les relise.
 	keyOf map[string]string
 	// allowAll : option -allow-unqualified=aacraid, toutes les cartes du
-	// module lues au-delà de la 706 quel que soit leur modèle.
-	allowAll bool
+	// module lues quel que soit leur modèle ; allowSerials : option
+	// -allow-unqualified=serial:<numéro>, les cartes dont sysfs annonce ce
+	// numéro.
+	allowAll     bool
+	allowSerials map[string]bool
 }
 
 // Qualified implémente module.Qualifier : modèle qualifié (QualifiedModel).
@@ -134,6 +137,27 @@ func (*Module) Qualified(c module.Card) bool { return QualifiedModel(c) }
 // autres, selon la règle de conduite (suite de commandes de l'outil, sans
 // les écarts E1 et E2). À appeler avant la première collecte.
 func (m *Module) AllowUnqualified() { m.allowAll = true }
+
+// AllowUnqualifiedSerial active l'option -allow-unqualified=serial:<numéro>
+// pour ce numéro. À appeler avant la première collecte.
+func (m *Module) AllowUnqualifiedSerial(serial string) {
+	if m.allowSerials == nil {
+		m.allowSerials = map[string]bool{}
+	}
+	m.allowSerials[serial] = true
+}
+
+// read indique si la carte est lue : modèle qualifié, ou carte désignée par
+// -allow-unqualified (module entier, ou numéro de série lu dans sysfs à ce
+// cycle, non vide et unique dans un inventaire complet, le même que celui
+// du label controller ; sinon : non lue).
+func (m *Module) read(c module.Card) bool {
+	if QualifiedModel(c) || m.allowAll {
+		return true
+	}
+	fields, _ := c.Identity()
+	return c.UniqueSerial && fields[0] != "" && m.allowSerials[fields[0]]
+}
 
 // New construit le module avec le transport réel et la liste blanche aacraid.
 func New(list *allowlist.List) *Module {
@@ -272,7 +296,7 @@ func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeR
 	// collecteurs sont publiés non pris en charge. Ce classement ne dépend
 	// que de sysfs et de l'option.
 	all := append([]string{CapabilitiesCollector}, append(append([]string(nil), StateCollectors...), DiskInventoryCollector, DiskLocationCollector, TasksCollector, CacheProtectionCollector, TemperatureCollector)...)
-	if !QualifiedModel(c) && !m.allowAll {
+	if !m.read(c) {
 		r.Unsupported = all
 		return r
 	}

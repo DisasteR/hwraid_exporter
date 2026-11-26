@@ -15,6 +15,7 @@ import (
 //	ouverture : [2, sous-commande, paramètre, 0, marque, 0xffffffff, 0, taille]
 //	morceau   : [2, 83, 0xc9 (premier) | 0xc8, total, 0xda, transfert, n, total]
 //	clôture   : [2, 84, 0xc8, total, 0xda, transfert, dernier n, total]
+//	clôture après l'ouverture : [2, 84, mots 2 à 7 de la réponse d'ouverture]
 //
 // reste à zéro. Les octets que l'outil laisse au-delà des huit mots sont des
 // résidus de ses propres tampons : ils ne sont pas reproduits.
@@ -45,6 +46,9 @@ const (
 	// statut CT_OK) : l'exporter la rejette aussi et la refait une fois.
 	MarkClosedOther = 0xc5
 	markDA          = 0xda
+	// codeE2 : code d'ouverture (mot 4) sur lequel l'outil de référence
+	// clôture le transfert sans lire de morceau ; sens non établi.
+	codeE2 = 0xe2
 	// XferNone : identifiant de transfert sentinelle (mot 5 d'une
 	// ouverture) ; jamais un transfert établi.
 	XferNone = 0xffffffff
@@ -137,6 +141,36 @@ func StopRequest(total, xfer, n uint32) []byte {
 	return pagedRequest(vmContainerConfig, ctStopData, markNext, total, markDA, xfer, n, total)
 }
 
+// StopAfterOpen indique une ouverture hors du parcours nominal que
+// l'exporter clôture sans lire de morceau (docs/aacraid-interface.md,
+// section 4) : marque 0xc9 ou 0xc8 avec le code 0xe2 (l'outil de référence
+// clôture de même), marque 0xc9 avec un total nul (de même) ou un code
+// autre que CT_OK (l'outil lit d'abord tous les morceaux : l'exporter n'en
+// lit aucun). Seulement pour un transfert établi dont les mots repris dans
+// la clôture restent dans les bornes de la liste blanche : morceau 0,
+// taille égale au total, total d'au plus 0x1004. Ni la marque 0xc8 avec un
+// autre code (parcours des données incluses, non implémenté) ni une
+// ouverture CT_OK à total non nul (lecture nominale) n'en relèvent.
+func (r PagedResponse) StopAfterOpen() bool {
+	if r.Xfer == XferNone || r.Chunk != 0 || r.Size != r.Total || r.Total > 0x1004 {
+		return false
+	}
+	switch r.Mark {
+	case markFirst:
+		return r.Code != markDA || r.Total == 0
+	case markNext:
+		return r.Code == codeE2
+	}
+	return false
+}
+
+// StopAfterOpenRequest construit la clôture d'une ouverture StopAfterOpen,
+// comme l'outil de référence : mots 2 à 7 de la réponse d'ouverture repris
+// (marque, total, code, transfert, morceau, taille).
+func StopAfterOpenRequest(open PagedResponse) []byte {
+	return pagedRequest(vmContainerConfig, ctStopData, open.Mark, open.Total, open.Code, open.Xfer, open.Chunk, open.Size)
+}
+
 // chunks est le nombre de morceaux d'un transfert de total octets.
 func chunks(total uint32) uint32 { return (total + ChunkData - 1) / ChunkData }
 
@@ -170,6 +204,9 @@ func checkPagedRequest(b []byte) bool {
 	case ctGetContainerCount:
 		return w(2) == 0 && w(3) == 0 && w(4) == 0 && w(5) == 0xffffffff && w(6) == 0 && w(7) == 0
 	case ctContinueData, ctStopData:
+		if sub == ctStopData && (PagedResponse{Mark: w(2), Total: w(3), Code: w(4), Xfer: w(5), Chunk: w(6), Size: w(7)}).StopAfterOpen() {
+			return true
+		}
 		total, n := w(3), w(6)
 		if total == 0 || total > 0x1004 || w(7) != total || w(4) != markDA || w(5) == XferNone || n >= chunks(total) {
 			return false

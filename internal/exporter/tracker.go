@@ -255,11 +255,41 @@ func (t *Tracker) CycleOnly(addr string) *Tracker {
 	return v
 }
 
-// Remember enregistre les identités serial: établies dans un instantané.
-func (t *Tracker) Remember(s Snapshot) {
-	if t == nil {
-		return
+// identityFields nomme les champs de Controller.Identity, dans l'ordre
+// (module.Card.Identity, puis les nœuds déclarés).
+var identityFields = []string{"serial", "pci_vendor", "pci_device", "pci_subsystem_vendor", "pci_subsystem_device", "model", "firmware", "nodes"}
+
+// IdentityChange signale qu'à une même adresse PCI, un champ lu de
+// l'identité diffère de celui gardé : une carte n'est pas remplacée ni mise
+// à jour à chaud, c'est un rechargement du pilote ou une anomalie. Fields
+// nomme les champs changés, sans leurs valeurs (exigence S9).
+type IdentityChange struct {
+	PCIAddress string
+	Fields     []string
+}
+
+// changedFields nomme les champs lus de deux identités qui diffèrent.
+func changedFields(a, b string) []string {
+	pa, pb := strings.Split(a, "|"), strings.Split(b, "|")
+	if len(pa) != len(pb) || len(pa) != len(identityFields) {
+		return []string{"identity"}
 	}
+	var out []string
+	for i := range pa {
+		if pa[i] != "" && pb[i] != "" && pa[i] != pb[i] {
+			out = append(out, identityFields[i])
+		}
+	}
+	return out
+}
+
+// Remember enregistre les identités serial: établies dans un instantané et
+// rend les changements d'identité constatés (IdentityChange).
+func (t *Tracker) Remember(s Snapshot) []IdentityChange {
+	if t == nil {
+		return nil
+	}
+	var changes []IdentityChange
 	for _, c := range s.Controllers {
 		// Un champ lu différent de l'identité gardée, même pendant un
 		// dépassement de délai, sans collecte effective ou avec d'autres
@@ -268,6 +298,7 @@ func (t *Tracker) Remember(s Snapshot) {
 		// Sinon, les champs lus complètent l'identité gardée.
 		switch old, ok := t.ident[c.PCIAddress]; {
 		case ok && conflicts(old, c.Identity):
+			changes = append(changes, IdentityChange{PCIAddress: c.PCIAddress, Fields: changedFields(old, c.Identity)})
 			t.forget(c.PCIAddress)
 			t.ident[c.PCIAddress] = c.Identity
 		case ok:
@@ -300,6 +331,7 @@ func (t *Tracker) Remember(s Snapshot) {
 			}
 		}
 	}
+	return changes
 }
 
 // serialLabel renvoie l'identité serial: déjà établie pour une adresse.

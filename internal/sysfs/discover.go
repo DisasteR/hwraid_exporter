@@ -43,6 +43,10 @@ type SCSIHost struct {
 	SerialNumber string
 	Model        string
 	Firmware     string // hba_kernel_version pour aacraid
+	// SerialUnreadable : serial_number existe mais n'a pas pu être lu
+	// (SerialNumber est alors vide) ; un attribut absent n'est pas une
+	// erreur.
+	SerialUnreadable bool
 
 	// Devices : périphériques SCSI de l'hôte, vide si leur lecture a échoué
 	// (l'erreur est alors signalée par Discover, l'hôte reste retenu).
@@ -132,7 +136,7 @@ func readHostAttrs(root, classDir, name string) (SCSIHost, string, error) {
 	}
 	h.ProcName = readAttr(real, "proc_name")
 	h.UniqueID = readAttr(real, "unique_id")
-	h.SerialNumber = readAttr(real, "serial_number")
+	h.SerialNumber, h.SerialUnreadable = readAttrChecked(real, "serial_number")
 	h.Model = readAttr(real, "model")
 	h.Firmware = readAttr(real, "hba_kernel_version")
 
@@ -203,6 +207,16 @@ func readRequired(dir, name string) (string, error) {
 		return "", fmt.Errorf("%s: %s: empty", filepath.Base(dir), name)
 	}
 	return v, nil
+}
+
+// readAttrChecked lit un attribut facultatif et signale une lecture en
+// échec, un attribut absent n'en étant pas une.
+func readAttrChecked(dir, name string) (string, bool) {
+	b, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		return "", !errors.Is(err, fs.ErrNotExist)
+	}
+	return strings.TrimSpace(string(b)), false
 }
 
 func readAttr(dir, name string) string {

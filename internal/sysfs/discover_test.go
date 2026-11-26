@@ -348,3 +348,25 @@ func TestDiscoverRequiredPCIAttributes(t *testing.T) {
 		t.Fatalf("lien driver illisible : hôtes=%+v herrs=%v", hosts, herrs)
 	}
 }
+
+// serial_number présent mais illisible : signalé (SerialUnreadable), à la
+// différence d'un attribut absent ou d'une valeur vide.
+func TestDiscoverUnreadableSerial(t *testing.T) {
+	f := newFixture(t)
+	a := f.pciFunc("pci0000:00/0000:00:09.0/0000:01:00.0", "aacraid", aacIDs)
+	f.host(a, "host0", map[string]string{"proc_name": "aacraid"})
+	mustMkdir(t, filepath.Join(a, "host0/scsi_host/host0/serial_number")) // lecture : EISDIR
+	b := f.pciFunc("pci0000:00/0000:00:0a.0/0000:02:00.0", "aacraid", aacIDs)
+	f.host(b, "host1", map[string]string{"proc_name": "aacraid", "serial_number": ""})
+	c := f.pciFunc("pci0000:00/0000:00:0b.0/0000:03:00.0", "aacraid", aacIDs)
+	f.host(c, "host2", map[string]string{"proc_name": "aacraid"})
+	hosts, herrs, err := Discover(f.root)
+	if err != nil || len(herrs) != 0 || len(hosts) != 3 {
+		t.Fatalf("hosts=%v herrs=%v err=%v", hosts, herrs, err)
+	}
+	for i, want := range []bool{true, false, false} {
+		if hosts[i].SerialUnreadable != want || hosts[i].SerialNumber != "" {
+			t.Errorf("%s : illisible %v, numéro %q", hosts[i].Name, hosts[i].SerialUnreadable, hosts[i].SerialNumber)
+		}
+	}
+}

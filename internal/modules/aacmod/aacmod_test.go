@@ -2160,6 +2160,47 @@ func TestQualificationTableDocumented(t *testing.T) {
 	}
 }
 
+// -allow-unqualified=serial:<numéro> : seule la carte non qualifiée dont
+// sysfs annonce ce numéro au cycle de la collecte, unique dans un
+// inventaire complet, est lue (ouverture comme l'outil, couple non validé) ;
+// un autre numéro, un numéro non établi comme unique, ou un numéro illisible
+// ce cycle (même s'il l'était au précédent), laisse la carte sans commande
+// firmware.
+func TestAllowedUnqualifiedSerial(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
+	c, h := otherModel(hba)
+	c.UniqueSerial = true
+	commands := func(d *fakeDev) int { return d.pausedCall + d.revCall + d.aiCall + d.supCall + d.cpCall + len(d.reads) }
+
+	d := &fakeDev{info: h, sup: arcIo}
+	m := withDev(d, nil)
+	m.AllowUnqualifiedSerial("TESTSERIA")
+	m.AllowUnqualifiedSerial("TESTSERIAL ")
+	if r := m.Collect(context.Background(), c, ref); commands(d) != 0 || len(r.Unsupported) == 0 {
+		t.Fatalf("autre numéro : %d commande(s), non pris en charge %v", commands(d), r.Unsupported)
+	}
+	m.AllowUnqualifiedSerial("TESTSERIAL")
+	c.UniqueSerial = false // doublon, ou inventaire incomplet
+	if r := m.Collect(context.Background(), c, ref); commands(d) != 0 || len(r.Unsupported) == 0 {
+		t.Fatalf("numéro non établi comme unique : %d commande(s), non pris en charge %v", commands(d), r.Unsupported)
+	}
+	c.UniqueSerial = true
+	r := m.Collect(context.Background(), c, ref)
+	if d.pausedCall != 1 || d.revCall != 1 || d.aiCall != 1 || len(r.Unsupported) != 0 || !r.Collected["volumes"] {
+		t.Fatalf("numéro désigné : 704 %d, 701 %d, 703 %d ; %+v / non pris en charge %v", d.pausedCall, d.revCall, d.aiCall, r.Collected, r.Unsupported)
+	}
+	if !d.validatedSet || d.validated {
+		t.Fatal("couple validé transmis pour un modèle non qualifié")
+	}
+	before := commands(d)
+	m.AllowUnqualifiedSerial("") // jamais transmis par l'option ; refusé aussi par le module
+	c.Hosts[0].SerialNumber = ""
+	if r := m.Collect(context.Background(), c, ref); commands(d) != before || len(r.Unsupported) == 0 {
+		t.Fatalf("numéro illisible : %d commande(s) de plus, non pris en charge %v", commands(d)-before, r.Unsupported)
+	}
+}
+
 // Carte non qualifiée autorisée par l'option, 706 en échec : l'ouverture
 // (704, 701, 703) a eu lieu, aucune autre lecture n'est tentée ; tous les
 // collecteurs, protection du cache comprise, sont publiés en échec.

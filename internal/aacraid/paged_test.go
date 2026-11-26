@@ -245,3 +245,66 @@ func TestDecodeContainerCount(t *testing.T) {
 		t.Fatal("réponse tronquée acceptée")
 	}
 }
+
+// Clôture après l'ouverture (docs/aacraid-interface.md, section 4) : forme
+// de l'outil de référence, mots 2 à 7 de la réponse d'ouverture repris, ici
+// ceux de la clôture observée sur carte émulée pour une 229 ouverte avec le
+// code 0xe2 (marque 0xc9, 1 032 octets, code 0xe2, morceau 0, taille
+// 0x408). La liste blanche n'admet que les ouvertures que l'exporter clôt
+// ainsi, dans les bornes de ses mots ; jamais une ouverture CT_OK à total
+// non nul (lecture nominale abrégée).
+func TestStopAfterOpen(t *testing.T) {
+	open := PagedResponse{Mark: 0xc9, Total: 0x408, Code: 0xe2, Xfer: 0x20623, Chunk: 0, Size: 0x408}
+	want := make([]byte, FIBSize)
+	copy(want, mustHex(t, "01001000f4010100e0010002"))
+	copy(want[FIBHeaderSize:], mustHex(t, "0200000054000000c900000008040000e2000000230602000000000008040000"))
+	if got := StopAfterOpenRequest(open); !bytes.Equal(got, want) {
+		t.Fatalf("clôture après 0xe2 :\n got %x\nwant %x", got[:64], want[:64])
+	}
+	l := mustList(t)
+	check := func(r PagedResponse) bool {
+		_, err := l.Check(allowlist.Request{Ioctl: IoctlSendFIB, Buf: StopAfterOpenRequest(r)})
+		if err != nil && !errors.Is(err, allowlist.ErrDenied) {
+			t.Fatal(err)
+		}
+		return err == nil
+	}
+	with := func(f func(*PagedResponse)) PagedResponse { r := open; f(&r); return r }
+	for name, tc := range map[string]struct {
+		r    PagedResponse
+		want bool
+	}{
+		"0xe2":                       {open, true},
+		"0xe2 sous 0xc8":             {with(func(r *PagedResponse) { r.Mark = 0xc8 }), true},
+		"total nul, CT_OK":           {with(func(r *PagedResponse) { r.Code, r.Total, r.Size = 0xda, 0, 0 }), true},
+		"code 0xdb":                  {with(func(r *PagedResponse) { r.Code = 0xdb }), true},
+		"code nul":                   {with(func(r *PagedResponse) { r.Code = 0 }), true},
+		"total 0x1004":               {with(func(r *PagedResponse) { r.Total, r.Size = 0x1004, 0x1004 }), true},
+		"CT_OK, total non nul":       {with(func(r *PagedResponse) { r.Code = 0xda }), false},
+		"0xc8, autre code":           {with(func(r *PagedResponse) { r.Mark, r.Code = 0xc8, 0xdb }), false},
+		"autre marque":               {with(func(r *PagedResponse) { r.Mark = 0xc6 }), false},
+		"sans transfert":             {with(func(r *PagedResponse) { r.Xfer = XferNone }), false},
+		"morceau 1":                  {with(func(r *PagedResponse) { r.Chunk = 1 }), false},
+		"taille différente du total": {with(func(r *PagedResponse) { r.Size = 0x800 }), false},
+		"total au-delà de 0x1004":    {with(func(r *PagedResponse) { r.Total, r.Size = 0x1008, 0x1008 }), false},
+	} {
+		if got := tc.r.StopAfterOpen(); got != tc.want {
+			t.Errorf("%s : StopAfterOpen %v", name, got)
+		}
+		if got := check(tc.r); got != tc.want {
+			t.Errorf("%s : liste blanche %v", name, got)
+		}
+	}
+	// 0xc8 et CT_OK : pas une clôture après l'ouverture, mais la forme de la
+	// clôture nominale après le morceau 0, déjà admise.
+	nominal := with(func(r *PagedResponse) { r.Mark, r.Code = 0xc8, 0xda })
+	if nominal.StopAfterOpen() || !check(nominal) || !bytes.Equal(StopAfterOpenRequest(nominal), StopRequest(0x408, 0x20623, 0)) {
+		t.Fatal("0xc8 et CT_OK : clôture nominale du morceau 0 attendue")
+	}
+	// Résidu hors des huit mots : refusé.
+	b := StopAfterOpenRequest(open)
+	b[FIBHeaderSize+40] = 1
+	if _, err := l.Check(allowlist.Request{Ioctl: IoctlSendFIB, Buf: b}); !errors.Is(err, allowlist.ErrDenied) {
+		t.Fatalf("résidu accepté : %v", err)
+	}
+}

@@ -26,6 +26,10 @@ import (
 type Card struct {
 	PCI   sysfs.PCIFunction
 	Hosts []sysfs.SCSIHost // triés par numéro d'hôte
+	// UniqueSerial : le numéro de série lu dans sysfs à ce cycle est non
+	// vide et n'est annoncé par aucune autre carte d'un inventaire complet
+	// (Plan.ResolveSerials) ; seul un tel numéro désigne la carte.
+	UniqueSerial bool
 }
 
 // Identity rend l'identité matérielle de la carte telle que sysfs la
@@ -246,6 +250,11 @@ type Qualifier interface {
 	// AllowUnqualified autorise la lecture de toutes les cartes du module,
 	// qualifiées ou non. Appelé avant la première collecte.
 	AllowUnqualified()
+	// AllowUnqualifiedSerial autorise la lecture de la carte du module dont
+	// sysfs annonce ce numéro de série au cycle de la collecte, à condition
+	// qu'il y soit unique (Card.UniqueSerial). Appelé avant la première
+	// collecte.
+	AllowUnqualifiedSerial(serial string)
 }
 
 // Planned associe une carte à son module.
@@ -260,6 +269,37 @@ type Planned struct {
 type Plan struct {
 	Cards []Planned // triées par adresse PCI
 	Keep  uint64    // union des capacités des modules ayant une carte
+}
+
+// ResolveSerials marque les cartes dont le numéro de série lu dans sysfs
+// est non vide et unique dans l'inventaire (Card.UniqueSerial). Inventaire
+// incomplet (complete faux), ou numéro illisible sur un hôte, qui pourrait
+// masquer un doublon : l'unicité n'est pas établie, aucune carte n'est
+// marquée.
+func (p *Plan) ResolveSerials(complete bool) {
+	// Numéros de chaque carte, sur tous ses hôtes : une carte dont les hôtes
+	// annoncent des numéros différents n'est pas marquée, et chacun de ces
+	// numéros compte comme annoncé par elle.
+	count := map[string]int{}
+	serials := make([]map[string]bool, len(p.Cards))
+	for i, pc := range p.Cards {
+		serials[i] = map[string]bool{}
+		for _, h := range pc.Card.Hosts {
+			if h.SerialUnreadable {
+				complete = false
+			}
+			if h.SerialNumber != "" {
+				serials[i][h.SerialNumber] = true
+			}
+		}
+		for s := range serials[i] {
+			count[s]++
+		}
+	}
+	for i := range p.Cards {
+		s, _ := p.Cards[i].Card.Identity()
+		p.Cards[i].Card.UniqueSerial = complete && len(serials[i]) == 1 && count[s[0]] == 1
+	}
 }
 
 // ErrAmbiguous : plusieurs modules revendiquent la même carte.

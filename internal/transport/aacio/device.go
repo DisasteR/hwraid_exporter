@@ -383,7 +383,14 @@ func (d *Device) CacheProtection(ctx context.Context) (rd aacraid.CacheProtectio
 // window : nil sur le couple validé (clôture engagée, toujours envoyée) ;
 // ailleurs, fenêtre d'arrêt de readOnce, admise sur le thread dédié.
 func (d *Device) stop(window context.Context, r aacraid.PagedRead, head aacraid.PagedResponse, n uint32) (rejected bool, err error) {
-	req := aacraid.StopRequest(head.Total, head.Xfer, n)
+	return d.stopWith(window, r, head, aacraid.StopRequest(head.Total, head.Xfer, n), true)
+}
+
+// stopWith envoie la clôture req du transfert head (stop). count : une
+// confirmation 0xc5 rejette une lecture et est comptée (CloseUnconfirmed) ;
+// faux pour la clôture d'une ouverture non nominale, dont la lecture est
+// déjà en échec.
+func (d *Device) stopWith(window context.Context, r aacraid.PagedRead, head aacraid.PagedResponse, req []byte, count bool) (rejected bool, err error) {
 	rsp, err := d.fib(window, append([]byte(nil), req...))
 	if err != nil {
 		return false, fmt.Errorf("read %d: stop: %w", r, err)
@@ -396,7 +403,9 @@ func (d *Device) stop(window context.Context, r aacraid.PagedRead, head aacraid.
 	case s.Xfer != head.Xfer || (s.Mark != 0xc6 && s.Mark != aacraid.MarkClosedOther):
 		return false, fmt.Errorf("read %d: stop not confirmed (mark %#x, transfer %#x)", r, s.Mark, s.Xfer)
 	case s.Mark == aacraid.MarkClosedOther:
-		d.closeOther++
+		if count {
+			d.closeOther++
+		}
 		return true, nil
 	}
 	return false, nil
@@ -545,11 +554,21 @@ func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size 
 		// Statut d'échec ou écho incorrect : aucun transfert établi.
 		return nil, false, err
 	}
+	if head.StopAfterOpen() {
+		// Code 0xe2, total nul ou code autre que CT_OK : clôture sans
+		// morceau, mots repris de la réponse d'ouverture comme l'outil de
+		// référence ; la lecture est en échec, aucune donnée n'est rendue.
+		_, stopErr := d.stopWith(window, r, head, aacraid.StopAfterOpenRequest(head), false)
+		if stopErr != nil {
+			return nil, false, fmt.Errorf("read %d: open not nominal (mark %#x, code %#x, size %d); %w", r, head.Mark, head.Code, head.Total, stopErr)
+		}
+		return nil, false, fmt.Errorf("read %d: open not nominal (mark %#x, code %#x, size %d); transfer %#x stopped", r, head.Mark, head.Code, head.Total, head.Xfer)
+	}
 	if head.Xfer == aacraid.XferNone || head.Mark != 0xc9 || head.Code != aacraid.CodeOK || head.Total == 0 || head.Total > maxPagedTotal || head.Size != head.Total {
-		// Ouverture hors du parcours nominal : aucune commande n'est
-		// envoyée pour ce transfert (lignes 1 à 4, 6 et 7 du déroulement ;
-		// les clôtures de l'outil sur 0xe2 et sur total nul sont des formes
-		// non activées). L'effet sur la carte d'un transfert laissé ouvert
+		// Autre ouverture hors du parcours nominal (sans transfert, marque
+		// autre, parcours 0xc8 des données incluses, total hors bornes,
+		// taille différente du total) : aucune commande n'est envoyée pour
+		// ce transfert. L'effet sur la carte d'un transfert laissé ouvert
 		// n'est pas établi ; l'erreur le signale.
 		return nil, false, fmt.Errorf("read %d: open refused (mark %#x, code %#x, size %d); transfer %#x not stopped", r, head.Mark, head.Code, head.Total, head.Xfer)
 	}

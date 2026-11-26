@@ -221,3 +221,74 @@ func TestCardIdentity(t *testing.T) {
 		}
 	}
 }
+
+// ResolveSerials : seule une carte dont le numéro lu est non vide et
+// n'apparaît sur aucune autre carte de l'inventaire est marquée, que cette
+// autre carte ait un module ou non (le numéro est lu sur le premier hôte qui
+// le renseigne) ; inventaire incomplet : aucune carte marquée.
+func TestResolveSerials(t *testing.T) {
+	withSerial := func(name string, num int, addr, driver, serial string) sysfs.SCSIHost {
+		x := h(name, num, addr, driver, raid)
+		x.SerialNumber = serial
+		return x
+	}
+	hosts := []sysfs.SCSIHost{
+		withSerial("host1", 1, "0000:01:00.0", "drvA", "UNIQ"),
+		withSerial("host2", 2, "0000:02:00.0", "drvA", "DUP"),
+		withSerial("host3", 3, "0000:03:00.0", "inconnu", "DUP"),
+		withSerial("host4", 4, "0000:04:00.0", "drvA", ""),
+		withSerial("host5", 5, "0000:05:00.0", "drvA", ""),
+		withSerial("host6", 6, "0000:05:00.0", "drvA", "SECOND"),
+	}
+	mods := []Module{fake{name: "A", driver: "drvA", nodes: perCard("a", "majA")}}
+	p := Build(hosts, mods)
+	p.ResolveSerials(true)
+	want := map[string]bool{"0000:01:00.0": true, "0000:02:00.0": false, "0000:03:00.0": false, "0000:04:00.0": false, "0000:05:00.0": true}
+	if len(p.Cards) != len(want) {
+		t.Fatalf("%d cartes", len(p.Cards))
+	}
+	for _, pc := range p.Cards {
+		if pc.Card.UniqueSerial != want[pc.Card.PCI.Address] {
+			t.Errorf("%s : numéro unique %v", pc.Card.PCI.Address, pc.Card.UniqueSerial)
+		}
+	}
+	p.ResolveSerials(false)
+	for _, pc := range p.Cards {
+		if pc.Card.UniqueSerial {
+			t.Errorf("%s marquée malgré un inventaire incomplet", pc.Card.PCI.Address)
+		}
+	}
+	// Carte 05 dont les hôtes annoncent T puis UNIQ : elle n'est pas
+	// cohérente (non marquée), et UNIQ, annoncé par son second hôte, n'est
+	// plus unique (carte 01 non marquée).
+	hosts[4].SerialNumber, hosts[5].SerialNumber = "T", "UNIQ"
+	p = Build(hosts, mods)
+	p.ResolveSerials(true)
+	for _, pc := range p.Cards {
+		if pc.Card.UniqueSerial {
+			t.Errorf("%s marquée malgré deux numéros sur la carte 05", pc.Card.PCI.Address)
+		}
+	}
+	hosts[4].SerialNumber, hosts[5].SerialNumber = "", "SECOND"
+	// Numéro illisible sur le second hôte d'une carte (le premier est lisible
+	// mais vide) : il pourrait masquer un doublon, aucune carte n'est marquée.
+	hosts[5].SerialNumber, hosts[5].SerialUnreadable = "", true
+	p = Build(hosts, mods)
+	p.ResolveSerials(true)
+	for _, pc := range p.Cards {
+		if pc.Card.UniqueSerial {
+			t.Errorf("%s marquée malgré un numéro illisible sur un second hôte", pc.Card.PCI.Address)
+		}
+	}
+	hosts[5].SerialNumber, hosts[5].SerialUnreadable = "SECOND", false
+	// Numéro illisible sur un hôte, ici celui d'une carte sans module : il
+	// pourrait masquer un doublon de UNIQ, aucune carte n'est marquée.
+	hosts[2].SerialNumber, hosts[2].SerialUnreadable = "", true
+	p = Build(hosts, mods)
+	p.ResolveSerials(true)
+	for _, pc := range p.Cards {
+		if pc.Card.UniqueSerial {
+			t.Errorf("%s marquée malgré un numéro illisible", pc.Card.PCI.Address)
+		}
+	}
+}

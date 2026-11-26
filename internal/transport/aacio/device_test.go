@@ -8,9 +8,11 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -698,32 +700,74 @@ func TestReadPagedAbandonsOnEachChunkFault(t *testing.T) {
 }
 
 // Ouvertures des lignes 2, 4 et 6 du déroulement (code 0xe2, total nul,
-// code atypique) : l'outil y clôture ou poursuit, avec des formes de
-// requête non activées ; l'exporter n'envoie aucune commande.
-func TestReadPagedInactiveOpenCasesSendNothing(t *testing.T) {
-	for name, f := range map[string]*fakeFirmware{
-		"ligne 2, 0xe2":      {payload: make([]byte, 0x1000), openCode: 0xe2},
-		"ligne 4, total nul": {payload: []byte{}},
-		"ligne 6, code 0xdb": {payload: make([]byte, 0x1000), openCode: 0xdb},
-		"mot 7 différent du total": {payload: make([]byte, 0x1000), openHook: func(d []byte) {
-			binary.LittleEndian.PutUint32(d[28:], 0x800)
-		}},
+// code atypique), et code 0xe2 sous la marque 0xc8 : clôture sans morceau,
+// mots 2 à 7 repris de la réponse d'ouverture comme l'outil de référence,
+// sur le couple validé comme ailleurs ; la lecture est en échec. Une
+// ouverture dont la taille diffère du total n'est pas close (aucune
+// commande).
+func TestReadPagedStopsNonNominalOpen(t *testing.T) {
+	for name, tc := range map[string]struct {
+		f    func() *fakeFirmware
+		stop bool
+	}{
+		"ligne 2, 0xe2": {func() *fakeFirmware { return &fakeFirmware{payload: make([]byte, 0x408), openCode: 0xe2} }, true},
+		"0xe2 sous la marque 0xc8": {func() *fakeFirmware {
+			return &fakeFirmware{payload: make([]byte, 0x1000), openCode: 0xe2, openMark: 0xc8}
+		}, true},
+		"ligne 4, total nul": {func() *fakeFirmware { return &fakeFirmware{payload: []byte{}} }, true},
+		"ligne 6, code 0xdb": {func() *fakeFirmware { return &fakeFirmware{payload: make([]byte, 0x1000), openCode: 0xdb} }, true},
+		"mot 7 différent du total": {func() *fakeFirmware {
+			return &fakeFirmware{payload: make([]byte, 0x1000), openHook: func(d []byte) { binary.LittleEndian.PutUint32(d[28:], 0x800) }}
+		}, false},
+		"0xe2, mot 7 différent du total": {func() *fakeFirmware {
+			return &fakeFirmware{payload: make([]byte, 0x1000), openCode: 0xe2, openHook: func(d []byte) { binary.LittleEndian.PutUint32(d[28:], 0x800) }}
+		}, false},
 	} {
-		t.Run(name, func(t *testing.T) {
-			f.xfer, f.failAt = 9, -1
-			f.ioctl(t)
-			d, err := Open("/dev/null", devNull, list(t))
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer d.Close()
-			if _, err := d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return aacraid.ContainerInfoNeed }); err == nil || errors.Is(err, allowlist.ErrDenied) {
-				t.Fatalf("ouverture acceptée ou refusée trop tard : %v", err)
-			}
-			if got := f.subs(); !slices.Equal(got, []uint32{234}) {
-				t.Fatalf("séquence %v, attendu l'ouverture seule", got)
-			}
-		})
+		for _, validated := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, validé %v", name, validated), func(t *testing.T) {
+				f := tc.f()
+				f.xfer, f.failAt = 0x2061e, -1
+				f.ioctl(t)
+				d, err := Open("/dev/null", devNull, list(t))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer d.Close()
+				d.SetValidatedCouple(validated)
+				data, err := d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return aacraid.ContainerInfoNeed })
+				if err == nil || data != nil || errors.Is(err, allowlist.ErrDenied) {
+					t.Fatalf("ouverture acceptée ou refusée trop tard : %v", err)
+				}
+				if !tc.stop {
+					if got := f.subs(); !slices.Equal(got, []uint32{234}) {
+						t.Fatalf("séquence %v, attendu l'ouverture seule", got)
+					}
+					return
+				}
+				if got := f.subs(); !slices.Equal(got, []uint32{234, 84}) {
+					t.Fatalf("séquence %v, attendu l'ouverture puis la clôture", got)
+				}
+				// Clôture : en-tête de la requête d'ouverture, mots 0 et 1 =
+				// 2, 0x54, mots 2 à 7 = marque, total, code, transfert,
+				// morceau 0 et taille de la réponse d'ouverture servie.
+				le := binary.LittleEndian
+				mark, code, total := uint32(0xc9), uint32(0xda), uint32(len(f.payload))
+				if f.openMark != 0 {
+					mark = f.openMark
+				}
+				if f.openCode != 0 {
+					code = f.openCode
+				}
+				want := make([]byte, aacraid.FIBSize)
+				copy(want, f.requests[0][:aacraid.FIBHeaderSize])
+				for k, v := range []uint32{2, 0x54, mark, total, code, 0x2061e, 0, total} {
+					le.PutUint32(want[aacraid.FIBHeaderSize+4*k:], v)
+				}
+				if !bytes.Equal(f.requests[1], want) {
+					t.Fatalf("clôture\n got %x\nwant %x", f.requests[1][:64], want[:64])
+				}
+			})
+		}
 	}
 }
 
@@ -1178,24 +1222,6 @@ func TestStopCheckedOnIoctlThread(t *testing.T) {
 	}
 }
 
-// Réponse d'ouverture sans le code CT_OK (0xda) au mot 4 : aucun transfert
-// n'est réputé ouvert, ni morceau ni clôture ne sont envoyés.
-func TestReadPagedOpenWithoutCTOK(t *testing.T) {
-	f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: -1, openCode: 0xdb}
-	f.ioctl(t)
-	d, err := Open("/dev/null", devNull, list(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-	if _, err := d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return aacraid.ContainerInfoNeed }); err == nil {
-		t.Fatal("ouverture sans CT_OK acceptée")
-	}
-	if got := f.subs(); len(got) != 1 {
-		t.Fatalf("requêtes après une ouverture non conforme : %v", got)
-	}
-}
-
 // clockOnly : contexte dont l'échéance est fixée mais dont le minuteur ne
 // s'est pas encore exécuté (Err reste nil), comme juste après l'échéance.
 type clockOnly struct {
@@ -1436,5 +1462,69 @@ func TestStopWindowCountsFromStop(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	if err := w.Err(); !errors.Is(err, errGraceExceeded) {
 		t.Fatalf("arrêt depuis 30 ms : %v", err)
+	}
+}
+
+// Clôture d'une ouverture non nominale (code 0xdb) : hors couple validé,
+// soumise à la fenêtre d'arrêt (ouverture qui rend la main après la
+// fenêtre : clôture refusée à l'admission, non envoyée) ; sur le couple
+// validé, engagée (envoyée malgré l'arrêt) ; réponse de clôture d'un autre
+// transfert : erreur de clôture rendue ; confirmation 0xc5 : ni comptée
+// (la lecture n'est pas rejetée par sa clôture, elle est déjà en échec) ni
+// suivie d'une relecture, même sur le couple validé.
+func TestReadPagedStopAfterOpenWindowAndAnswers(t *testing.T) {
+	read := func(t *testing.T, f *fakeFirmware, validated bool, ctx context.Context) (*Device, error) {
+		t.Helper()
+		f.ioctl(t)
+		d, err := Open("/dev/null", devNull, list(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { d.Close() })
+		d.SetValidatedCouple(validated)
+		data, err := d.ReadPaged(ctx, aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return aacraid.ContainerInfoNeed })
+		if data != nil || err == nil {
+			t.Fatalf("données rendues ou lecture réussie : %v", err)
+		}
+		return d, err
+	}
+	for _, validated := range []bool{false, true} {
+		t.Run(fmt.Sprintf("arrêt pendant l'ouverture, validé %v", validated), func(t *testing.T) {
+			old := stopGrace
+			stopGrace = 20 * time.Millisecond
+			defer func() { stopGrace = old }()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: -1, openCode: 0xdb,
+				onOpen: func() { cancel(); time.Sleep(60 * time.Millisecond) }}
+			_, err := read(t, f, validated, ctx)
+			want := []uint32{234}
+			if validated {
+				want = []uint32{234, 84}
+			} else if !errors.Is(err, errGraceExceeded) {
+				t.Fatalf("err=%v, attendu errGraceExceeded", err)
+			}
+			if got := f.subs(); !slices.Equal(got, want) {
+				t.Fatalf("séquence %v, attendu %v", got, want)
+			}
+		})
+	}
+	t.Run("clôture d'un autre transfert", func(t *testing.T) {
+		f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: -1, openCode: 0xdb, stopXfer: 10}
+		if _, err := read(t, f, false, context.Background()); !strings.Contains(err.Error(), "stop not confirmed") {
+			t.Fatalf("erreur de clôture non rendue : %v", err)
+		}
+	})
+	for _, validated := range []bool{false, true} {
+		t.Run(fmt.Sprintf("clôture 0xc5, validé %v", validated), func(t *testing.T) {
+			f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: -1, openCode: 0xdb, stopMarks: []uint32{0xc5, 0xc6}}
+			d, _ := read(t, f, validated, context.Background())
+			if d.CloseUnconfirmed() != 0 {
+				t.Fatalf("%d rejet(s) compté(s)", d.CloseUnconfirmed())
+			}
+			if got := f.subs(); !slices.Equal(got, []uint32{234, 84}) {
+				t.Fatalf("séquence %v, attendu l'ouverture et la clôture seules", got)
+			}
+		})
 	}
 }
