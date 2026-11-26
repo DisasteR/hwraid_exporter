@@ -98,10 +98,16 @@ CGO_ENABLED=0 go build -o hwraid-exporter ./cmd/hwraid-exporter
 
 ## Usage
 
-List the controllers found, without root and without sending any command:
+List the cards as `serve` sees them (module, identity, whether it would read them), without root and without sending any command:
 
 ```bash
 ./hwraid-exporter discover
+```
+
+Collect once and print the result, as Prometheus text or as a readable summary of the main normalized values ([deployment](docs/deploiement.md#collecte-unique-oneshot)):
+
+```bash
+sudo ./hwraid-exporter oneshot -format text
 ```
 
 Run the exporter. It must start as root for the preparation phase:

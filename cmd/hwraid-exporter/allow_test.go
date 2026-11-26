@@ -36,6 +36,7 @@ type qualMod struct {
 func (qualMod) Qualified(module.Card) bool        { return true }
 func (q qualMod) AllowUnqualified()               { *q.allowed++ }
 func (q qualMod) AllowUnqualifiedSerial(s string) { *q.serials = append(*q.serials, s) }
+func (qualMod) Reads(module.Card) bool            { return true }
 
 // -allow-unqualified : un module du registre qui qualifie ses cartes, ou
 // serial:<numéro> (transmis à chacun de ces modules, jamais aux autres) ;

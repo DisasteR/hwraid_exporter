@@ -294,3 +294,20 @@ func sortedKeys[V any](m map[string]V) []string {
 	sort.Strings(k)
 	return k
 }
+
+// LockDir prend un verrou exclusif, sans attente, sur le répertoire dir
+// (sans suivre de lien symbolique) ; unlock le libère. Le verrou est celui
+// que Sync prend pendant la synchronisation : tant qu'il est tenu, une
+// préparation de ce répertoire attend. Le descripteur reste valide après
+// l'abandon des privilèges.
+func LockDir(dir string) (unlock func(), err error) {
+	fd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		unix.Close(fd)
+		return nil, err
+	}
+	return func() { unix.Close(fd) }, nil
+}

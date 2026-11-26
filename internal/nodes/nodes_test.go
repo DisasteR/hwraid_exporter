@@ -303,3 +303,33 @@ func must(t *testing.T, err error) {
 		t.Fatal(err)
 	}
 }
+
+// LockDir : verrou exclusif sans attente, refusé tant qu'il est tenu,
+// libéré par unlock ; il bloque la synchronisation du même répertoire ;
+// répertoire absent ou lien symbolique refusés.
+func TestLockDir(t *testing.T) {
+	dir := t.TempDir()
+	unlock, err := LockDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LockDir(dir); err == nil {
+		t.Fatal("second verrou accordé pendant le premier")
+	}
+	unlock()
+	again, err := LockDir(dir)
+	if err != nil {
+		t.Fatalf("verrou non libéré : %v", err)
+	}
+	again()
+	if _, err := LockDir(filepath.Join(dir, "absent")); err == nil {
+		t.Fatal("répertoire absent verrouillé")
+	}
+	link := filepath.Join(t.TempDir(), "lien")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LockDir(link); err == nil {
+		t.Fatal("lien symbolique suivi")
+	}
+}

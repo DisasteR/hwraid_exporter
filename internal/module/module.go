@@ -255,6 +255,10 @@ type Qualifier interface {
 	// qu'il y soit unique (Card.UniqueSerial). Appelé avant la première
 	// collecte.
 	AllowUnqualifiedSerial(serial string)
+	// Reads indique si la carte est lue : modèle qualifié, ou carte désignée
+	// par une autorisation. C'est le verrou que Collect applique avant toute
+	// commande firmware.
+	Reads(c Card) bool
 }
 
 // Planned associe une carte à son module.

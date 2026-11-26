@@ -11,8 +11,29 @@ La configuration se fait uniquement par la ligne de commande ; il n'y a ni fichi
 | Commande | Rôle |
 |---|---|
 | `hwraid-exporter serve [options]` | collecte et service HTTP |
-| `hwraid-exporter discover [-sysfs /sys]` | liste des contrôleurs trouvés, sans root ni commande à la carte |
+| `hwraid-exporter discover [-sysfs /sys] [-allow-unqualified …]` | cartes telles que `serve` les voit, en JSON, sans root ni commande à la carte : module, identité et statut de lecture (`read`, `read_allowed`, `needs_allow_unqualified`, `no_module`, `error`), selon les autorisations données ; les contrôleurs non RAID (SATA…) n'y figurent pas. Le statut dit si `serve` enverrait des commandes à la carte (verrou de qualification et d'autorisation), pas que la collecte réussira : nœud, major du pilote dans `/proc/devices`, `GET_HBA_INFO` et ouverture de la carte ne sont vérifiés qu'à la collecte |
+| `hwraid-exporter oneshot [options]` | une collecte unique, puis arrêt : voir « Collecte unique » |
 | `hwraid-exporter version` | version du binaire |
+
+### Collecte unique (`oneshot`)
+
+`oneshot` fait la préparation de `serve` (root, nœuds dédiés, abandon des privilèges), une seule collecte, écrit le résultat sur la sortie standard et s'arrête. Options : `-sysfs`, `-uid`, `-gid`, `-allow-unqualified` comme `serve`, `-collect-timeout` (30 s par défaut) et `-format` :
+
+- `prometheus` (par défaut) : le texte que `/metrics` servirait après ce cycle, sans échantillon de `hwraid_collection_interval_seconds` (ses lignes `HELP` et `TYPE` restent) ;
+- `text` : un résumé lisible, pour un exploitant, des principales valeurs normalisées (carte, collecte, température, protection du cache, volumes en arbre avec leurs membres, disques, tâches de fond), identifiants des labels des métriques ; le terme du constructeur (niveau, état d'un disque, réglage du cache) suit entre parenthèses quand il diffère. Il n'a pas toutes les valeurs des métriques (WWN et firmware des disques, phy, dates de dernier succès, compteurs) et arrondit capacités et avancement : pour un usage outillé, prendre `prometheus`.
+
+```bash
+sudo ./hwraid-exporter oneshot -format text
+```
+
+Code de sortie : 0 si la découverte est complète et si chaque carte prise en charge a un nœud valide et a réussi toutes ses lectures dans le délai ; 1 sinon (le résultat est tout de même écrit), ou, sans rien écrire, si la préparation échoue, si un `serve` tourne, si les nœuds attendus ont changé depuis la préparation, ou si un signal d'arrêt est reçu pendant la collecte ou l'attente des commandes en cours ; 2 pour une option invalide. `-collect-timeout` borne le cycle ; une commande abandonnée à ce délai est ensuite attendue sans limite avant la sortie, comme à l'arrêt de `serve`. Une carte sans module, ou d'un modèle non qualifié sans option, n'est pas un échec : la sortie le montre.
+
+Précautions :
+- `oneshot` utilise ses propres nœuds (`/dev/hwraid_exporter_oneshot`), jamais ceux de `serve`, et les laisse en place, dans ce répertoire réservé à root ;
+- il refuse de démarrer si un `hwraid-exporter serve` tourne (recherché dans `/proc` au démarrage) : les deux intercaleraient leurs transferts sur la carte ; lire alors `/metrics`. Ne sont pas détectés : un `serve` invisible depuis ce `/proc` (`oneshot` dans un conteneur, `serve` sur l'hôte), un binaire renommé, un processus dont la ligne de commande est illisible, un `serve` démarré après ce contrôle ; ARCCONF et maxView non plus ;
+- deux `oneshot` ne collectent jamais en même temps : le second attend, pendant sa préparation, la fin du premier (verrou sur le répertoire de nœuds) ;
+- comme `serve`, il capte SIGTERM, SIGINT (Ctrl-C) et SIGHUP : la commande en cours se termine, aucune nouvelle ne part, les commandes engagées sont attendues, puis rien n'est écrit. SIGKILL (`kill -9`, `timeout -k`) et SIGQUIT (Ctrl-\\) ne sont pas captés et peuvent couper une commande : ne pas l'envelopper dans `timeout` ni le tuer (voir « Limite du pilote aacraid ») ;
+- ce n'est pas un mode de supervision : chaque appel envoie la séquence complète d'un premier cycle. Pour une surveillance continue, utiliser `serve`.
 
 | Option de `serve` | Défaut | Rôle |
 |---|---|---|

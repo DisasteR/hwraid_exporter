@@ -147,11 +147,11 @@ func (m *Module) AllowUnqualifiedSerial(serial string) {
 	m.allowSerials[serial] = true
 }
 
-// read indique si la carte est lue : modèle qualifié, ou carte désignée par
+// Reads implémente module.Qualifier ; indique si la carte est lue : modèle qualifié, ou carte désignée par
 // -allow-unqualified (module entier, ou numéro de série lu dans sysfs à ce
 // cycle, non vide et unique dans un inventaire complet, le même que celui
 // du label controller ; sinon : non lue).
-func (m *Module) read(c module.Card) bool {
+func (m *Module) Reads(c module.Card) bool {
 	if QualifiedModel(c) || m.allowAll {
 		return true
 	}
@@ -296,7 +296,7 @@ func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeR
 	// collecteurs sont publiés non pris en charge. Ce classement ne dépend
 	// que de sysfs et de l'option.
 	all := append([]string{CapabilitiesCollector}, append(append([]string(nil), StateCollectors...), DiskInventoryCollector, DiskLocationCollector, TasksCollector, CacheProtectionCollector, TemperatureCollector)...)
-	if !m.read(c) {
+	if !m.Reads(c) {
 		r.Unsupported = all
 		return r
 	}

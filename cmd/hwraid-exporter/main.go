@@ -3,14 +3,16 @@
 
 // Commande hwraid-exporter : exporter Prometheus pour contrôleurs RAID matériels.
 //
-//	discover : inventaire sysfs en lecture seule, sans privilège.
+//	discover : cartes telles que serve les voit (module, statut de
+//	           lecture), depuis sysfs seul, sans privilège ni commande.
 //	serve    : préparation des nœuds en root, abandon des privilèges,
 //	           puis collecte périodique et service de /metrics.
+//	oneshot  : même préparation (nœuds propres), une collecte, puis le
+//	           texte de /metrics sur la sortie standard.
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -23,14 +25,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DisasteR/hwraid_exporter/internal/aacraid"
 	"github.com/DisasteR/hwraid_exporter/internal/buildinfo"
 	"github.com/DisasteR/hwraid_exporter/internal/exporter"
 	"github.com/DisasteR/hwraid_exporter/internal/lifecycle"
 	"github.com/DisasteR/hwraid_exporter/internal/module"
-	"github.com/DisasteR/hwraid_exporter/internal/modules/aacmod"
 	"github.com/DisasteR/hwraid_exporter/internal/nodes"
-	"github.com/DisasteR/hwraid_exporter/internal/privilege"
 	"github.com/DisasteR/hwraid_exporter/internal/sysfs"
 )
 
@@ -58,9 +57,11 @@ func main() {
 	}
 	switch os.Args[1] {
 	case "discover":
-		discover(os.Args[2:])
+		os.Exit(discover(os.Args[2:], os.Stdout, os.Stderr))
 	case "serve":
 		os.Exit(serve(os.Args[2:]))
+	case "oneshot":
+		os.Exit(oneshot(os.Args[2:], os.Stdout))
 	case "version":
 		fmt.Println(version)
 	default:
@@ -69,32 +70,8 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: hwraid-exporter discover [--sysfs /sys] | serve [options] | version")
+	fmt.Fprintln(os.Stderr, "usage: hwraid-exporter discover [-sysfs /sys] [-allow-unqualified …] | serve [options] | oneshot [options] | version")
 	os.Exit(2)
-}
-
-func discover(args []string) {
-	fs := flag.NewFlagSet("discover", flag.ExitOnError)
-	root := fs.String("sysfs", "/sys", "sysfs root")
-	_ = fs.Parse(args)
-	hosts, herrs, err := sysfs.Discover(*root)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "discovery failed:", err)
-		os.Exit(1)
-	}
-	out := struct {
-		Hosts  []sysfs.SCSIHost `json:"hosts"`
-		Errors []string         `json:"errors,omitempty"`
-	}{Hosts: append([]sysfs.SCSIHost{}, hosts...)}
-	for _, e := range herrs {
-		out.Errors = append(out.Errors, e.Error())
-	}
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(out); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
 }
 
 func serve(args []string) int {
@@ -135,83 +112,11 @@ func serve(args []string) int {
 		return 2
 	}
 
-	// --- Phase de préparation (root) -------------------------------------
-	if os.Geteuid() != 0 {
-		log.Error("the preparation phase requires starting as root")
-		return 1
+	// --- Phase de préparation (root), puis abandon des privilèges --------
+	p, code := prepare(log, *root, nodesDir, uint32(*uid), uint32(*gid), allow)
+	if code != 0 {
+		return code
 	}
-	list, err := aacraid.NewAllowlist()
-	if err != nil {
-		log.Error("invalid allowlist", "err", err)
-		return 1
-	}
-	hosts, herrs, err := sysfs.Discover(*root)
-	if err != nil {
-		log.Error("discovery failed", "err", err)
-		return 1
-	}
-	for _, e := range herrs {
-		log.Warn("SCSI host skipped", "host", e.Host, "err", e.Err)
-	}
-	majors, err := readMajors()
-	if err != nil {
-		log.Error("reading /proc/devices", "err", err)
-		return 1
-	}
-	// Chaque module déclare ses nœuds et ses capacités ; le cœur crée seul.
-	registry := []module.Module{aacmod.New(list)}
-	allowed, serials, err := allowUnqualified(allow, registry)
-	if err != nil {
-		log.Error("invalid -allow-unqualified", "err", err)
-		return 2
-	}
-	for _, name := range allowed {
-		log.Warn("cards of an unqualified model will be read: commands the vendor does not document, checked only against constructed answers on such a model", "module", name)
-	}
-	plan := buildPlan(hosts, herrs, nil, registry)
-	// Journaux sans numéro de série (exigence S9) : le sélecteur est désigné
-	// par son rang dans les valeurs serial: de l'option.
-	for i, s := range serials {
-		log.Warn("the card selected by serial number may be read even if its model is not qualified: commands the vendor does not document, checked only against constructed answers on such a model", "serial_selector", i+1)
-		if !slices.ContainsFunc(plan.Cards, func(pc module.Planned) bool {
-			fields, _ := pc.Card.Identity()
-			_, qualifies := pc.Module.(module.Qualifier)
-			return qualifies && pc.Card.UniqueSerial && fields[0] == s
-		}) {
-			log.Warn("no card of a module that qualifies its cards announces this serial number alone in a complete inventory: this selector designates no card until one does", "serial_selector", i+1)
-		}
-	}
-	specs := plan.Specs(majors)
-	complete := len(herrs) == 0
-	for _, pc := range plan.Cards {
-		if pc.Err != nil {
-			log.Warn("card not prepared", "pci", pc.Card.PCI.Address, "err", pc.Err)
-			complete = false
-		}
-	}
-	if !complete {
-		log.Warn("incomplete inventory: no existing node will be removed")
-	}
-	rep, err := nodes.Sync(nodesDir, specs, majors, int(*uid), int(*gid), complete)
-	if err != nil {
-		log.Error("node preparation", "dir", nodesDir, "err", err)
-		return 1
-	}
-	log.Info("nodes prepared", "created", rep.Created, "replaced", rep.Replaced, "fixed", rep.Fixed, "removed", rep.Removed)
-
-	// --- Abandon des privilèges ------------------------------------------
-	// Union des capacités des modules dont une carte est préparée : aucune
-	// sans carte collectable.
-	keep := plan.KeepPrepared(majors, specs)
-	if err := privilege.Drop(uint32(*uid), uint32(*gid), keep); err != nil {
-		log.Error("privilege drop", "err", err)
-		return 1
-	}
-	if err := privilege.VerifyAllThreads(uint32(*uid), uint32(*gid), keep); err != nil {
-		log.Error("privilege check", "err", err)
-		return 1
-	}
-	log.Info("privileges dropped", "uid", *uid, "gid", *gid, "capabilities", fmt.Sprintf("%#x", keep))
 
 	// --- Collecte et service ---------------------------------------------
 	// Vue sans valeur matérielle : avant la première collecte, à l'arrêt, et
@@ -231,117 +136,15 @@ func serve(args []string) int {
 		}
 	}
 
-	tracker := exporter.NewTracker()
 	runner := exporter.NewRunner()
-	lastHostErrs := ""
-	// collect fait un cycle. stopping est terminé à l'arrêt du service :
-	// aucune nouvelle commande n'est alors envoyée à une carte, la commande
-	// en cours se termine, et le cycle interrompu n'est pas publié.
+	cyc := &cycler{log: log, root: *root, p: p, timeout: *timeout, interval: *interval,
+		tracker: exporter.NewTracker(), runner: runner, requestExit: requestExit}
+	// collect fait un cycle et publie son instantané, sauf s'il a été
+	// interrompu par l'arrêt.
 	collect := func(stopping context.Context) {
-		hosts, herrs, err := sysfs.Discover(*root)
-		// Découverte réussie : sans erreur globale ni hôte illisible.
-		ok := err == nil && len(herrs) == 0
-		if err != nil {
-			log.Warn("discovery failed", "err", err)
+		if s, publish := cyc.run(stopping); publish {
+			pub.Publish(exporter.Render(s))
 		}
-		var msgs []string
-		for _, e := range herrs {
-			msgs = append(msgs, e.Host+": "+e.Err.Error())
-		}
-		if cur := strings.Join(msgs, "; "); cur != lastHostErrs {
-			if cur != "" {
-				log.Warn("unreadable SCSI hosts", "err", cur)
-			} else if lastHostErrs != "" {
-				log.Info("SCSI hosts readable again")
-			}
-			lastHostErrs = cur
-		}
-		cur := buildPlan(hosts, herrs, err, registry)
-		// L'ensemble des nœuds attendus a-t-il changé depuis la préparation ?
-		// (carte ajoutée ou retirée, module rechargé, major réattribué) Si
-		// oui, ou si le major ne peut être confirmé, aucun nœud n'est ouvert.
-		// Inventaire incomplet (hôte illisible) : le changement n'est pas
-		// prouvé, pas de relance ; seules les cartes dont les nœuds sont
-		// exactement ceux préparés sont collectées.
-		collectOK := err == nil
-		var majors map[string]uint32
-		if err == nil {
-			var cerr error
-			switch majors, cerr = readMajors(); {
-			case cerr != nil:
-				log.Error("reading /proc/devices: collection suspended", "err", cerr)
-				collectOK = false
-			case !sameSpecs(cur.Specs(majors), specs) && ok:
-				log.Error("expected nodes changed since preparation: restart required")
-				requestExit(exitNodeChanged)
-				collectOK = false
-			}
-		}
-		jobs := map[string]func() module.Result{}
-		// Contexte commun du cycle, transmis aux modules : terminé à
-		// l'échéance du cycle ou à l'arrêt du service, après quoi plus
-		// aucune nouvelle commande n'est envoyée.
-		cycle, endCycle := context.WithTimeout(stopping, *timeout)
-		defer endCycle()
-		collectors := map[string][]string{}
-		for _, pc := range cur.Cards {
-			if !collectOK || pc.Module == nil || !module.Prepared(pc, majors, specs) {
-				continue
-			}
-			addr := pc.Card.PCI.Address
-			jobs[addr] = func() module.Result { return pc.Module.Collect(cycle, pc.Card, module.Refs(nodesDir, pc, specs)) }
-			collectors[addr] = pc.Module.Collectors()
-		}
-		results := runner.Run(cycle, jobs, collectors)
-		if stopping.Err() != nil {
-			// Arrêt pendant le cycle : lectures incomplètes, non publiées. Les
-			// erreurs tardives déjà rendues dans ce cycle sont journalisées
-			// ici, puisque le cycle n'est pas publié.
-			for addr, r := range results {
-				if err := errors.Join(r.Err, r.CollectErr, r.LateErr); err != nil {
-					log.Warn("collection errors in the cycle interrupted by the stop, not published", "pci", addr, "err", err)
-				}
-			}
-			return
-		}
-		if err == nil {
-			present := map[string]bool{}
-			for _, pc := range cur.Cards {
-				present[pc.Card.PCI.Address] = true
-			}
-			if !ok {
-				// Hôte illisible : une carte peut manquer à l'inventaire de ce
-				// cycle sans avoir été retirée. Rien n'est oublié.
-				for _, a := range tracker.Known() {
-					present[a] = true
-				}
-			}
-			addrs := make([]string, 0, len(present))
-			for a := range present {
-				addrs = append(addrs, a)
-			}
-			tracker.Update(results, addrs, time.Now())
-		}
-		s := exporter.Build(cur, ok, results, tracker, *interval)
-		for _, ch := range tracker.Remember(s) {
-			log.Warn("card identity changed at the same PCI address while running: a card is neither replaced nor updated hot; driver reload or anomaly, kept answers and history of the address discarded", "pci", ch.PCIAddress, "fields", strings.Join(ch.Fields, ","))
-		}
-		for _, c := range s.Controllers {
-			if c.NodeChecked && !c.NodeValid {
-				// Adresse PCI et non label : le label peut contenir la série (S9).
-				log.Warn("invalid management node", "pci", c.PCIAddress, "err", c.NodeError)
-			}
-			if c.LateError != "" {
-				log.Warn("a collection finished after its timeout, not published", "pci", c.PCIAddress, "err", c.LateError)
-			}
-			if c.TimedOut {
-				log.Warn("collection timed out", "pci", c.PCIAddress, "timeout", *timeout)
-			} else if c.CollectError != "" {
-				log.Warn("read failed", "pci", c.PCIAddress, "err", c.CollectError)
-			}
-		}
-		out := exporter.Render(s)
-		pub.Publish(out)
 	}
 
 	mux := http.NewServeMux()
@@ -368,7 +171,7 @@ func serve(args []string) int {
 		lifecycle.RunLoop(loopCtx, *interval, collect)
 	}()
 
-	code := 0
+	code = 0
 	select {
 	case <-ctx.Done():
 	case code = <-exitCode:

@@ -514,6 +514,7 @@ type qualMod struct{ fakeMod }
 func (qualMod) Qualified(c module.Card) bool  { return c.PCI.SubsystemDevice == "0x0301" }
 func (qualMod) AllowUnqualified()             {}
 func (qualMod) AllowUnqualifiedSerial(string) {}
+func (qualMod) Reads(module.Card) bool        { return true }
 
 // hwraid_controller_qualified : publiée pour chaque carte d'un module qui
 // qualifie ses cartes (1 ou 0, selon le modèle), absente sinon.
