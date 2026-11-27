@@ -480,6 +480,11 @@ var stopGrace = 2 * time.Second
 // validé ; abandon sans clôture.
 var errGraceExceeded = errors.New("stop grace exceeded during the transfer: abandoned without stop")
 
+// errRejected marque, dans un transfert ouvert, une réponse de morceau ou
+// des données rejetées par un contrôle propre à l'exporter, statut et écho
+// conformes : le transfert est clôturé (readOnce).
+var errRejected = errors.New("chunk or data rejected")
+
 // stopWindow est la fenêtre d'arrêt d'un transfert hors du couple validé :
 // un contexte d'admission dont Err devient errGraceExceeded quand stopGrace
 // s'est écoulé depuis l'arrêt de stop. L'instant de l'arrêt est l'échéance
@@ -538,11 +543,13 @@ const maxPagedTotal = 0x1004
 // lecture est en échec. Sur une autre carte, tous les morceaux sont lus
 // puis le transfert est clôturé, comme l'outil de référence, y compris si
 // ctx se termine après l'ouverture (au plus 10 morceaux, borne de taille) ;
-// la lecture est alors en échec. Toute autre
-// erreur après l'ouverture (ioctl en échec, réponse de morceau invalide ou
-// incohérente, données rejetées par need) abandonne le transfert sans
-// clôture, comme l'outil de référence sur une erreur de morceau : aucune
-// commande de ce transfert ne suit (règle 2).
+// la lecture est alors en échec. Une réponse de morceau ou des données
+// rejetées par un contrôle propre à l'exporter (statut et écho conformes)
+// clôturent le transfert, comme l'outil qui serait allé jusqu'à la
+// clôture ; la lecture est en échec. Un échec d'échange (ioctl en échec,
+// statut non nul ou écho incorrect d'un morceau) abandonne le transfert
+// sans clôture, comme l'outil de référence sur une exception de morceau :
+// aucune commande de ce transfert ne suit (règle 2).
 func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size uint32, need func([]byte) int) ([]byte, bool, error) {
 	open, err := aacraid.OpenRequest(r, param, size)
 	if err != nil {
@@ -621,33 +628,55 @@ func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size 
 			}
 			c, err := aacraid.DecodePagedResponse(req, rsp)
 			if err != nil {
-				return err
+				if errors.Is(err, aacraid.ErrExchange) {
+					return err
+				}
+				last = n
+				return fmt.Errorf("%w: %w", errRejected, err)
 			}
 			// Mots que l'outil de référence reprend dans la requête suivante
 			// (2, 3, 4, 7) : seules les valeurs que porte la requête de
 			// l'exporter sont admises, pour qu'elle reste celle de l'outil.
-			if c.Mark != aacraid.MarkChunk || c.Xfer != head.Xfer || c.Chunk != n || c.Total != head.Total || c.Code != aacraid.CodeOK || c.Size != head.Total {
-				return fmt.Errorf("read %d: inconsistent chunk %d (mark %#x, transfer %#x, chunk %d, code %#x, size %d)", r, n, c.Mark, c.Xfer, c.Chunk, c.Code, c.Size)
-			}
 			last = n
+			if c.Mark != aacraid.MarkChunk || c.Xfer != head.Xfer || c.Chunk != n || c.Total != head.Total || c.Code != aacraid.CodeOK || c.Size != head.Total {
+				return fmt.Errorf("%w: read %d: inconsistent chunk %d (mark %#x, transfer %#x, chunk %d, code %#x, size %d)", errRejected, r, n, c.Mark, c.Xfer, c.Chunk, c.Code, c.Size)
+			}
 			data = append(data, c.Data...)
 			if len(data) >= int(head.Total) {
 				data = data[:head.Total]
 				if want := need(data); want > len(data) {
-					return fmt.Errorf("read %d: %d bytes needed, transfer of %d", r, want, len(data))
+					return fmt.Errorf("%w: read %d: %d bytes needed, transfer of %d", errRejected, r, want, len(data))
 				}
 				return nil
 			}
 			if want := need(data); want <= len(data) && d.validated {
 				return nil
 			} else if want > int(head.Total) {
-				return fmt.Errorf("read %d: %d bytes requested for a transfer of %d", r, want, head.Total)
+				return fmt.Errorf("%w: read %d: %d bytes requested for a transfer of %d", errRejected, r, want, head.Total)
 			}
 		}
 		return nil
 	}()
+	if errors.Is(readErr, errRejected) {
+		// Réponse de morceau ou données rejetées par un contrôle propre à
+		// l'exporter (statut et écho conformes) : l'outil de référence, qui
+		// ne contrôle que le statut et l'écho d'un morceau (2.05
+		// CT_SendReceiveFIB 0x8ddebd..0x8ddec9, 3.07 0x8b029f..0x8b02af),
+		// serait allé jusqu'à la clôture. L'exporter clôt donc le
+		// transfert, sans lire les morceaux restants, avec les valeurs de
+		// l'ouverture validée et le numéro du dernier morceau reçu (pas les
+		// mots du morceau rejeté). La lecture reste en échec ; une
+		// confirmation 0xc5 n'est pas comptée.
+		_, stopErr := d.stopWith(window, r, head, aacraid.StopRequest(head.Total, head.Xfer, last), false)
+		if stopErr != nil {
+			return nil, false, fmt.Errorf("%w; %w", readErr, stopErr)
+		}
+		return nil, false, fmt.Errorf("%w; transfer %#x stopped", readErr, head.Xfer)
+	}
 	if readErr != nil && (!errors.Is(readErr, ErrStopped) || errors.Is(readErr, errGraceExceeded)) {
-		// Erreur ou rejet en cours de transfert : abandon sans clôture.
+		// Échec d'échange (ioctl, statut ou écho), commande refusée, ou
+		// fenêtre d'arrêt dépassée : abandon sans clôture, comme l'outil
+		// sur une exception de morceau.
 		return nil, false, fmt.Errorf("%w; transfer %#x abandoned without stop", readErr, head.Xfer)
 	}
 	// Données suffisantes, ou arrêt demandé après un morceau conforme

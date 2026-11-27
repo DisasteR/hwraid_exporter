@@ -628,8 +628,25 @@ func TestReadPagedRejectedOpenAndShortData(t *testing.T) {
 		t.Fatalf("requête envoyée après une ouverture rejetée : %v", got)
 	}
 
-	// Morceau de marque inattendue, ou réponse incomplète (Size) : refusé,
-	// transfert abandonné sans clôture.
+	// Rejet propre à l'exporter puis clôture confirmée par 0xc5 : la lecture
+	// est déjà en échec, la confirmation n'est pas comptée (pas de relecture,
+	// pas de clôture non confirmée imputée à une lecture valide).
+	for _, validated := range []bool{false, true} {
+		fc := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: -1, chunkMark: 0xc9, stopMark: aacraid.MarkClosedOther}
+		fc.ioctl(t)
+		dv := open(t)
+		dv.SetValidatedCouple(validated)
+		if _, err := dv.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, need); err == nil {
+			t.Fatalf("validé %v : morceau anormal accepté", validated)
+		}
+		if got := fc.subs(); !slices.Equal(got, []uint32{234, 83, 84}) || dv.CloseUnconfirmed() != 0 {
+			t.Fatalf("validé %v : séquence %v, clôtures non confirmées comptées %d", validated, got, dv.CloseUnconfirmed())
+		}
+	}
+
+	// Morceau de marque inattendue, ou réponse incomplète (Size) : refusé
+	// par un contrôle propre à l'exporter (statut et écho conformes), puis
+	// transfert clôturé après le morceau 0, comme l'outil l'aurait atteint.
 	for name, ff := range map[string]*fakeFirmware{
 		"marque": {payload: make([]byte, 0x1000), xfer: 9, failAt: -1, chunkMark: 0xc9},
 		"taille": {payload: make([]byte, 0x1000), xfer: 9, failAt: -1, chunkSize: 100},
@@ -638,8 +655,11 @@ func TestReadPagedRejectedOpenAndShortData(t *testing.T) {
 		if _, err := open(t).ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, need); err == nil {
 			t.Fatalf("morceau anormal (%s) accepté", name)
 		}
-		if got := ff.subs(); !slices.Equal(got, []uint32{234, 83}) {
-			t.Fatalf("%s : séquence %v, attendu ouverture et morceau, sans clôture", name, got)
+		if got := ff.subs(); !slices.Equal(got, []uint32{234, 83, 84}) {
+			t.Fatalf("%s : séquence %v, attendu ouverture, morceau et clôture", name, got)
+		}
+		if stop := ff.requests[len(ff.requests)-1]; !bytes.Equal(stop, aacraid.StopRequest(0x1000, 9, 0)) {
+			t.Fatalf("%s : clôture %x", name, stop[:64])
 		}
 	}
 
@@ -653,22 +673,25 @@ func TestReadPagedRejectedOpenAndShortData(t *testing.T) {
 	}
 
 	// Transfert complet plus court que les champs demandés : données
-	// rejetées, abandon sans clôture.
+	// rejetées, transfert clôturé.
 	f = &fakeFirmware{payload: make([]byte, 100), xfer: 9, failAt: -1}
 	f.ioctl(t)
 	if _, err := open(t).ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, need); err == nil {
 		t.Fatal("données insuffisantes acceptées")
 	}
-	if got := f.subs(); !slices.Equal(got, []uint32{234, 83}) {
-		t.Fatalf("séquence %v, attendu ouverture et morceau, sans clôture", got)
+	if got := f.subs(); !slices.Equal(got, []uint32{234, 83, 84}) {
+		t.Fatalf("séquence %v, attendu ouverture, morceau et clôture", got)
 	}
 }
 
-// Chaque écart sur un morceau, après un morceau 0 conforme, abandonne le
-// transfert sans clôture (CDC, section 6.11, événements en cours de
-// transfert) : un cas par contrôle du transport, mots de réponse aux
-// positions de la capture (statut 0, écho 4, total 12, identifiant 20,
-// numéro 24).
+// Chaque écart sur un morceau, après un morceau 0 conforme : un cas par
+// contrôle du transport, mots de réponse aux positions de la capture
+// (statut 0, écho 4, total 12, identifiant 20, numéro 24). Échec d'échange
+// (ioctl, statut, écho) : abandon sans clôture, comme l'outil sur une
+// exception de morceau. Écart que seul l'exporter contrôle : clôture, que
+// l'outil (qui ne contrôle que statut et écho) aurait atteinte, formée de
+// l'ouverture validée et du numéro du morceau reçu (1), jamais des mots du
+// morceau rejeté.
 func TestReadPagedAbandonsOnEachChunkFault(t *testing.T) {
 	le := binary.LittleEndian
 	at1 := func(off int, v func(uint32) uint32) func(uint32, []byte) {
@@ -678,6 +701,7 @@ func TestReadPagedAbandonsOnEachChunkFault(t *testing.T) {
 			}
 		}
 	}
+	exchange := map[string]bool{"EINTR": true, "statut": true, "écho": true}
 	for name, f := range map[string]*fakeFirmware{
 		"EINTR":       {failAt: 1, failErr: syscall.EINTR},
 		"statut":      {failAt: -1, chunkHook: at1(0, func(uint32) uint32 { return 1 })},
@@ -704,8 +728,23 @@ func TestReadPagedAbandonsOnEachChunkFault(t *testing.T) {
 			if err == nil || data != nil || errors.Is(err, ErrStopped) {
 				t.Fatalf("err=%v, données=%v", err, data != nil)
 			}
-			if got := f.subs(); !slices.Equal(got, []uint32{234, 83, 83}) {
-				t.Fatalf("séquence %v, attendu [234 83 83] sans clôture", got)
+			if exchange[name] {
+				if got := f.subs(); !slices.Equal(got, []uint32{234, 83, 83}) {
+					t.Fatalf("séquence %v, attendu [234 83 83] sans clôture", got)
+				}
+				if !errors.Is(err, aacraid.ErrExchange) {
+					t.Fatalf("échec d'échange attendu : %v", err)
+				}
+				return
+			}
+			if got := f.subs(); !slices.Equal(got, []uint32{234, 83, 83, 84}) {
+				t.Fatalf("séquence %v, attendu [234 83 83 84] avec clôture", got)
+			}
+			if stop := f.requests[len(f.requests)-1]; !bytes.Equal(stop, aacraid.StopRequest(0x1000, 9, 1)) {
+				t.Fatalf("clôture %x, attendu celle de l'ouverture validée après le morceau 1", stop[:64])
+			}
+			if errors.Is(err, aacraid.ErrExchange) {
+				t.Fatalf("rejet propre à l'exporter classé échec d'échange : %v", err)
 			}
 		})
 	}
@@ -1775,6 +1814,69 @@ func TestReadPagedExchangeFailures(t *testing.T) {
 			_, err = d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return 0x1000 })
 			if err == nil || errors.Is(err, aacraid.ErrExchange) != tc.exchange {
 				t.Fatalf("err=%v, échec d'échange attendu %v", err, tc.exchange)
+			}
+		})
+	}
+}
+
+// Rejet propre à l'exporter sur le morceau 0, puis clôture : son échec
+// d'échange (statut non nul) est un échec d'échange de la lecture, qui
+// arrête la carte pour le cycle comme l'exception de l'outil ; un arrêt
+// demandé pendant le morceau rejeté laisse partir la clôture sur le couple
+// validé, et ailleurs tant que la fenêtre d'arrêt est ouverte, sinon
+// abandon sans clôture.
+func TestReadPagedRejectThenStop(t *testing.T) {
+	need := func([]byte) int { return aacraid.ContainerInfoNeed }
+	t.Run("échec d'échange de la clôture", func(t *testing.T) {
+		f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: -1, chunkMark: 0xc9,
+			stopHook: func(d []byte) { binary.LittleEndian.PutUint32(d[0:], 1) }}
+		f.ioctl(t)
+		d, err := Open("/dev/null", devNull, list(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer d.Close()
+		_, err = d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, need)
+		if !errors.Is(err, aacraid.ErrExchange) || !errors.Is(err, errRejected) {
+			t.Fatalf("err=%v, attendu rejet puis échec d'échange de la clôture", err)
+		}
+		if got := f.subs(); !slices.Equal(got, []uint32{234, 83, 84}) {
+			t.Fatalf("séquence %v", got)
+		}
+	})
+	for name, tc := range map[string]struct {
+		validated bool
+		slow      time.Duration
+		want      []uint32
+	}{
+		"couple validé":                {true, 60 * time.Millisecond, []uint32{234, 83, 84}},
+		"hors couple, fenêtre ouverte": {false, 0, []uint32{234, 83, 84}},
+		"hors couple, fenêtre close":   {false, 60 * time.Millisecond, []uint32{234, 83}},
+	} {
+		t.Run("arrêt pendant le morceau rejeté, "+name, func(t *testing.T) {
+			old := stopGrace
+			stopGrace = 20 * time.Millisecond
+			defer func() { stopGrace = old }()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: -1, chunkMark: 0xc9,
+				onChunk: func() { cancel(); time.Sleep(tc.slow) }}
+			f.ioctl(t)
+			d, err := Open("/dev/null", devNull, list(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			d.SetValidatedCouple(tc.validated)
+			data, err := d.ReadPaged(ctx, aacraid.ReadContainerInfo, 0, 0, need)
+			if err == nil || data != nil || !errors.Is(err, errRejected) {
+				t.Fatalf("err=%v, données=%v", err, data != nil)
+			}
+			if got := f.subs(); !slices.Equal(got, tc.want) {
+				t.Fatalf("séquence %v, attendu %v", got, tc.want)
+			}
+			if closed := len(tc.want) == 3; closed == errors.Is(err, errGraceExceeded) {
+				t.Fatalf("clôture %v, err=%v", closed, err)
 			}
 		})
 	}

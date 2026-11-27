@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"github.com/DisasteR/hwraid_exporter/internal/module"
 	"github.com/DisasteR/hwraid_exporter/internal/sysfs"
@@ -691,8 +692,9 @@ func TestCapabilityRefusalsSendNothing(t *testing.T) {
 }
 
 // Liste des conteneurs annonçant plus d'entrées que MaxContainers : seul le
-// premier morceau est demandé (ioctl émis), puis le transfert est abandonné
-// sans clôture (règle 2).
+// premier morceau est demandé, puis le transfert est clôturé (rejet propre à
+// l'exporter : l'outil, qui ne contrôle pas ce contenu, serait allé jusqu'à
+// la clôture).
 func TestOversizedContainerListStopsAfterFirstChunk(t *testing.T) {
 	list, err := aacraid.NewAllowlist()
 	if err != nil {
@@ -708,6 +710,11 @@ func TestOversizedContainerListStopsAfterFirstChunk(t *testing.T) {
 	if r.Collected["volumes"] {
 		t.Fatal("liste de 300 entrées acceptée pour MaxContainers 256")
 	}
+	// Rejet propre à l'exporter, clôture réussie : la carte n'est pas
+	// arrêtée, la protection du cache est lue ensuite.
+	if !r.Collected["cache_protection"] || errors.Is(r.CollectErr, aacraid.ErrExchange) {
+		t.Fatalf("collecte arrêtée après le rejet de la 229 : %+v", r.Collected)
+	}
 	subs, _ := containerConfigSent(t, fw.log)
 	var after229 [][2]uint32
 	for i, s := range subs {
@@ -716,11 +723,10 @@ func TestOversizedContainerListStopsAfterFirstChunk(t *testing.T) {
 			break
 		}
 	}
-	// Ouverture et morceau 0 seulement pour la 229 ; la chaîne des volumes
-	// s'arrête là (les disques, lus avant elle comme chez l'outil, ont
-	// déjà été lus) : ni morceau ni clôture pour ce transfert, et aucune
-	// lecture de configuration ensuite.
-	if len(after229) < 2 || after229[1] != [2]uint32{83, 0} || len(subs) != slices.Index(subs, [2]uint32{229, 0})+2 {
+	// Ouverture, morceau 0 et clôture après le morceau 0 pour la 229 ; la
+	// chaîne des volumes s'arrête là (les disques, lus avant elle comme chez
+	// l'outil, ont déjà été lus) : aucune lecture de configuration ensuite.
+	if len(after229) < 3 || after229[1] != [2]uint32{83, 0} || after229[2] != [2]uint32{84, 0} || len(subs) != slices.Index(subs, [2]uint32{229, 0})+3 {
 		t.Fatalf("requêtes après l'ouverture de la 229 : %v", subs)
 	}
 	// Aucune autre lecture de la carte de référence ne dépasse un morceau
