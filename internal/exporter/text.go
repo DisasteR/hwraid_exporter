@@ -56,6 +56,9 @@ func textController(b *strings.Builder, c Controller) {
 		t := c.Temperature
 		fmt.Fprintf(b, "  Temperature       %g °C (thresholds %g / %g °C)\n", t.Celsius, t.ThresholdLo, t.ThresholdHi)
 	}
+	if c.Alarm != "" {
+		fmt.Fprintf(b, "  Alarm             %s\n", c.Alarm)
+	}
 	if cp := c.CacheProtection; cp != nil {
 		switch {
 		case cp.PresenceUnknown:

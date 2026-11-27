@@ -49,6 +49,7 @@ type Controller struct {
 	CloseUnconfirmed uint64               // clôtures de transfert non nominales cumulées
 	CacheProtection  *module.CacheProtection
 	Temperature      *module.Temperature
+	Alarm            string // état de l'alarme sonore, vide si non lu
 	Volumes          []module.Volume
 	Disks            []module.Disk
 	DiskInventory    []module.DiskInfo
@@ -215,6 +216,7 @@ func Build(p module.Plan, discoveryOK bool, results map[string]module.Result, tr
 				c.Collected = r.Collected
 				c.CacheProtection = r.CacheProtection
 				c.Temperature = r.Temperature
+				c.Alarm = r.Alarm
 				c.LastSuccess = hist.Last(addr)
 				c.Volumes, c.Disks, c.DiskInventory, c.DiskLocations, c.DiskOSDevices = r.Volumes, r.Disks, r.DiskInventory, r.DiskLocations, r.DiskOSDevices
 				c.Tasks = r.Tasks
@@ -385,6 +387,12 @@ func Render(s Snapshot) string {
 		if t := c.Temperature; t != nil {
 			fmt.Fprintf(&b, "hwraid_controller_temperature_threshold_celsius{%s} %g\n", labels("controller", c.Label, "level", "low"), t.ThresholdLo)
 			fmt.Fprintf(&b, "hwraid_controller_temperature_threshold_celsius{%s} %g\n", labels("controller", c.Label, "level", "high"), t.ThresholdHi)
+		}
+	}
+	gauge("hwraid_controller_alarm_state", "Controller audible alarm state, value 1.")
+	for _, c := range s.Controllers {
+		if c.Alarm != "" {
+			fmt.Fprintf(&b, "hwraid_controller_alarm_state{%s} 1\n", labels("controller", c.Label, "state", c.Alarm))
 		}
 	}
 	gauge("hwraid_cache_protection_present", "1 if a cache protection module is installed.")

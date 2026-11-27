@@ -94,6 +94,15 @@ type fakeDev struct {
 	env     *aacraid.Environment
 	envErr  error
 	envCall int
+	// alarm : réponse à CT_ALARM_GET_STATE (nil : désactivée, comme la
+	// carte de référence).
+	alarm     *aacraid.AlarmState
+	alarmErr  error
+	alarmCall int
+	// seq : ordre des envois d'alarme (« alarm »), des lectures paginées,
+	// de la protection du cache (« cache ») et des listes de tâches
+	// (« 101-<conteneur> »).
+	seq []string
 	// count : MaxContainers (0 : 256, valeur de la carte de référence).
 	count     uint32
 	countErr  error
@@ -124,6 +133,7 @@ func (f *fakeDev) TaskList(ctx context.Context, container uint32) ([]aacraid.Tas
 		return nil, aacio.ErrStopped
 	}
 	f.taskListCalls = append(f.taskListCalls, container)
+	f.seq = append(f.seq, fmt.Sprintf("101-%x", container))
 	if f.taskListErr != nil {
 		return nil, f.taskListErr
 	}
@@ -224,6 +234,18 @@ func (f *fakeDev) Environment(ctx context.Context) (aacraid.Environment, error) 
 	return aacraid.Environment{TemperatureCelsius: 49, ThresholdLoCelsius: 95, ThresholdHiCelsius: 100}, f.envErr
 }
 
+func (f *fakeDev) Alarm(ctx context.Context) (aacraid.AlarmState, error) {
+	if f.stopped(ctx) {
+		return "", aacio.ErrStopped
+	}
+	f.alarmCall++
+	f.seq = append(f.seq, "alarm")
+	if f.alarm != nil {
+		return *f.alarm, f.alarmErr
+	}
+	return aacraid.AlarmDisabled, f.alarmErr
+}
+
 // stopped imite l'admission du transport (aacio) : une fois le contexte
 // terminé, la commande n'est pas envoyée.
 func (f *fakeDev) stopped(ctx context.Context) bool {
@@ -288,6 +310,7 @@ func (f *fakeDev) CacheProtection(ctx context.Context) (aacraid.CacheProtectionR
 		return aacraid.CacheProtectionReading{}, aacio.ErrStopped
 	}
 	f.cpCall++
+	f.seq = append(f.seq, "cache")
 	if f.cp == nil {
 		return aacraid.CacheProtectionReading{Flash: true, ZMM: aacraid.ZMMStatus{Word: 0x40000081, State: aacraid.CacheProtectionFailed}}, nil
 	}
@@ -299,6 +322,7 @@ func (f *fakeDev) ReadPaged(ctx context.Context, r aacraid.PagedRead, param, siz
 		return nil, aacio.ErrStopped
 	}
 	f.reads = append(f.reads, fmt.Sprintf("%d-%x", r, param))
+	f.seq = append(f.seq, fmt.Sprintf("%d-%x", r, param))
 	// Comme le transport : la liste des conteneurs est demandée à la taille
 	// que fixe MaxContainers.
 	if r == aacraid.ReadContainerList && (size != aacraid.ContainerListSize(f.maxContainers()) || f.expected.Max() != f.maxContainers()) {
@@ -506,7 +530,7 @@ func TestCollectReportsCapabilitiesCollection(t *testing.T) {
 	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
 	c := card("0000:01:00.0", "0")
 	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
-	after := []string{"volumes", "disks", DiskInventoryCollector, DiskLocationCollector, TasksCollector, CacheProtectionCollector, TemperatureCollector}
+	after := []string{"volumes", "disks", DiskInventoryCollector, DiskLocationCollector, TasksCollector, CacheProtectionCollector, TemperatureCollector, AlarmCollector}
 
 	unq, unqHBA := otherModel(hba)
 	fu := &fakeDev{info: unqHBA, supErr: errors.New("EIO")}
@@ -940,10 +964,10 @@ func TestCollectRequiresQualification(t *testing.T) {
 		if !r.NodeValid {
 			t.Fatalf("%s : nœud refusé : %+v", name, r)
 		}
-		if d.pausedCall+d.revCall+d.supCall != 0 || d.cpCall != 0 || len(d.reads) != 0 || d.cmCall != 0 || d.countCall != 0 || d.aiCall != 0 || d.envCall != 0 {
+		if d.pausedCall+d.revCall+d.supCall != 0 || d.cpCall != 0 || len(d.reads) != 0 || d.cmCall != 0 || d.countCall != 0 || d.aiCall != 0 || d.envCall != 0 || d.alarmCall != 0 {
 			t.Fatalf("%s : commandes firmware envoyées (704 %d, 701 %d, 706 %d, ZMM %d, paginées %v, 708 %d, comptage %d, 703 %d, 803 %d)", name, d.pausedCall, d.revCall, d.supCall, d.cpCall, d.reads, d.cmCall, d.countCall, d.aiCall, d.envCall)
 		}
-		want := map[string]bool{CapabilitiesCollector: true, "volumes": true, "disks": true, DiskInventoryCollector: true, DiskLocationCollector: true, CacheProtectionCollector: true, TemperatureCollector: true}
+		want := map[string]bool{CapabilitiesCollector: true, "volumes": true, "disks": true, DiskInventoryCollector: true, DiskLocationCollector: true, CacheProtectionCollector: true, TemperatureCollector: true, AlarmCollector: true}
 		for _, u := range r.Unsupported {
 			delete(want, u)
 		}
@@ -1343,7 +1367,7 @@ func TestCollectStopsWithContext(t *testing.T) {
 	// nœud n'est pas vérifié (GET_HBA_INFO refusée elle aussi).
 	d = &fakeDev{info: hba, sup: arcIo}
 	r = withDev(d, nil).Collect(ctx, card("0000:01:00.0", "0"), ref)
-	if d.supCall != 0 || d.cpCall != 0 || len(d.reads) != 0 || d.cmCall != 0 || d.aiCall != 0 || d.envCall != 0 {
+	if d.supCall != 0 || d.cpCall != 0 || len(d.reads) != 0 || d.cmCall != 0 || d.aiCall != 0 || d.envCall != 0 || d.alarmCall != 0 {
 		t.Fatalf("commandes après la fin (706 %d, ZMM %d, 703 %d, 803 %d, paginées %v)", d.supCall, d.cpCall, d.aiCall, d.envCall, d.reads)
 	}
 	if r.NodeValid || !errors.Is(r.Err, aacio.ErrStopped) || r.Collected[CapabilitiesCollector] {
@@ -1938,12 +1962,12 @@ func TestContainerCountFailures(t *testing.T) {
 			r.Collected[DiskInventoryCollector] && r.Collected[DiskLocationCollector] && r.CollectErr != nil && r.NodeValid
 	}
 	stopped := func(r module.Result, f *fakeDev) bool {
-		for _, col := range []string{"volumes", "disks", DiskInventoryCollector, DiskLocationCollector, TasksCollector, CacheProtectionCollector} {
+		for _, col := range []string{"volumes", "disks", DiskInventoryCollector, DiskLocationCollector, TasksCollector, AlarmCollector, CacheProtectionCollector} {
 			if ok, tried := r.Collected[col]; !tried || ok {
 				return false
 			}
 		}
-		return len(f.reads) == 0 && f.cmCall == 0 && f.cpCall == 0 && r.Collected[TemperatureCollector] && r.Collected[CapabilitiesCollector]
+		return len(f.reads) == 0 && f.cmCall == 0 && f.cpCall == 0 && f.alarmCall == 0 && r.Collected[TemperatureCollector] && r.Collected[CapabilitiesCollector]
 	}
 	f := &fakeDev{info: hba, sup: arcIo, countErr: errors.New("EIO")}
 	m := withDev(f, nil)
@@ -2084,10 +2108,10 @@ func TestReadDependencies(t *testing.T) {
 	for _, failing := range []string{"247-0", "248-5", "229-0", "234-fd", "249-1d000002"} {
 		d, r := runWith(failing, unsettled)
 		want := upTo(failing)
-		if got := strings.Join(d.reads, " "); got != strings.Join(want, " ") || d.cpCall != 0 || len(d.taskListCalls) != 0 || len(d.reportCalls) != 0 || d.cmCall != 1 || d.countCall != 1 {
+		if got := strings.Join(d.reads, " "); got != strings.Join(want, " ") || d.cpCall != 0 || len(d.taskListCalls) != 0 || len(d.reportCalls) != 0 || d.alarmCall != 0 || d.cmCall != 1 || d.countCall != 1 {
 			t.Errorf("fin de transfert non établie sur %s : lectures %s, cache %d, 101 %d, 103 %d, 708 %d, comptage %d", failing, got, d.cpCall, len(d.taskListCalls), len(d.reportCalls), d.cmCall, d.countCall)
 		}
-		if !errors.Is(r.CollectErr, aacraid.ErrTransferUnsettled) || r.Collected[CacheProtectionCollector] || r.Collected[TasksCollector] || !r.Collected[TemperatureCollector] {
+		if !errors.Is(r.CollectErr, aacraid.ErrTransferUnsettled) || r.Collected[CacheProtectionCollector] || r.Collected[TasksCollector] || r.Collected[AlarmCollector] || r.Alarm != "" || !r.Collected[TemperatureCollector] {
 			t.Errorf("fin de transfert non établie sur %s : %v, %v", failing, r.Collected, r.CollectErr)
 		}
 	}
@@ -2652,5 +2676,151 @@ func TestOpeningCountByCard(t *testing.T) {
 	r = withDev(d, nil).Collect(context.Background(), c, ref)
 	if d.countCall != 0 || len(d.reads) != 0 || d.cmCall != 0 || d.cpCall == 0 || !r.Collected[CacheProtectionCollector] || !slices.Contains(r.Unsupported, "volumes") {
 		t.Fatalf("blocs de 2 048 octets : comptage %d, lectures %v, 708 %d, cache %d, %v / %v", d.countCall, d.reads, d.cmCall, d.cpCall, r.Collected, r.Unsupported)
+	}
+}
+
+// Alarme sonore (CT_ALARM_GET_STATE) : envoyée à chaque cycle, après les
+// listes des membres et juste avant la protection du cache, comme le
+// rafraîchissement de l'outil ; aussi sans lectures paginées (même place,
+// avant la protection du cache). Non prise en charge, sans commande, sans
+// le bit 11 de SupportedOptions, avec le bit 15 (forme non implémentée) ou
+// avec le bit 28 de SupportedOptions2. Un échec, quel qu'il soit, ne met en
+// échec que ce collecteur : la protection du cache et les tâches suivent.
+func TestCollectAlarm(t *testing.T) {
+	ref := []module.NodeRef{{Path: "/dev/hwraid_exporter/aac0", Dev: 1}}
+	hba := aacraid.HBAInfo{AdapterNumber: 0, Bus: 1, VendorID: 0x9005, DeviceID: 0x028b, SubVendorID: 0x9005, SubSystemID: 0x0301}
+	c := card("0000:01:00.0", "0")
+	opts := func(o uint32) *aacraid.AdapterInfo { return &aacraid.AdapterInfo{SupportedOptions: o} }
+	const ref703 = 0x141f1d7c // SupportedOptions de la carte de référence
+
+	// Place : après la dernière lecture paginée (249), juste avant la
+	// protection du cache, avant les listes de tâches ; à chaque cycle.
+	f := &fakeDev{info: hba, sup: arcIo}
+	m := withDev(f, nil)
+	for cycle := 1; cycle <= 2; cycle++ {
+		f.seq = nil
+		r := m.Collect(context.Background(), c, ref)
+		if r.Alarm != module.AlarmDisabled || !r.Collected[AlarmCollector] || slices.Contains(r.Unsupported, AlarmCollector) || r.CollectErr != nil {
+			t.Fatalf("cycle %d : alarme %q, %v, non pris en charge %v, %v", cycle, r.Alarm, r.Collected, r.Unsupported, r.CollectErr)
+		}
+		i := slices.Index(f.seq, "alarm")
+		if i < 1 || i+1 >= len(f.seq) || f.seq[i+1] != "cache" || !strings.HasPrefix(f.seq[i-1], "249-") ||
+			strings.Count(strings.Join(f.seq, " "), "alarm") != 1 || !strings.HasPrefix(f.seq[len(f.seq)-1], "101-") {
+			t.Fatalf("cycle %d : ordre %v", cycle, f.seq)
+		}
+	}
+	if f.alarmCall != 2 {
+		t.Fatalf("alarme envoyée %d fois en deux cycles (jamais gardée)", f.alarmCall)
+	}
+	on := aacraid.AlarmEnabled
+	if r := withDev(&fakeDev{info: hba, sup: arcIo, alarm: &on}, nil).Collect(context.Background(), c, ref); r.Alarm != module.AlarmEnabled {
+		t.Fatalf("alarme activée : %q", r.Alarm)
+	}
+	// Valeur hors des deux états décodés : échec, rien de publié.
+	odd := aacraid.AlarmState("sounding")
+	if r := withDev(&fakeDev{info: hba, sup: arcIo, alarm: &odd}, nil).Collect(context.Background(), c, ref); r.Alarm != "" || r.Collected[AlarmCollector] {
+		t.Fatalf("état inconnu publié : %q, %v", r.Alarm, r.Collected)
+	}
+
+	// Lu à chaque cycle, jamais gardé : la valeur publiée suit la réponse
+	// du cycle (désactivée, activée, puis échec : série retirée).
+	fr := &fakeDev{info: hba, sup: arcIo}
+	mr := withDev(fr, nil)
+	for i, tc := range []struct {
+		st   aacraid.AlarmState
+		err  error
+		want string
+	}{{aacraid.AlarmDisabled, nil, module.AlarmDisabled}, {aacraid.AlarmEnabled, nil, module.AlarmEnabled}, {"", errors.New("EIO"), ""}} {
+		st := tc.st
+		fr.alarm, fr.alarmErr = &st, tc.err
+		r := mr.Collect(context.Background(), c, ref)
+		ok, tried := r.Collected[AlarmCollector]
+		if r.Alarm != tc.want || !tried || ok != (tc.err == nil) {
+			t.Fatalf("cycle %d : %q (attendu %q), %v", i+1, r.Alarm, tc.want, r.Collected)
+		}
+	}
+
+	// Sans lectures paginées (pas d'interface ARCIO) : même place.
+	fn := &fakeDev{info: hba, sup: aacraid.SupplementInfo{Version: 15, FeatureBits: arcIo.FeatureBits}}
+	r := withDev(fn, nil).Collect(context.Background(), c, ref)
+	if !slices.Equal(fn.seq, []string{"alarm", "cache"}) || !r.Collected[AlarmCollector] || r.Alarm != module.AlarmDisabled {
+		t.Fatalf("sans lectures paginées : ordre %v, %v, %q", fn.seq, r.Collected, r.Alarm)
+	}
+
+	// Non pris en charge : aucune commande, le reste de la carte lu.
+	for name, fu := range map[string]*fakeDev{
+		"sans bit 11":       {info: hba, sup: arcIo, ai: opts(ref703 &^ aacraid.SupportedAlarm)},
+		"bit 15 (2 048)":    {info: hba, sup: arcIo, ai: opts(ref703 | aacraid.SupportedLargeTransfers)},
+		"bit 28 (comptage)": {info: hba, sup: aacraid.SupplementInfo{Version: 15, SupportedOptions2: arcIo.SupportedOptions2 | aacraid.SupportedSpecialCount, FeatureBits: arcIo.FeatureBits}},
+	} {
+		r := withDev(fu, nil).Collect(context.Background(), c, ref)
+		_, tried := r.Collected[AlarmCollector]
+		if fu.alarmCall != 0 || tried || r.Alarm != "" || !slices.Contains(r.Unsupported, AlarmCollector) {
+			t.Errorf("%s : %d envois, tenté %v, alarme %q, non pris en charge %v", name, fu.alarmCall, tried, r.Alarm, r.Unsupported)
+		}
+		if n := strings.Count(strings.Join(r.Unsupported, " "), AlarmCollector); n != 1 {
+			t.Errorf("%s : alarme %d fois parmi les non pris en charge %v", name, n, r.Unsupported)
+		}
+	}
+	// Sans bit 11, un arrêt de la carte (706 en échec, comptage en échec)
+	// laisse l'alarme non prise en charge, jamais en échec.
+	for name, fu := range map[string]*fakeDev{
+		"706 en échec":      {info: hba, supErr: errors.New("EIO"), ai: opts(ref703 &^ aacraid.SupportedAlarm)},
+		"comptage en échec": {info: hba, sup: arcIo, countErr: errors.New("EIO"), ai: opts(ref703 &^ aacraid.SupportedAlarm)},
+	} {
+		r := withDev(fu, nil).Collect(context.Background(), c, ref)
+		_, tried := r.Collected[AlarmCollector]
+		if r.CollectErr == nil || tried || !slices.Contains(r.Unsupported, AlarmCollector) || fu.alarmCall != 0 {
+			t.Errorf("sans bit 11, %s : tenté %v, non pris en charge %v, %v", name, tried, r.Unsupported, r.CollectErr)
+		}
+	}
+	// Bit 11 seul suffit, même sans 706 (capacités non annoncées).
+	fs := &fakeDev{info: hba, ai: opts(ref703 &^ aacraid.SupportedSupplementInfo)}
+	if r := withDev(fs, nil).Collect(context.Background(), c, ref); fs.alarmCall != 1 || !r.Collected[AlarmCollector] {
+		t.Fatalf("sans 706 : %d envois, %v", fs.alarmCall, r.Collected)
+	}
+
+	// Échec (échange ou refus) : collecteur en échec, la carte continue.
+	for name, err := range map[string]error{
+		"échec d'échange": fmt.Errorf("ioctl: %w", aacraid.ErrExchange),
+		"réponse refusée": errors.New("alarm: subcommand 4, expected 190"),
+	} {
+		fe := &fakeDev{info: hba, sup: arcIo, alarmErr: err}
+		r := withDev(fe, nil).Collect(context.Background(), c, ref)
+		ok, tried := r.Collected[AlarmCollector]
+		if !tried || ok || r.Alarm != "" || r.CollectErr == nil || !strings.Contains(r.CollectErr.Error(), "alarm: ") {
+			t.Errorf("%s : %v, alarme %q, %v", name, r.Collected, r.Alarm, r.CollectErr)
+		}
+		if strings.Contains(r.CollectErr.Error(), "no other card read attempted") {
+			t.Errorf("%s : carte arrêtée : %v", name, r.CollectErr)
+		}
+		for _, col := range []string{CacheProtectionCollector, TasksCollector, "volumes", "disks", DiskInventoryCollector, DiskLocationCollector, TemperatureCollector, CapabilitiesCollector} {
+			if !r.Collected[col] {
+				t.Errorf("%s : %s en échec : %v", name, col, r.Collected)
+			}
+		}
+		if fe.cpCall != 1 || len(fe.taskListCalls) != 5 {
+			t.Errorf("%s : protection du cache %d, listes de tâches %v", name, fe.cpCall, fe.taskListCalls)
+		}
+	}
+
+	// Fin du contexte avant l'alarme : rien n'est envoyé, collecteur en
+	// échec comme les suivants.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	members := 0
+	fc := &fakeDev{info: hba, sup: arcIo}
+	fc.paged = func(r aacraid.PagedRead, param, size uint32) ([]byte, error) {
+		if r == aacraid.ReadMemberList {
+			if members++; members == 5 { // dernière liste de la carte de référence
+				cancel()
+			}
+		}
+		return referencePaged(r, param, size)
+	}
+	r = withDev(fc, nil).Collect(ctx, c, ref)
+	ok, tried := r.Collected[AlarmCollector]
+	if members != 5 || fc.alarmCall != 0 || fc.cpCall != 0 || !tried || ok || !errors.Is(r.CollectErr, aacio.ErrStopped) {
+		t.Fatalf("contexte terminé : 249 %d, alarme %d, cache %d, %v, %v", members, fc.alarmCall, fc.cpCall, r.Collected, r.CollectErr)
 	}
 }

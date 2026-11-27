@@ -92,8 +92,9 @@ type Device struct {
 	// section 6.11, écarts E1 et E2). Faux par défaut : suite de commandes
 	// de l'outil de référence.
 	validated bool
-	// highBit : la carte annonce le bit 13 de FeatureBits ; ouvertures et
-	// CT_GET_CONTAINER_COUNT portent SizeHighBit au mot 7, comme l'outil.
+	// highBit : la carte annonce le bit 13 de FeatureBits ; ouvertures,
+	// CT_GET_CONTAINER_COUNT et CT_ALARM_GET_STATE portent SizeHighBit au
+	// mot 7, comme l'outil.
 	highBit bool
 }
 
@@ -318,6 +319,23 @@ func (d *Device) ContainerCount(ctx context.Context) (aacraid.ContainerCount, er
 	return aacraid.DecodeContainerCount(buf)
 }
 
+// Alarm lit CT_ALARM_GET_STATE (190) et rend l'état de l'alarme sonore.
+// Même forme que le comptage des conteneurs : bit de poids fort au mot 7 si
+// la carte annonce le bit 13 de FeatureBits. Soumise à ctx.
+func (d *Device) Alarm(ctx context.Context) (aacraid.AlarmState, error) {
+	if err := admit(ctx); err != nil {
+		return "", err
+	}
+	buf := aacraid.AlarmRequest()
+	if d.highBit {
+		buf = aacraid.WithSizeHighBit(buf)
+	}
+	if err := d.do(ctx, allowlist.Request{Ioctl: aacraid.IoctlSendFIB, Buf: buf}); err != nil {
+		return "", err
+	}
+	return aacraid.DecodeAlarm(buf)
+}
+
 // ExpectContainerList fixe la taille de la liste des conteneurs (229) que ce
 // périphérique accepte d'envoyer pendant le cycle : celle qui découle d'un
 // comptage décodé d'une réponse de cette carte (lu par ContainerCount, ou
@@ -431,9 +449,9 @@ func (d *Device) stopWith(window context.Context, r aacraid.PagedRead, head aacr
 func (d *Device) SetValidatedCouple(v bool) { d.validated = v }
 
 // SetPagedHighBit indique que la carte annonce le bit 13 de FeatureBits
-// (706) : le mot 7 des ouvertures de transfert et de CT_GET_CONTAINER_COUNT
-// porte alors aacraid.SizeHighBit, comme chez l'outil de référence. Par
-// défaut : absent.
+// (706) : le mot 7 des ouvertures de transfert, de CT_GET_CONTAINER_COUNT et
+// de CT_ALARM_GET_STATE porte alors aacraid.SizeHighBit, comme chez l'outil
+// de référence. Par défaut : absent.
 func (d *Device) SetPagedHighBit(v bool) { d.highBit = v }
 
 // pagedAttempts : sur un couple validé (E2), une lecture rejetée à la

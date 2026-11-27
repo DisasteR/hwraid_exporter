@@ -38,7 +38,7 @@ The cost of this approach:
 
 | Object | Published | Observed on hardware | Covered by tests on constructed data only |
 |---|---|---|---|
-| Controller | identity (model, firmware, serial, PCI address), driver and module, temperature and its thresholds | identity, temperature and thresholds | — |
+| Controller | identity (model, firmware, serial, PCI address), driver and module, temperature and its thresholds, audible alarm setting | identity, temperature and thresholds; alarm disabled (vendor tool captures) | alarm enabled |
 | Volumes | RAID level, state, capacity, members, write-cache policy and actual write-cache state | optimal state; RAID 1 mirrors and an assembly of mirrors; with a failed ZMM, write cache on under `wb`, off under `wbb` and `wt` | degraded, rebuilding, failed and reduced-redundancy states; RAID 0, 1E, 5, 5EE, 6, 10, 50, 60, simple volumes, spanned volumes made of disks |
 | Disks | state, inventory (vendor, model, firmware, serial, WWN), capacity, location on the controller, Linux device | online state, inventory, location, Linux device | rebuilding, failed, ready, spare, copyback, passthrough and unsupported states |
 | Background tasks | progress of rebuild, verification and other tasks per volume | no task running | every task type and progress (reports never captured yet: the next rebuild on the reference host is the hardware check) |

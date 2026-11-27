@@ -21,7 +21,7 @@ var Entries = []allowlist.Entry{
 		Ioctl:   IoctlSendFIB,
 		Size:    FIBSize,
 		Payload: CheckFIBRequest,
-		Proof:   "IsAdapterPaused (704), CheckRevision (701, octets au-delà de Size mis à zéro), RequestSupplementAdapterInfo (706), RequestAdapterInfo (703), AdapterEnvironmentInfo (803), lectures VM_Ioctl de présence et d'état de la protection du cache, transfert paginé et CT_GET_CONTAINER_COUNT : partie significative identique aux captures de l'outil de référence ; liste des conteneurs aux tailles autres que 1 032 octets : règle de construction de l'outil, taille liée au comptage de la carte par le transport (docs/aacraid-interface.md, sections 4, 6 et 8)",
+		Proof:   "IsAdapterPaused (704), CheckRevision (701, octets au-delà de Size mis à zéro), RequestSupplementAdapterInfo (706), RequestAdapterInfo (703), AdapterEnvironmentInfo (803), lectures VM_Ioctl de présence et d'état de la protection du cache, transfert paginé, CT_GET_CONTAINER_COUNT et CT_ALARM_GET_STATE (190) : partie significative identique aux captures de l'outil de référence ; liste des conteneurs aux tailles autres que 1 032 octets : règle de construction de l'outil, taille liée au comptage de la carte par le transport (docs/aacraid-interface.md, sections 4, 6 et 8)",
 	},
 	{
 		Name:    "FSACTL_SEND_LARGE_FIB",

@@ -22,6 +22,7 @@ func TestRenderTextReferenceTopology(t *testing.T) {
 		Model: "6805", Firmware: "5.3-0[19204]", NodeChecked: true, NodeValid: true,
 		Collected:       map[string]bool{"volumes": true, "disks": true, "tasks": true, "temperature": true},
 		Temperature:     &module.Temperature{Celsius: 52, ThresholdLo: 95, ThresholdHi: 100},
+		Alarm:           module.AlarmDisabled,
 		CacheProtection: &module.CacheProtection{Present: true, Type: "flash_supercap", Vendor: "zmm", State: "failed"},
 		Volumes: []module.Volume{
 			{ID: "1d000000", Name: "Array0", RaidLevel: "concat", VendorLevel: "RAID_volume", State: "degraded_rebuilding", CapacityBytes: 15_998_000_000_000,
@@ -44,6 +45,7 @@ func TestRenderTextReferenceTopology(t *testing.T) {
   Module            aacraid, qualified model
   Collection        ok
   Temperature       52 °C (thresholds 95 / 100 °C)
+  Alarm             disabled
   Cache protection  flash_supercap (zmm), failed
   Volumes
     1d000000  Array0  concat (RAID_volume)  degraded_rebuilding  16.0 TB

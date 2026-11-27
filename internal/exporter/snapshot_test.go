@@ -244,6 +244,30 @@ func TestTemperatureRender(t *testing.T) {
 	}
 }
 
+// Alarme sonore : une série à 1 portant l'état lu dans le cycle ; rien sans
+// lecture ni sur un cycle hors délai (valeur non observée).
+func TestAlarmRender(t *testing.T) {
+	p := plan(aacHost("host0", "0000:01:00.0", "S1"))
+	for _, st := range []string{module.AlarmDisabled, module.AlarmEnabled} {
+		res := map[string]module.Result{"0000:01:00.0": {NodeValid: true, Alarm: st}}
+		out := Render(Build(p, true, res, nil, 0))
+		want := `hwraid_controller_alarm_state{controller="serial:S1",state="` + st + `"} 1` + "\n"
+		if !strings.Contains(out, want) || strings.Count(out, "hwraid_controller_alarm_state{") != 1 ||
+			!strings.Contains(out, "# TYPE hwraid_controller_alarm_state gauge\n") {
+			t.Fatalf("%s : ligne absente ou en double\n%s", st, out)
+		}
+	}
+	for name, r := range map[string]module.Result{
+		"lecture absente": {NodeValid: true},
+		"hors délai":      {TimedOut: true, Collected: map[string]bool{"alarm": false}, Alarm: module.AlarmEnabled},
+	} {
+		res := map[string]module.Result{"0000:01:00.0": r}
+		if out := Render(Build(p, true, res, nil, 0)); strings.Contains(out, "hwraid_controller_alarm_state{") {
+			t.Fatalf("%s : alarme publiée sans lecture :\n%s", name, out)
+		}
+	}
+}
+
 func TestVolumeRender(t *testing.T) {
 	off := false
 	p := plan(aacHost("host0", "0000:01:00.0", "S1"))

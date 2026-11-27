@@ -93,6 +93,9 @@ type Result struct {
 	// Temperature : capteur de température de la carte, nil s'il n'a pas
 	// été lu.
 	Temperature *Temperature
+	// Alarm : état de l'alarme sonore de la carte (AlarmEnabled,
+	// AlarmDisabled), vide s'il n'a pas été lu.
+	Alarm string
 	// Volumes et Disks : configuration lue pendant le cycle ; publiés
 	// seulement si la lecture complète a abouti.
 	Volumes []Volume
@@ -204,6 +207,12 @@ type CacheProtection struct {
 	// (unknown) l'est.
 	PresenceUnknown bool
 }
+
+// États de l'alarme sonore d'une carte (Result.Alarm).
+const (
+	AlarmEnabled  = "enabled"
+	AlarmDisabled = "disabled"
+)
 
 // Temperature est la lecture du capteur de température d'une carte, avec
 // les seuils qu'elle annonce (aacraid : bas et haut, l'outil de référence

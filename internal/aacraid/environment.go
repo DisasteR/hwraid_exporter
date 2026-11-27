@@ -77,6 +77,15 @@ const SupportedLargeTransfers = 0x8000
 // LargeTransfers indique le bit 15 de SupportedOptions.
 func (a AdapterInfo) LargeTransfers() bool { return a.SupportedOptions&SupportedLargeTransfers != 0 }
 
+// SupportedAlarm est le bit 11 de SupportedOptions (AAC_OPT_ALARM, Linux
+// aacraid.h) : la carte a une alarme sonore. L'outil de référence n'envoie
+// CT_ALARM_GET_STATE que si ce bit est annoncé (présent sur la carte de
+// référence).
+const SupportedAlarm = 0x800
+
+// Alarm indique le bit 11 de SupportedOptions.
+func (a AdapterInfo) Alarm() bool { return a.SupportedOptions&SupportedAlarm != 0 }
+
 // DecodeAdapterInfo décode la réponse à RequestAdapterInfo. Size inclut
 // l'en-tête : il doit couvrir SupportedOptions et tenir dans le tampon.
 func DecodeAdapterInfo(b []byte) (AdapterInfo, error) {

@@ -39,6 +39,7 @@ type device interface {
 	TaskReport(ctx context.Context, job uint32) (aacraid.Task, error)
 	Revision(ctx context.Context) (aacraid.Revision, error)
 	Environment(ctx context.Context) (aacraid.Environment, error)
+	Alarm(ctx context.Context) (aacraid.AlarmState, error)
 	CacheProtection(ctx context.Context) (aacraid.CacheProtectionReading, error)
 	ContainerCount(ctx context.Context) (aacraid.ContainerCount, error)
 	ExpectContainerList(c aacraid.ContainerCount)
@@ -60,6 +61,7 @@ type reader interface {
 	TaskReport(job uint32) (aacraid.Task, error)
 	Revision() (aacraid.Revision, error)
 	Environment() (aacraid.Environment, error)
+	Alarm() (aacraid.AlarmState, error)
 	CacheProtection() (aacraid.CacheProtectionReading, error)
 	ContainerCount() (aacraid.ContainerCount, error)
 	ExpectContainerList(c aacraid.ContainerCount)
@@ -91,6 +93,10 @@ const CacheProtectionCollector = "cache_protection"
 // TemperatureCollector est le collecteur du capteur de température de la
 // carte (AdapterEnvironmentInfo, si RequestAdapterInfo l'annonce).
 const TemperatureCollector = "temperature"
+
+// AlarmCollector est le collecteur de l'état de l'alarme sonore de la
+// carte (CT_ALARM_GET_STATE, si RequestAdapterInfo l'annonce).
+const AlarmCollector = "alarm"
 
 // TasksCollector est le collecteur de l'avancement des tâches de fond des
 // volumes (reconstruction, vérification…), lu par conteneur comme l'outil
@@ -176,7 +182,7 @@ func (*Module) Match(c module.Card) bool { return c.PCI.Driver == "aacraid" }
 
 // Collectors liste tous les collecteurs du module.
 func (*Module) Collectors() []string {
-	return append([]string{CapabilitiesCollector, CacheProtectionCollector, TemperatureCollector, DiskInventoryCollector, DiskLocationCollector, TasksCollector}, StateCollectors...)
+	return append([]string{CapabilitiesCollector, CacheProtectionCollector, TemperatureCollector, AlarmCollector, DiskInventoryCollector, DiskLocationCollector, TasksCollector}, StateCollectors...)
 }
 
 // Capabilities : CAP_SYS_RAWIO, exigée par le pilote à chaque ioctl.
@@ -225,6 +231,7 @@ func (b bound) TaskList(container uint32) ([]aacraid.Task, error) {
 func (b bound) TaskReport(job uint32) (aacraid.Task, error) { return b.dev.TaskReport(b.ctx, job) }
 func (b bound) Revision() (aacraid.Revision, error)         { return b.dev.Revision(b.ctx) }
 func (b bound) Environment() (aacraid.Environment, error)   { return b.dev.Environment(b.ctx) }
+func (b bound) Alarm() (aacraid.AlarmState, error)          { return b.dev.Alarm(b.ctx) }
 func (b bound) CacheProtection() (aacraid.CacheProtectionReading, error) {
 	return b.dev.CacheProtection(b.ctx)
 }
@@ -298,7 +305,7 @@ func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeR
 	// carte ne reçoit rien au-delà de GET_HBA_INFO (réponse du pilote) ; ses
 	// collecteurs sont publiés non pris en charge. Ce classement ne dépend
 	// que de sysfs et de l'option.
-	all := append([]string{CapabilitiesCollector}, append(append([]string(nil), StateCollectors...), DiskInventoryCollector, DiskLocationCollector, TasksCollector, CacheProtectionCollector, TemperatureCollector)...)
+	all := append([]string{CapabilitiesCollector}, append(append([]string(nil), StateCollectors...), DiskInventoryCollector, DiskLocationCollector, TasksCollector, CacheProtectionCollector, TemperatureCollector, AlarmCollector)...)
 	if !m.Reads(c) {
 		r.Unsupported = all
 		return r
@@ -311,7 +318,9 @@ func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeR
 	fail := func(err error) module.Result {
 		r.CollectErr = fmt.Errorf("%w; no other card read attempted this cycle", err)
 		for _, col := range all {
-			r.Collected[col] = false
+			if !slices.Contains(r.Unsupported, col) {
+				r.Collected[col] = false
+			}
 		}
 		return r
 	}
@@ -328,6 +337,13 @@ func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeR
 	ainfo, err := m.adapterInfoFor(key, d)
 	if err != nil {
 		return fail(fmt.Errorf("RequestAdapterInfo: %w", err))
+	}
+	// Alarme sonore : prise en charge établie par la 703 seule, classée dès
+	// maintenant pour qu'un arrêt ultérieur de la carte ne la publie pas en
+	// échec sur une carte qui ne l'annonce pas.
+	alarm := alarmSupported(ainfo)
+	if !alarm {
+		r.Unsupported = append(r.Unsupported, AlarmCollector)
 	}
 	// Réponses gardées en mémoire : pas de date de dernier succès.
 	if key != "" {
@@ -349,10 +365,10 @@ func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeR
 	m.collectTemperature(&r, d, ainfo)
 	// Suite de l'ouverture de l'outil de référence (CDC, section 6.11) :
 	// comptage des conteneurs, puis lectures de configuration (disques, puis
-	// volumes), puis protection du cache et tâches. Un échec qui fait
-	// abandonner l'ouverture à l'outil arrête la carte pour ce cycle : les
-	// collecteurs déjà conclus gardent leur résultat, les autres sont en
-	// échec.
+	// volumes), puis alarme sonore, protection du cache et tâches. Un échec
+	// qui fait abandonner l'ouverture à l'outil arrête la carte pour ce
+	// cycle : les collecteurs déjà conclus gardent leur résultat, les autres
+	// sont en échec.
 	stop := func(err error) module.Result {
 		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("%w; no other card read attempted this cycle", err))
 		for _, col := range all {
@@ -367,6 +383,9 @@ func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeR
 		// Règle d'abandon de l'outil non établie dans ce mode : rien de plus
 		// n'est envoyé.
 		r.Unsupported = append(r.Unsupported, append(pagedCollectors(), CacheProtectionCollector)...)
+		if alarm {
+			r.Unsupported = append(r.Unsupported, AlarmCollector)
+		}
 		return r
 	case ainfo.LargeTransfers():
 		// Blocs de 2 048 octets (forme 3, non implémentée) : ni comptage ni
@@ -392,11 +411,13 @@ func (m *Module) Collect(ctx context.Context, c module.Card, refs []module.NodeR
 		if abort != nil {
 			return stop(abort)
 		}
+		collectAlarm(&r, d, alarm)
 		collectCacheProtection(&r, d)
 		collectTasks(&r, d, cs, read, sup.ContainerReads())
 		return r
 	}
-	// Sans lecture paginée : protection du cache seulement.
+	// Sans lecture paginée : alarme sonore et protection du cache seulement.
+	collectAlarm(&r, d, alarm)
 	collectCacheProtection(&r, d)
 	return r
 }
@@ -1128,6 +1149,40 @@ func collectCacheProtection(r *module.Result, d reader) {
 	default:
 		r.Collected[CacheProtectionCollector] = true
 		r.CacheProtection = &module.CacheProtection{Present: true, Type: "flash_supercap", Vendor: "zmm", State: string(st.State)}
+	}
+}
+
+// alarmSupported indique si l'alarme sonore est lue : la carte l'annonce
+// (bit 11 de SupportedOptions) sans annoncer les blocs de 2 048 octets
+// (bit 15) : l'outil enverrait alors CT_ALARM_GET_STATE, requête
+// VM_ContainerConfig, dans cette forme, non implémentée.
+func alarmSupported(info aacraid.AdapterInfo) bool { return info.Alarm() && !info.LargeTransfers() }
+
+// collectAlarm lit l'état de l'alarme sonore à la place où l'outil de
+// référence le rafraîchit (après la configuration, juste avant la
+// protection du cache), à chaque cycle : arcconf SETALARM peut le changer.
+// Rien n'est envoyé si elle n'est pas prise en charge (alarmSupported,
+// classée par Collect). Un échec, quel qu'il soit, ne met en échec que ce
+// collecteur et la collecte continue, comme l'outil à cet endroit (« Not
+// Available »).
+func collectAlarm(r *module.Result, d reader, supported bool) {
+	if !supported {
+		return
+	}
+	st, err := d.Alarm()
+	if err == nil {
+		switch st {
+		case aacraid.AlarmEnabled:
+			r.Alarm = module.AlarmEnabled
+		case aacraid.AlarmDisabled:
+			r.Alarm = module.AlarmDisabled
+		default:
+			err = fmt.Errorf("unknown state %q", st)
+		}
+	}
+	r.Collected[AlarmCollector] = err == nil
+	if err != nil {
+		r.CollectErr = errors.Join(r.CollectErr, fmt.Errorf("alarm: %w", err))
 	}
 }
 

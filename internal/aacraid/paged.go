@@ -21,7 +21,7 @@ import (
 //	                            taille demandée | 0x80000000]
 //
 // FeatureBits (706) bit 13 : mot 7 de l'ouverture (et du comptage des
-// conteneurs) | 0x80000000 (SizeHighBit).
+// conteneurs et de CT_ALARM_GET_STATE) | 0x80000000 (SizeHighBit).
 //
 // reste à zéro. Les octets que l'outil laisse au-delà des huit mots sont des
 // résidus de ses propres tampons : ils ne sont pas reproduits.
@@ -178,14 +178,15 @@ func StopAfterOpenRequest(open PagedResponse) []byte {
 }
 
 // SizeHighBit est le bit de poids fort que l'outil de référence ajoute à la
-// taille demandée (mot 7) : sur l'ouverture et sur CT_GET_CONTAINER_COUNT
-// quand FeatureBits (706) porte le bit 13 (sens non établi), et sur chaque
-// morceau du parcours 0xc8, quel que soit ce bit.
+// taille demandée (mot 7) : sur l'ouverture, sur CT_GET_CONTAINER_COUNT et
+// sur CT_ALARM_GET_STATE quand FeatureBits (706) porte le bit 13 (sens non
+// établi), et sur chaque morceau du parcours 0xc8, quel que soit ce bit.
 const SizeHighBit = 0x80000000
 
-// WithSizeHighBit rend une copie de la requête b (ouverture ou
-// CT_GET_CONTAINER_COUNT) dont le mot 7 porte SizeHighBit (forme de
-// l'outil pour une carte qui annonce le bit 13 de FeatureBits).
+// WithSizeHighBit rend une copie de la requête b (ouverture,
+// CT_GET_CONTAINER_COUNT ou CT_ALARM_GET_STATE) dont le mot 7 porte
+// SizeHighBit (forme de l'outil pour une carte qui annonce le bit 13 de
+// FeatureBits).
 func WithSizeHighBit(b []byte) []byte {
 	out := append([]byte(nil), b...)
 	le := binary.LittleEndian
@@ -266,6 +267,8 @@ func checkPagedRequest(b []byte) bool {
 	switch sub := w(1); sub {
 	case ctGetContainerCount:
 		return w(2) == 0 && w(3) == 0 && w(4) == 0 && w(5) == 0xffffffff && w(6) == 0 && (w(7) == 0 || w(7) == SizeHighBit)
+	case ctAlarmGetState:
+		return w(2) == alarmParam && w(3) == 0 && w(4) == 0 && w(5) == 0xffffffff && w(6) == 0 && (w(7) == alarmSize || w(7) == alarmSize|SizeHighBit)
 	case ctContinueData, ctStopData:
 		if sub == ctStopData && (PagedResponse{Mark: w(2), Total: w(3), Code: w(4), Xfer: w(5), Chunk: w(6), Size: w(7)}).StopAfterOpen() {
 			return true

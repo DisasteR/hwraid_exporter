@@ -46,11 +46,19 @@ type cardFirmware struct {
 	// SupportedOptions (703), 703 en échec, contenus de transfert remplacés
 	// (clé « sous-commande-paramètre »).
 	extraFeatureBits, extraOptions uint32
+	clearOptions                   uint32 // bits retirés de SupportedOptions (703)
 	clearFeatureBits               uint32
 	fail703                        bool
 	payloads                       map[string][]byte
 	// fail706 : la 706 échoue (EIO).
 	fail706 bool
+	// Alarme (CT_ALARM_GET_STATE) : alarmByte, premier octet de
+	// _ALARM_INFO (0 : désactivée, réponse capturée) ; alarmStatus, statut
+	// rendu ; alarmEIO, ioctl en échec.
+	alarmByte   byte
+	alarmStatus uint32
+	alarmEIO    bool
+	alarmWord2  uint32 // mot 2 de la réponse (0 : 1, valeur capturée)
 	// Ouverture : paused, carte en pause (704) ; revBuild, build annoncé par
 	// la 701 (0 : 19204, carte de référence) ; noSupplement, 703 sans le
 	// bit 16 (706 non annoncée).
@@ -168,7 +176,7 @@ func (f *cardFirmware) ioctl(req uint32, buf []byte) error {
 			return unix.EIO
 		}
 		le.PutUint16(buf[8:], aacraid.FIBSize)
-		opts := 0x141f1d7c | f.extraOptions // SupportedOptions capturé : capteur, bit 16, sans bit 15
+		opts := 0x141f1d7c&^f.clearOptions | f.extraOptions // SupportedOptions capturé : capteur, bit 16, alarme (bit 11), sans bit 15
 		if f.noSupplement {
 			opts = 0x141e1d7c | f.extraOptions // valeur capturée sans le bit 16 (0x10000), écrite en clair
 		}
@@ -205,6 +213,21 @@ func (f *cardFirmware) ioctl(req uint32, buf []byte) error {
 				for i, w := range []uint32{0, 4, n, 0x40, 0x201, 0xffffffff} {
 					le.PutUint32(d[4*i:], w)
 				}
+				return nil
+			}
+			if le.Uint32(d[4:]) == 190 { // CT_ALARM_GET_STATE, réponse capturée
+				if f.alarmEIO {
+					return unix.EIO
+				}
+				le.PutUint16(buf[8:], aacraid.ChunkRspSize)
+				w2 := f.alarmWord2
+				if w2 == 0 {
+					w2 = 1
+				}
+				for i, w := range []uint32{f.alarmStatus, 190, w2, 0, 0, 0xffffffff, 0, 8} {
+					le.PutUint32(d[4*i:], w)
+				}
+				d[0x20] = f.alarmByte
 				return nil
 			}
 			f.paged(buf)
@@ -281,7 +304,8 @@ func containerCountRequest() string {
 // lue après la 703 et la 803 de chaque cycle, et non plus juste après la
 // 706 ; la requête CT_GET_CONTAINER_COUNT avant la première ouverture de la
 // 229 du premier cycle (réponse gardée au second) ; à la fin de chaque
-// cycle, la liste des tâches (101) de chaque conteneur lu.
+// cycle, la liste des tâches (101) de chaque conteneur lu ; dans chaque
+// cycle, CT_ALARM_GET_STATE (190) juste avant la protection du cache.
 func expectedSequence(t *testing.T, golden []byte) []byte {
 	t.Helper()
 	lines := appendTaskLists(t, openAsTool(t, moveCacheAfter803(t, strings.SplitAfter(string(golden), "\n"))))
@@ -290,7 +314,7 @@ func expectedSequence(t *testing.T, golden []byte) []byte {
 	for i, l := range lines {
 		if strings.HasPrefix(l, open229) {
 			out := append(append(append([]string(nil), lines[:i]...), containerCountRequest()+"\n"), lines[i:]...)
-			return []byte(strings.Join(reorderAsTool(t, out), ""))
+			return []byte(strings.Join(insertAlarm(t, reorderAsTool(t, out)), ""))
 		}
 	}
 	t.Fatal("ouverture de la 229 absente de la séquence de référence")
@@ -427,6 +451,39 @@ func reorderAsTool(t *testing.T, lines []string) []string {
 	}
 	if len(out) != len(lines) || k != len(ids) {
 		t.Fatalf("réordonnancement : %d lignes pour %d, %d transferts pour %d", len(out), len(lines), k, len(ids))
+	}
+	return out
+}
+
+// insertAlarm place, dans chaque cycle, la requête CT_ALARM_GET_STATE de
+// l'outil de référence (capture fibcap-*, séquences 25 et 481 : en-tête des
+// requêtes paginées, mots [2, 190, 1, 0, 0, 0xffffffff, 0, 8]) juste avant
+// la première lecture de la protection du cache, après les listes des
+// membres : place du rafraîchissement de l'alarme chez l'outil.
+func insertAlarm(t *testing.T, lines []string) []string {
+	t.Helper()
+	alarm := capturedRequest("01001000f4010100e0010002", "02000000be000000010000000000000000000000ffffffff0000000008000000")
+	cache := fmt.Sprintf("%#x 01001000f40101002c000002", aacraid.IoctlSendFIB)
+	var out []string
+	inserted, cycles := 0, 0
+	pending := false
+	for _, l := range lines {
+		if strings.HasPrefix(l, "# cycle") {
+			if pending {
+				t.Fatal("cycle sans protection du cache")
+			}
+			cycles++
+			pending = true
+		}
+		if pending && strings.HasPrefix(l, cache) {
+			out = append(out, alarm)
+			inserted++
+			pending = false
+		}
+		out = append(out, l)
+	}
+	if cycles != 2 || inserted != 2 {
+		t.Fatalf("alarme insérée %d fois pour %d cycles", inserted, cycles)
 	}
 	return out
 }
@@ -573,6 +630,19 @@ func TestReferenceCardSequence(t *testing.T) {
 		fmt.Fprintf(&got, "# cycle %d\n", cycle)
 		for _, l := range fw.log {
 			got.WriteString(l + "\n")
+		}
+		// Cycle ordinaire (réponses gardées) : 70 commandes firmware
+		// (docs/deploiement.md), GET_HBA_INFO (réponse du pilote) exclue.
+		if cycle == 2 {
+			n := 0
+			for _, l := range fw.log {
+				if !strings.HasPrefix(l, fmt.Sprintf("%#x ", aacraid.IoctlGetHBAInfo)) {
+					n++
+				}
+			}
+			if n != 70 {
+				t.Fatalf("cycle ordinaire : %d commandes firmware, 70 attendues", n)
+			}
 		}
 	}
 	golden, err := os.ReadFile(sequenceGolden)
@@ -726,7 +796,9 @@ func TestOversizedContainerListStopsAfterFirstChunk(t *testing.T) {
 	// Ouverture, morceau 0 et clôture après le morceau 0 pour la 229 ; la
 	// chaîne des volumes s'arrête là (les disques, lus avant elle comme chez
 	// l'outil, ont déjà été lus) : aucune lecture de configuration ensuite.
-	if len(after229) < 3 || after229[1] != [2]uint32{83, 0} || after229[2] != [2]uint32{84, 0} || len(subs) != slices.Index(subs, [2]uint32{229, 0})+3 {
+	// Refus de l'exporter, pas échec d'échange : la carte n'est pas arrêtée,
+	// l'alarme (190, hors configuration) part ensuite, après la clôture.
+	if i := slices.Index(subs, [2]uint32{229, 0}); len(after229) < 3 || after229[1] != [2]uint32{83, 0} || after229[2] != [2]uint32{84, 0} || len(subs) != i+4 || subs[i+3] != [2]uint32{190, 0} {
 		t.Fatalf("requêtes après l'ouverture de la 229 : %v", subs)
 	}
 	// Aucune autre lecture de la carte de référence ne dépasse un morceau
@@ -825,7 +897,7 @@ func toolSequence(t *testing.T, subs [][2]uint32, totals []uint32) int {
 	t.Helper()
 	opens := 0
 	for i := 0; i < len(subs); {
-		if subs[i][0] == 4 { // CT_GET_CONTAINER_COUNT, sans transfert
+		if subs[i][0] == 4 || subs[i][0] == 190 { // CT_GET_CONTAINER_COUNT, CT_ALARM_GET_STATE : sans transfert
 			i++
 			continue
 		}
@@ -1115,9 +1187,9 @@ func TestOpeningIoctls(t *testing.T) {
 	if slices.Contains(got, fmt.Sprintf("%#x/%d", aacraid.IoctlSendFIB, aacraid.CmdRequestSupplementAdapterInfo)) {
 		t.Errorf("sans bit 16 : 706 envoyée : %v", got)
 	}
-	// Seul le comptage part (ouverture de l'outil, sans condition de
-	// capacité) : ni transfert ni 708.
-	if subs, cm := containerConfigSent(t, fw.log); !slices.Equal(subs, [][2]uint32{{4, 0}}) || cm || cacheProtectionSent(t, fw.log) == 0 {
+	// Seuls le comptage (ouverture de l'outil, sans condition de capacité)
+	// et l'alarme (bit 11 de la 703 seulement) partent : ni transfert ni 708.
+	if subs, cm := containerConfigSent(t, fw.log); !slices.Equal(subs, [][2]uint32{{4, 0}, {190, 0}}) || cm || cacheProtectionSent(t, fw.log) == 0 {
 		t.Errorf("sans bit 16 : VM_ContainerConfig %v, 708 %v, cache %d", subs, cm, cacheProtectionSent(t, fw.log))
 	}
 }
@@ -1211,7 +1283,7 @@ func TestHighBitIoctls(t *testing.T) {
 		if !r.Collected["volumes"] || !r.Collected["disks"] {
 			t.Fatalf("bit 13 %v : collecteurs %v", high, r.Collected)
 		}
-		opens := 0
+		opens, alarms := 0, 0
 		for _, l := range fw.log {
 			req, h, _ := strings.Cut(l, " ")
 			b, _ := hex.DecodeString(h)
@@ -1232,10 +1304,76 @@ func TestHighBitIoctls(t *testing.T) {
 				if sub == 4 && w7&^aacraid.SizeHighBit != 0 {
 					t.Errorf("comptage : taille %#x", w7)
 				}
+				if sub == 190 {
+					alarms++
+					if w7&^aacraid.SizeHighBit != 8 {
+						t.Errorf("alarme : taille %#x", w7)
+					}
+				}
 			}
 		}
-		if opens < 10 {
-			t.Fatalf("bit 13 %v : %d ouvertures vues", high, opens)
+		if opens < 10 || alarms != 1 || r.Alarm != "disabled" {
+			t.Fatalf("bit 13 %v : %d ouvertures vues, %d alarmes, état %q", high, opens, alarms, r.Alarm)
 		}
+	}
+}
+
+// Alarme sonore sur les ioctl émis par le module et le transport réels :
+// une requête 190 par cycle, identique à la capture ; état décodé de la
+// réponse (octet 0x20, bit 0x02). Statut non nul ou ioctl en échec : seul le
+// collecteur alarm est en échec, et les requêtes émises sont exactement
+// celles du cycle nominal (la carte n'est pas arrêtée : protection du cache
+// et tâches suivent). Sans le bit 11 de SupportedOptions : aucune 190.
+func TestAlarmIoctls(t *testing.T) {
+	list, err := aacraid.NewAllowlist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	alarm := capturedRequest("01001000f4010100e0010002", "02000000be000000010000000000000000000000ffffffff0000000008000000")
+	run := func(fw *cardFirmware) (module.Result, []string) {
+		fw.t = t
+		aacio.ReplaceIoctl(t, fw.ioctl)
+		c, refs := e2eCard()
+		c.Hosts[0].SerialNumber, c.Hosts[0].Model = "TEST0001", "ASR6805"
+		return aacmod.New(list).Collect(context.Background(), c, refs), fw.log
+	}
+	count := func(log []string) int {
+		n := 0
+		for _, l := range log {
+			if l+"\n" == alarm {
+				n++
+			}
+		}
+		return n
+	}
+	r, nominal := run(&cardFirmware{})
+	if count(nominal) != 1 || r.Alarm != "disabled" || !r.Collected["alarm"] {
+		t.Fatalf("nominal : %d requêtes 190, état %q, %v", count(nominal), r.Alarm, r.Collected)
+	}
+	if r, _ := run(&cardFirmware{alarmByte: 0x02}); r.Alarm != "enabled" || !r.Collected["alarm"] {
+		t.Fatalf("bit 0x02 : état %q, %v", r.Alarm, r.Collected)
+	}
+	for name, fw := range map[string]*cardFirmware{
+		"statut non nul": {alarmStatus: 1},
+		"ioctl en échec": {alarmEIO: true},
+		"mot 2 à 2":      {alarmWord2: 2, alarmByte: 0x02},
+	} {
+		r, log := run(fw)
+		ok, tried := r.Collected["alarm"]
+		if !tried || ok || r.Alarm != "" || r.CollectErr == nil {
+			t.Errorf("%s : %v, état %q, %v", name, r.Collected, r.Alarm, r.CollectErr)
+		}
+		for col, ok := range r.Collected {
+			if !ok && col != "alarm" {
+				t.Errorf("%s : %s en échec", name, col)
+			}
+		}
+		if !slices.Equal(log, nominal) {
+			t.Errorf("%s : requêtes différentes du cycle nominal (%d contre %d)", name, len(log), len(nominal))
+		}
+	}
+	r, log := run(&cardFirmware{clearOptions: aacraid.SupportedAlarm})
+	if count(log) != 0 || !slices.Contains(r.Unsupported, "alarm") || cacheProtectionSent(t, log) == 0 || len(log) != len(nominal)-1 {
+		t.Fatalf("sans bit 11 : %d requêtes 190, non pris en charge %v, %d requêtes (nominal %d)", count(log), r.Unsupported, len(log), len(nominal))
 	}
 }

@@ -61,7 +61,7 @@ Les variantes propres à un constructeur se rattachent au terme commun le plus p
 
 L'intervalle permet d'écrire des règles qui s'adaptent au réglage, par exemple « aucun succès depuis plus de trois cycles » : `time() - hwraid_collection_last_success_timestamp_seconds > on (job, instance, controller) group_left 3 * hwraid_collection_interval_seconds`. Joindre toujours aussi sur `job` et `instance` : deux hôtes peuvent publier le même identifiant `pci:`.
 
-Collecteurs du module aacraid : `capabilities` (capacités de la carte, réponse 706 ; non pris en charge si la carte ne l'annonce pas), `volumes`, `disks`, `disk_inventory`, `disk_location`, `tasks` (avancement des tâches de fond ; non pris en charge sans lecture des conteneurs, en échec si la configuration des volumes n'a pas été entièrement lue), `cache_protection`, `temperature` (non pris en charge si la carte n'annonce pas de capteur).
+Collecteurs du module aacraid : `capabilities` (capacités de la carte, réponse 706 ; non pris en charge si la carte ne l'annonce pas), `volumes`, `disks`, `disk_inventory`, `disk_location`, `tasks` (avancement des tâches de fond ; non pris en charge sans lecture des conteneurs, en échec si la configuration des volumes n'a pas été entièrement lue), `cache_protection`, `temperature` (non pris en charge si la carte n'annonce pas de capteur), `alarm` (alarme sonore ; non pris en charge si la carte n'annonce pas d'alarme, si elle annonce les transferts en blocs de 2 048 octets, non implémentés, ou avec le bit 28 de `SupportedOptions2`, comme les lectures paginées).
 
 ### Volumes
 
@@ -110,6 +110,7 @@ L'état de tous les disques présents, membres ou non, s'appuie sur leur informa
 |---|---|---|
 | `hwraid_controller_temperature_celsius` | `controller` | température du contrôleur, en °C ; absente si la lecture n'a pas abouti dans le cycle |
 | `hwraid_controller_temperature_threshold_celsius` | `controller`, `level` | seuils annoncés par la carte, en °C : `high`, à partir duquel l'outil du constructeur déclare un état anormal (100 sur la 6805), et `low` (95), dont l'outil ne se sert pas pour l'état affiché ; absente comme la température |
+| `hwraid_controller_alarm_state` | `controller`, `state` | 1 ; `state` : `enabled` si l'alarme sonore de la carte est activée, `disabled` si elle est désactivée (réglage de l'outil du constructeur, « Controller Alarm » ; ce n'est pas l'indication d'une alarme qui sonne). Absente si la lecture n'a pas abouti dans le cycle. Lue à chaque cycle |
 | `hwraid_cache_protection_present` | `controller`, `type`, `vendor_type` | 1 si un module est installé, 0 si la carte établit qu'elle n'en a pas ; absente si la présence n'est pas établie (aacraid : batterie classique sans indicateur de présence ; un mot ZMM sans le bit d'installation est un module absent, comme pour l'outil) |
 | `hwraid_cache_protection_state` | `controller`, `state` | 1, si un module est installé, ou `unknown` si sa présence n'est pas établie |
 
