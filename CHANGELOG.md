@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Documentation: rule reload after an upgrade (`docs/deploiement.md`, Prometheus); conditions of the connector map read and of the location's return; `oneshot` exit code 0 does not prove a card was read; the close sent after a non-nominal opening is an attempt, under conditions, its answer not observed; what stops the card before the cache protection read, here and in the vendor tool (`docs/aacraid-interface.md`); progress published only from a usable report of the first task listed by a container (README).
+
 ## v0.4.0 — 2026-11-27
 
 Upgrade notes (details in the entries below and in `docs/`):

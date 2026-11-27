@@ -6,7 +6,7 @@ Prometheus exporter for hardware RAID controllers. It talks directly to the Linu
 
 ## Why another exporter
 
-The goal is that an administrator can answer four questions from Prometheus: which array has lost its redundancy, which member is involved, is the rebuild progressing, and is the controller cache protected by a working module? v0.4.0 reports lost redundancy and the cache protection state. It names the member involved when the controller reports its disk failed or missing, and publishes the rebuilding state and its progress (progress reports not yet observed on hardware).
+The goal is that an administrator can answer four questions from Prometheus: which array has lost its redundancy, which member is involved, is the rebuild progressing, and is the controller cache protected by a working module? v0.4.0 reports lost redundancy and the cache protection state. It names the member involved when the controller reports its disk failed or missing, and publishes the rebuilding state, from the volume configuration, and the progress of background tasks, rebuild included, when their reports are read (only the first task listed by each container; one failed task read removes every progress of the card for that cycle; progress reports not yet observed on hardware).
 
 ### Existing approaches
 
