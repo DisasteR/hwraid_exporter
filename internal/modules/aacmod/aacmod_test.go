@@ -817,7 +817,7 @@ func TestCollectVolumesReference(t *testing.T) {
 		t.Fatalf("inventaire : %+v", r)
 	}
 	want := module.DiskInfo{ID: "d7", Vendor: "ATA", Model: "ST8000VN0022-2EL", Firmware: "SC61", Serial: "TESTSN07",
-		WWN: "0x5000c50000000007", CapacityBytes: 15628053168 * 512}
+		WWN: "0x5000c50000000007", CapacityBytes: 15628053168 * 512, LinkSpeedBps: 6_000_000_000}
 	if got := r.DiskInventory[7]; got != want {
 		t.Fatalf("d7 :\n got %+v\nwant %+v", got, want)
 	}

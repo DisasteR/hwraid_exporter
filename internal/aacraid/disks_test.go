@@ -27,11 +27,17 @@ func TestDecodeDiskInfoReference(t *testing.T) {
 			WWN: fmt.Sprintf("0x5000c5000000000%d", n), Blocks: 15628053168, BlockSize: 512,
 			// Phy relevé par l'outil témoin (Attached PHY Identifier).
 			Phy: uint8(4*(n/4) + 3 - n%4),
+			// Débit du lien : 600, publié tel quel par l'outil témoin
+			// (fsaNegotiatedSpeedInMbps), affiché « SATA 6.0 Gb/s ».
+			LinkSpeedCode: 600,
 			// Octets d'état identiques sur les huit disques, « Online » pour
 			// l'outil témoin (docs/aacraid-interface.md, section 6 bis).
 			Flags0: 0x03, Status68: 0x70, Status69: 0x10, HasStatus332: true}
 		if i != exp {
 			t.Fatalf("disque %d :\n got %+v\nwant %+v", n, i, exp)
+		}
+		if i.LinkSpeedBps() != 6_000_000_000 {
+			t.Fatalf("disque %d : débit %d b/s", n, i.LinkSpeedBps())
 		}
 		// 7 630 885 Mo affichés par l'outil témoin.
 		if got := i.CapacityBytes() >> 20; got != 7630885 {
@@ -102,5 +108,33 @@ func TestDiskInfoFailed(t *testing.T) {
 	d[68] = 0x71
 	if i, err := DecodeDiskInfo(d[:296]); err != nil || !i.Failed() {
 		t.Errorf("réponse de 296 octets : %+v %v", i, err)
+	}
+}
+
+// Débit du lien : seuls les codes nominaux établis (150, 300, 600, 1200)
+// donnent un débit ; un code nul, intermédiaire ou au-delà n'en donne aucun
+// (l'outil le classerait dans une tranche sans qu'il désigne un débit
+// établi).
+func TestDiskLinkSpeed(t *testing.T) {
+	for code, want := range map[uint32]uint64{
+		150: 1_500_000_000, 300: 3_000_000_000, 600: 6_000_000_000, 1200: 12_000_000_000,
+		0: 0, 1: 0, 299: 0, 301: 0, 599: 0, 601: 0, 2400: 0, 0xffffffff: 0,
+	} {
+		if got := (DiskInfo{LinkSpeedCode: code}).LinkSpeedBps(); got != want {
+			t.Fatalf("code %d : %d b/s, attendu %d", code, got, want)
+		}
+	}
+	// Octets 32-35, little-endian : un code construit à cet endroit est lu.
+	b := fixture(t, "248-0")
+	binary.LittleEndian.PutUint32(b[32:], 300)
+	if i, err := DecodeDiskInfo(b); err != nil || i.LinkSpeedBps() != 3_000_000_000 {
+		t.Fatalf("débit construit : %+v, %v", i, err)
+	}
+	// Mot de 32 bits entier : 300 dans les 16 bits bas et des bits hauts non
+	// nuls ne sont pas un code nominal (une lecture tronquée à 16 bits le
+	// prendrait pour 3 Gb/s).
+	binary.LittleEndian.PutUint32(b[32:], 0x0001_0000|300)
+	if i, err := DecodeDiskInfo(b); err != nil || i.LinkSpeedBps() != 0 {
+		t.Fatalf("bits hauts ignorés : %+v, %v", i, err)
 	}
 }

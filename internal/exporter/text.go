@@ -221,6 +221,9 @@ func textDisks(b *strings.Builder, c Controller) {
 			if d.CapacityBytes > 0 {
 				line = append(line, bytesText(d.CapacityBytes))
 			}
+			if d.LinkSpeedBps > 0 {
+				line = append(line, fmt.Sprintf("link %g Gb/s", float64(d.LinkSpeedBps)/1e9))
+			}
 			if d.Serial != "" {
 				line = append(line, "serial "+d.Serial)
 			}

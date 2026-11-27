@@ -40,7 +40,7 @@ The cost of this approach:
 |---|---|---|---|
 | Controller | identity (model, firmware, serial, PCI address), driver and module, temperature and its thresholds, audible alarm setting | identity, temperature and thresholds; alarm disabled (vendor tool captures) | alarm enabled |
 | Volumes | RAID level, state, capacity, members, write-cache policy and actual write-cache state | optimal state; RAID 1 mirrors and an assembly of mirrors; with a failed ZMM, write cache on under `wb`, off under `wbb` and `wt` | degraded, rebuilding, failed and reduced-redundancy states; RAID 0, 1E, 5, 5EE, 6, 10, 50, 60, simple volumes, spanned volumes made of disks |
-| Disks | state, inventory (vendor, model, firmware, serial, WWN), capacity, location on the controller, Linux device | online state, inventory, location, Linux device | rebuilding, failed, ready, spare, copyback, passthrough and unsupported states |
+| Disks | state, inventory (vendor, model, firmware, serial, WWN), capacity, link speed, location on the controller, Linux device | online state, inventory, link speed (6 Gb/s), location, Linux device | rebuilding, failed, ready, spare, copyback, passthrough and unsupported states; link speeds other than 6 Gb/s |
 | Background tasks | progress of rebuild, verification and other tasks per volume | no task running | every task type and progress (reports never captured yet: the next rebuild on the reference host is the hardware check) |
 | Cache protection | presence, type and state of the module (ZMM, or classic battery) | failed and optimal ZMM states | charging ZMM state; every battery state, including `maintenance` |
 | Collection | success and last success time per collector, collection interval | successful collection | — |

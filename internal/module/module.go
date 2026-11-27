@@ -176,6 +176,7 @@ type DiskInfo struct {
 	ID                                   string // « d<N> », comme Disk.ID
 	Vendor, Model, Firmware, Serial, WWN string // vides si non publiés par la carte
 	CapacityBytes                        uint64 // 0 si inconnue
+	LinkSpeedBps                         uint64 // débit du lien déclaré par la carte, 0 si inconnu
 }
 
 // DiskLocation est l'emplacement d'un disque relié directement à la carte,

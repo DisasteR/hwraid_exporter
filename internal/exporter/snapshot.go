@@ -370,6 +370,14 @@ func Render(s Snapshot) string {
 			}
 		}
 	}
+	gauge("hwraid_disk_link_speed_bps", "Disk link speed declared by the controller, in bits per second (nominal rates only; absent when unknown).")
+	for _, c := range s.Controllers {
+		for _, d := range c.DiskInventory {
+			if d.LinkSpeedBps > 0 {
+				fmt.Fprintf(&b, "hwraid_disk_link_speed_bps{%s} %d\n", labels("controller", c.Label, "disk", d.ID), d.LinkSpeedBps)
+			}
+		}
+	}
 	gauge("hwraid_task_progress_ratio", "Progress of a background task of a volume, between 0 and 1 (absent when no task reports progress).")
 	for _, c := range s.Controllers {
 		for _, t := range c.Tasks {

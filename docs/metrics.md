@@ -86,6 +86,7 @@ Une grappe à plusieurs niveaux (par exemple quatre miroirs assemblés) publie u
 | `hwraid_disk_state` | `controller`, `disk`, `state`, `vendor_state` | 1, pour chaque disque présent et pour chaque disque désigné par un volume mais absent ; un périphérique qui n'est pas un disque n'a un état (`failed`) que s'il est désigné par un volume ou porte le bit de secours ; `vendor_state` : libellé de l'outil constructeur pour l'état publié (`Online`, `Hot Spare`, `Raw (Pass Through)`…), vide quand l'information du disque n'a pas pu être lue ; quand l'exporter s'écarte de l'outil par prudence (disque en panne et non pris en charge), c'est le libellé de l'état publié (`Failed`) |
 | `hwraid_disk_info` | `controller`, `disk`, `vendor`, `model`, `firmware`, `serial`, `wwn` | 1, pour chaque disque présent sur la carte, membre ou non (un périphérique qui n'est pas un disque, par exemple le fond de panier d'une baie, n'est pas publié) ; `wwn` au format `0x` suivi de 16 chiffres hexadécimaux, vide si la carte n'en donne pas |
 | `hwraid_disk_capacity_bytes` | `controller`, `disk` | capacité brute en octets, absente si la taille de bloc n'est pas reconnue |
+| `hwraid_disk_link_speed_bps` | `controller`, `disk` | débit du lien du disque déclaré par la carte, en bits par seconde (1,5, 3, 6 ou 12 Gb/s) ; absent si le code n'est pas un débit nominal établi. Que la valeur suive une renégociation du lien n'est pas encore observé |
 | `hwraid_disk_os_device` | `controller`, `disk`, `device`, `scsi_address` | 1, pour chaque disque que le pilote présente à Linux : nœud SCSI générique (`sg8`) et adresse SCSI Linux (`0:1:7:0`) |
 | `hwraid_disk_location` | `controller`, `disk`, `connector`, `connector_name`, `device`, `phy` | 1, pour chaque disque relié directement à la carte : numéro et nom du connecteur, position dans le connecteur, phy de la carte |
 
@@ -138,6 +139,7 @@ hwraid_volume_write_cache_enabled{controller="serial:XXXX",volume="1d000000"} 0
 hwraid_disk_state{controller="serial:XXXX",disk="d7",state="online",vendor_state="Online"} 1
 hwraid_disk_info{controller="serial:XXXX",disk="d7",vendor="ATA",model="ST8000VN0022-2EL",firmware="SC61",serial="XXXXXXXX",wwn="0x5000c500xxxxxxxx"} 1
 hwraid_disk_capacity_bytes{controller="serial:XXXX",disk="d7"} 8001563222016
+hwraid_disk_link_speed_bps{controller="serial:XXXX",disk="d7"} 6000000000
 hwraid_disk_location{controller="serial:XXXX",disk="d7",connector="1",connector_name="CN1",device="3",phy="4"} 1
 hwraid_cache_protection_present{controller="serial:XXXX",type="flash_supercap",vendor_type="zmm"} 1
 hwraid_cache_protection_state{controller="serial:XXXX",state="failed"} 1

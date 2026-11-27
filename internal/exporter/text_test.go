@@ -31,7 +31,7 @@ func TestRenderTextReferenceTopology(t *testing.T) {
 			{ID: "1d000002", Name: "Array0", RaidLevel: "raid1", State: "optimal", Parent: "1d000000", Members: []string{"d2", "d9"}},
 		},
 		Disks: []module.Disk{{ID: "d0", State: "online", VendorState: "Online"}, {ID: "d1", State: "rebuilding", VendorState: "Rebuilding"}, {ID: "d2", State: "online", VendorState: "online"}},
-		DiskInventory: []module.DiskInfo{{ID: "d0", Vendor: "HGST", Model: "HUS724040ALS640", Serial: "EXAMPLEDISK0", CapacityBytes: 4_000_787_030_016},
+		DiskInventory: []module.DiskInfo{{ID: "d0", Vendor: "HGST", Model: "HUS724040ALS640", Serial: "EXAMPLEDISK0", CapacityBytes: 4_000_787_030_016, LinkSpeedBps: 6_000_000_000},
 			{ID: "d3", Model: "SPARE"}},
 		DiskLocations: []module.DiskLocation{{ID: "d0", Connector: "0", ConnectorName: "CN0", Device: "0"}, {ID: "d1", Connector: "0", Device: "1"}},
 		DiskOSDevices: []module.DiskOSDevice{{ID: "d0", Device: "sg1", Address: "0:1:0:0"}},
@@ -57,7 +57,7 @@ func TestRenderTextReferenceTopology(t *testing.T) {
         d2  online
         d9  no state read
   Disks
-    d0  online (Online)  HGST HUS724040ALS640  4.0 TB  serial EXAMPLEDISK0  connector CN0 device 0  sg1 (0:1:0:0)
+    d0  online (Online)  HGST HUS724040ALS640  4.0 TB  link 6 Gb/s  serial EXAMPLEDISK0  connector CN0 device 0  sg1 (0:1:0:0)
     d1  rebuilding (Rebuilding)  connector 0 device 1
     d2  online
     d3  no state read  SPARE

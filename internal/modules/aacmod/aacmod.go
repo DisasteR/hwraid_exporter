@@ -707,7 +707,7 @@ func (m *Module) collectConfig(r *module.Result, d reader, key string, h sysfs.S
 	sort.Slice(hard, func(a, b int) bool { return hard[a].Number < hard[b].Number })
 	for _, i := range hard {
 		r.DiskInventory = append(r.DiskInventory, module.DiskInfo{ID: diskID(i.Number), Vendor: i.Vendor, Model: i.Model,
-			Firmware: i.Firmware, Serial: i.Serial, WWN: i.WWN, CapacityBytes: i.CapacityBytes()})
+			Firmware: i.Firmware, Serial: i.Serial, WWN: i.WWN, CapacityBytes: i.CapacityBytes(), LinkSpeedBps: i.LinkSpeedBps()})
 	}
 	r.DiskOSDevices = osDevices(h, hard)
 	if !connectors {

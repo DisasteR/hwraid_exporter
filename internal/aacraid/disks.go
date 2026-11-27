@@ -17,6 +17,7 @@ import (
 // vérifié sur les huit disques de l'hôte de référence contre l'outil témoin.
 const (
 	diskNumber    = 8
+	diskLinkSpeed = 32  // code de débit du lien (ARCCONF fsaNegotiatedSpeedInMbps)
 	diskBlocks    = 40  // capacité brute, en blocs
 	diskBlockSize = 64  // taille de bloc en octets
 	diskVendor    = 88  // 8 octets
@@ -53,6 +54,10 @@ type DiskInfo struct {
 	Blocks                          uint64
 	BlockSize                       uint32
 	Phy                             uint8 // phy de la carte (contrôle de la carte des connecteurs)
+	// LinkSpeedCode : code de débit du lien, uint32 aux octets 32-35, que
+	// l'outil de référence publie tel quel (fsaNegotiatedSpeedInMbps) et
+	// classe en 1,5 / 3 / 6 / 12 Gb/s (docs/aacraid-interface.md, section 5).
+	LinkSpeedCode uint32
 	// Octets bruts de la section 6 bis de docs/aacraid-interface.md ;
 	// Status332 seulement si la réponse le contient (HasStatus332).
 	Flags0, Status68, Status69, Status70, Qualifier, Status81 uint8
@@ -75,6 +80,8 @@ func DecodeDiskInfo(d []byte) (DiskInfo, error) {
 		Blocks:    le.Uint64(d[diskBlocks:]),
 		BlockSize: le.Uint32(d[diskBlockSize:]),
 		Phy:       d[diskPhy],
+
+		LinkSpeedCode: le.Uint32(d[diskLinkSpeed:]),
 
 		Flags0:    d[diskFlags0],
 		Status68:  d[diskStatus68],
@@ -102,6 +109,20 @@ func (i DiskInfo) Failed() bool { return i.Status68&0x1 != 0 }
 // (docs/aacraid-interface.md, section 6 bis) ; autrement, autre
 // périphérique, sans état de disque.
 func (i DiskInfo) HardDrive() bool { return i.Qualifier&0x1f == 0 && i.Status81&0x80 == 0 }
+
+// LinkSpeedBps renvoie le débit du lien en bits par seconde pour les seuls
+// codes nominaux établis (150, 300, 600 et 1200 : 1,5, 3, 6 et 12 Gb/s,
+// que l'outil de référence affiche « Transfer Speed ») ; 0 pour un code nul
+// ou autre, que l'outil classerait dans une tranche sans qu'il désigne un
+// débit établi. Le caractère négocié (et non nominal) de la valeur n'est pas
+// observé.
+func (i DiskInfo) LinkSpeedBps() uint64 {
+	switch i.LinkSpeedCode {
+	case 150, 300, 600, 1200:
+		return uint64(i.LinkSpeedCode) * 10_000_000
+	}
+	return 0
+}
 
 // CapacityBytes renvoie la capacité brute en octets, 0 si la taille de bloc
 // n'est pas une valeur connue (512 ou 4 096 octets).
