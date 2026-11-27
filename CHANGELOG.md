@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.6.0 — 2026-11-27
+
+Upgrade notes: one new series, `hwraid_disk_link_speed_bps{controller, disk}` (bits per second, published only for a recognized nominal code; 6 Gb/s on the reference card). No new command, no new collector, no rule change.
 
 - aacraid: disk link speed, `hwraid_disk_link_speed_bps{controller, disk}`, in bits per second, from the disk information (248) already read, bytes 32-35, which the vendor tool publishes as `fsaNegotiatedSpeedInMbps` and shows as "Transfer Speed" (`docs/aacraid-interface.md`, section 5). Only the nominal codes 150, 300, 600 and 1200 (1.5, 3, 6, 12 Gb/s) are published; no new command. Whether the value follows a link renegotiation is not yet observed (all links at 6 Gb/s on the reference host). Text output of `oneshot`: `link 6 Gb/s` on the line of each disk whose code is recognized.
 - Documentation: content of the vendor tool's opening commands the exporter does not send (specification, section 7.7, point 20).
