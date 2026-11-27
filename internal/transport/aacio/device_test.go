@@ -955,7 +955,8 @@ func TestReadPagedOutsideValidatedPair(t *testing.T) {
 			}
 			defer d.Close()
 			data, err := d.ReadPaged(ctx, aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return 100 })
-			if !errors.Is(err, errGraceExceeded) || data != nil {
+			// Transfert ouvert, commande suivante refusée : fin non établie.
+			if !errors.Is(err, errGraceExceeded) || !errors.Is(err, aacraid.ErrTransferUnsettled) || data != nil {
 				t.Fatalf("err=%v, données=%v", err, data != nil)
 			}
 			if got := f.subs(); !slices.Equal(got, tc.want) {
@@ -1551,9 +1552,13 @@ func TestReadPagedStopAfterOpenWindowAndAnswers(t *testing.T) {
 			_, err := read(t, f, validated, ctx)
 			want := []uint32{234}
 			if validated {
+				// Clôture engagée et confirmée : fin établie.
 				want = []uint32{234, 84}
-			} else if !errors.Is(err, errGraceExceeded) {
-				t.Fatalf("err=%v, attendu errGraceExceeded", err)
+				if errors.Is(err, aacraid.ErrTransferUnsettled) {
+					t.Fatalf("err=%v : fin établie marquée non établie", err)
+				}
+			} else if !errors.Is(err, errGraceExceeded) || !errors.Is(err, aacraid.ErrTransferUnsettled) {
+				t.Fatalf("err=%v, attendu errGraceExceeded et fin non établie", err)
 			}
 			if got := f.subs(); !slices.Equal(got, want) {
 				t.Fatalf("séquence %v, attendu %v", got, want)
@@ -1562,16 +1567,16 @@ func TestReadPagedStopAfterOpenWindowAndAnswers(t *testing.T) {
 	}
 	t.Run("clôture d'un autre transfert", func(t *testing.T) {
 		f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: -1, openCode: 0xdb, stopXfer: 10}
-		if _, err := read(t, f, false, context.Background()); !strings.Contains(err.Error(), "stop not confirmed") {
+		if _, err := read(t, f, false, context.Background()); !strings.Contains(err.Error(), "stop not confirmed") || !errors.Is(err, aacraid.ErrTransferUnsettled) {
 			t.Fatalf("erreur de clôture non rendue : %v", err)
 		}
 	})
 	for _, validated := range []bool{false, true} {
 		t.Run(fmt.Sprintf("clôture 0xc5, validé %v", validated), func(t *testing.T) {
 			f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: -1, openCode: 0xdb, stopMarks: []uint32{0xc5, 0xc6}}
-			d, _ := read(t, f, validated, context.Background())
-			if d.CloseUnconfirmed() != 0 {
-				t.Fatalf("%d rejet(s) compté(s)", d.CloseUnconfirmed())
+			d, err := read(t, f, validated, context.Background())
+			if d.CloseUnconfirmed() != 0 || errors.Is(err, aacraid.ErrTransferUnsettled) {
+				t.Fatalf("%d rejet(s) compté(s), err=%v", d.CloseUnconfirmed(), err)
 			}
 			if got := f.subs(); !slices.Equal(got, []uint32{234, 84}) {
 				t.Fatalf("séquence %v, attendu l'ouverture et la clôture seules", got)
@@ -1877,6 +1882,175 @@ func TestReadPagedRejectThenStop(t *testing.T) {
 			}
 			if closed := len(tc.want) == 3; closed == errors.Is(err, errGraceExceeded) {
 				t.Fatalf("clôture %v, err=%v", closed, err)
+			}
+		})
+	}
+}
+
+// Fin de transfert : aacraid.ErrTransferUnsettled quand rien n'établit que
+// le transfert est clos (ouverture refusée avec un identifiant reçu,
+// parcours 0xc8 interrompu, clôture non confirmée) ; jamais pour un
+// transfert mené à terme, une clôture 0xc6 ou 0xc5 du bon transfert, une
+// ouverture sans identifiant, ni un échec d'échange (qui a son propre
+// motif). Dernière requête vérifiée : aucune commande après la dernière
+// attendue.
+func TestReadPagedTransferEnd(t *testing.T) {
+	le := binary.LittleEndian
+	for name, tc := range map[string]struct {
+		f         func() *fakeFirmware
+		need      int
+		subs      []uint32
+		unsettled bool
+		ok        bool
+		exchange  bool
+	}{
+		"nominal":           {func() *fakeFirmware { return &fakeFirmware{} }, 0x1000, []uint32{234, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 84}, false, true, false},
+		"total hors bornes": {func() *fakeFirmware { return &fakeFirmware{total: 0x2000} }, 0x1000, []uint32{234}, true, false, false},
+		"mot 7 différent du total": {func() *fakeFirmware {
+			return &fakeFirmware{openHook: func(d []byte) { le.PutUint32(d[28:], 0x800) }}
+		}, 0x1000, []uint32{234}, true, false, false},
+		"sans identifiant":              {func() *fakeFirmware { return &fakeFirmware{xfer: aacraid.XferNone} }, 0x1000, []uint32{234}, false, false, false},
+		"en-tête d'ouverture (Size)":    {func() *fakeFirmware { return &fakeFirmware{openSize: 100} }, 0x1000, []uint32{234}, true, false, false},
+		"clôture, marque inconnue":      {func() *fakeFirmware { return &fakeFirmware{stopMark: 0xc7} }, 0x1000, []uint32{234, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 84}, true, false, false},
+		"clôture, autre transfert":      {func() *fakeFirmware { return &fakeFirmware{stopXfer: 10} }, 0x1000, []uint32{234, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 84}, true, false, false},
+		"clôture, Size invalide":        {func() *fakeFirmware { return &fakeFirmware{stopSize: 100} }, 0x1000, []uint32{234, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 84}, true, false, false},
+		"clôture 0xc5":                  {func() *fakeFirmware { return &fakeFirmware{stopMark: aacraid.MarkClosedOther} }, 0x1000, []uint32{234, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83, 84}, false, false, false},
+		"0xe2, clôture marque inconnue": {func() *fakeFirmware { return &fakeFirmware{openCode: 0xe2, stopMark: 0xc7} }, 0x1000, []uint32{234, 84}, true, false, false},
+		"rejet puis clôture 0xc6":       {func() *fakeFirmware { return &fakeFirmware{chunkMark: 0xc9} }, 0x1000, []uint32{234, 83, 84}, false, false, false},
+		"échec d'échange":               {func() *fakeFirmware { return &fakeFirmware{failAt: 1} }, 0x1000, []uint32{234, 83, 83}, false, false, true},
+		// Réponse d'ouverture à l'en-tête refusé : son mot 5 n'est pas fiable,
+		// une sentinelle lue ne prouve pas l'absence de transfert.
+		"sentinelle et en-tête refusé":              {func() *fakeFirmware { return &fakeFirmware{xfer: aacraid.XferNone, openSize: 100} }, 0x1000, []uint32{234}, true, false, false},
+		"0xc8, en-tête de morceau refusé":           {func() *fakeFirmware { f := &fakeFirmware{chunkSize: 100}; inline(f, 432); return f }, 0, []uint32{234, 83}, true, false, false},
+		"rejet d'un morceau, clôture non confirmée": {func() *fakeFirmware { return &fakeFirmware{chunkMark: 0xc9, stopMark: 0xc7} }, 0x1000, []uint32{234, 83, 84}, true, false, false},
+		"données rejetées, clôture non confirmée":   {func() *fakeFirmware { return &fakeFirmware{stopMark: 0xc7} }, 0x2000, []uint32{234, 83, 84}, true, false, false},
+		"0xc8 complet": {func() *fakeFirmware { f := &fakeFirmware{}; inline(f, 432); return f }, 0, []uint32{234, 83, 83, 83, 83, 83, 83, 83, 83, 83}, false, true, false},
+		"0xc8 pas nul": {func() *fakeFirmware { f := &fakeFirmware{}; inline(f, 0); return f }, 0, []uint32{234}, true, false, false},
+		"0xc8 morceau incohérent": {func() *fakeFirmware {
+			f := &fakeFirmware{chunkHook: func(n uint32, d []byte) {
+				if n == 2 {
+					le.PutUint32(d[20:], 10)
+				}
+			}}
+			inline(f, 432)
+			return f
+		}, 0, []uint32{234, 83, 83}, true, false, false},
+		"marque hors parcours avec identifiant": {func() *fakeFirmware { return &fakeFirmware{openMark: 0xc7} }, 0x1000, []uint32{234}, true, false, false},
+		"0xc8, dernier morceau incohérent": {func() *fakeFirmware {
+			f := &fakeFirmware{chunkHook: func(n uint32, d []byte) {
+				if n == 9 {
+					le.PutUint32(d[20:], 10)
+				}
+			}}
+			inline(f, 432)
+			return f
+		}, 0, []uint32{234, 83, 83, 83, 83, 83, 83, 83, 83, 83}, true, false, false},
+		"0xe2, clôture confirmée":        {func() *fakeFirmware { return &fakeFirmware{openCode: 0xe2} }, 0x1000, []uint32{234, 84}, false, false, false},
+		"0xc8 complet, données rejetées": {func() *fakeFirmware { f := &fakeFirmware{}; inline(f, 432); return f }, 0x2000, []uint32{234, 83, 83, 83, 83, 83, 83, 83, 83, 83}, false, false, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := tc.f()
+			f.payload = make([]byte, 0x1000)
+			if f.xfer == 0 {
+				f.xfer = 9
+			}
+			if f.failAt == 0 {
+				f.failAt = -1
+			}
+			f.ioctl(t)
+			d, err := Open("/dev/null", devNull, list(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			_, err = d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return tc.need })
+			if (err == nil) != tc.ok || errors.Is(err, aacraid.ErrTransferUnsettled) != tc.unsettled || errors.Is(err, aacraid.ErrExchange) != tc.exchange {
+				t.Fatalf("err=%v, attendu ok=%v, fin non établie=%v, échec d'échange=%v", err, tc.ok, tc.unsettled, tc.exchange)
+			}
+			if got := f.subs(); !slices.Equal(got, tc.subs) {
+				t.Fatalf("séquence %v, attendu %v", got, tc.subs)
+			}
+		})
+	}
+}
+
+// Arrêt manuel pendant l'ouverture d'un parcours 0xc8 qui rend la main
+// après la fenêtre d'arrêt : la fenêtre, installée avant l'ouverture, date
+// l'arrêt de son premier constat (rappel d'annulation, ici pendant
+// l'ouverture) et non de la fin de l'ouverture ; aucun morceau ne part, sur
+// le couple validé comme ailleurs, et la fin du transfert n'est pas établie.
+func TestReadPagedInlineCancelDuringOpen(t *testing.T) {
+	for _, validated := range []bool{false, true} {
+		t.Run(fmt.Sprintf("validé %v", validated), func(t *testing.T) {
+			old := stopGrace
+			stopGrace = 20 * time.Millisecond
+			defer func() { stopGrace = old }()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: -1}
+			inline(f, 432)
+			f.onOpen = func() { cancel(); time.Sleep(60 * time.Millisecond) }
+			f.ioctl(t)
+			d, err := Open("/dev/null", devNull, list(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			d.SetValidatedCouple(validated)
+			_, err = d.ReadPaged(ctx, aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return 0 })
+			if !errors.Is(err, errGraceExceeded) || !errors.Is(err, aacraid.ErrTransferUnsettled) {
+				t.Fatalf("err=%v", err)
+			}
+			if got := f.subs(); !slices.Equal(got, []uint32{234}) {
+				t.Fatalf("séquence %v, attendu l'ouverture seule", got)
+			}
+		})
+	}
+}
+
+// Commande refusée par la liste blanche dans un transfert ouvert (morceau ou
+// clôture) : rien ne part, la fin du transfert n'est pas établie. Liste
+// restreinte construite à partir de celle d'aacraid, sans la sous-commande
+// visée.
+func TestReadPagedDeniedInsideTransfer(t *testing.T) {
+	for name, tc := range map[string]struct {
+		sub  uint32
+		subs []uint32
+	}{
+		"morceau refusé":  {83, []uint32{234}},
+		"clôture refusée": {84, []uint32{234, 83, 83, 83, 83, 83, 83, 83, 83, 83, 83}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var entries []allowlist.Entry
+			for _, e := range aacraid.Entries {
+				if e.Ioctl == aacraid.IoctlSendFIB {
+					inner := e.Payload
+					e.Payload = func(b []byte) error {
+						if binary.LittleEndian.Uint16(b[4:]) == 500 && binary.LittleEndian.Uint32(b[aacraid.FIBHeaderSize+4:]) == tc.sub {
+							return errors.New("sous-commande retirée pour le test")
+						}
+						return inner(b)
+					}
+				}
+				entries = append(entries, e)
+			}
+			l, err := allowlist.New(entries...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := &fakeFirmware{payload: make([]byte, 0x1000), xfer: 9, failAt: -1}
+			f.ioctl(t)
+			d, err := Open("/dev/null", devNull, l)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			_, err = d.ReadPaged(context.Background(), aacraid.ReadContainerInfo, 0, 0, func([]byte) int { return 0x1000 })
+			if !errors.Is(err, allowlist.ErrDenied) || !errors.Is(err, aacraid.ErrTransferUnsettled) || errors.Is(err, aacraid.ErrExchange) {
+				t.Fatalf("err=%v", err)
+			}
+			if got := f.subs(); !slices.Equal(got, tc.subs) {
+				t.Fatalf("séquence %v, attendu %v", got, tc.subs)
 			}
 		})
 	}

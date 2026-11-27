@@ -2076,6 +2076,21 @@ func TestReadDependencies(t *testing.T) {
 			t.Errorf("échange en échec sur %s : %v, %v", failing, r.Collected, r.CollectErr)
 		}
 	}
+	// Fin de transfert non établie (aacraid.ErrTransferUnsettled) : comme
+	// un échec d'échange, la carte s'arrête, aucune commande ne suit (ni
+	// protection du cache ni tâches), sur chaque lecture paginée de la
+	// configuration, liste des conteneurs comprise.
+	unsettled := fmt.Errorf("stop not confirmed: %w", aacraid.ErrTransferUnsettled)
+	for _, failing := range []string{"247-0", "248-5", "229-0", "234-fd", "249-1d000002"} {
+		d, r := runWith(failing, unsettled)
+		want := upTo(failing)
+		if got := strings.Join(d.reads, " "); got != strings.Join(want, " ") || d.cpCall != 0 || len(d.taskListCalls) != 0 || len(d.reportCalls) != 0 || d.cmCall != 1 || d.countCall != 1 {
+			t.Errorf("fin de transfert non établie sur %s : lectures %s, cache %d, 101 %d, 103 %d, 708 %d, comptage %d", failing, got, d.cpCall, len(d.taskListCalls), len(d.reportCalls), d.cmCall, d.countCall)
+		}
+		if !errors.Is(r.CollectErr, aacraid.ErrTransferUnsettled) || r.Collected[CacheProtectionCollector] || r.Collected[TasksCollector] || !r.Collected[TemperatureCollector] {
+			t.Errorf("fin de transfert non établie sur %s : %v, %v", failing, r.Collected, r.CollectErr)
+		}
+	}
 	// 708 en échec, même d'échange : l'outil poursuit (envoi sans
 	// exception) ; emplacement en échec, tout le reste lu.
 	d, r708 := runWith("708", exchange)

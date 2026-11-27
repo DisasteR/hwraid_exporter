@@ -547,6 +547,14 @@ func hostOf(c module.Card) (int, sysfs.SCSIHost, error) {
 	return i, c.Hosts[i], nil
 }
 
+// stopsCard indique qu'une lecture paginée arrête la carte pour le cycle :
+// échec d'échange (comme l'exception de l'outil) ou fin de transfert non
+// établie (aacraid.ErrTransferUnsettled : aucune commande ne suit un
+// transfert peut-être resté ouvert).
+func stopsCard(err error) bool {
+	return errors.Is(err, aacraid.ErrExchange) || errors.Is(err, aacraid.ErrTransferUnsettled)
+}
+
 // collectConfig lit la configuration dans l'ordre de l'outil de référence
 // (2.05 et 3.07, GetConfig ; captures) : la 708 si elle doit être lue,
 // puis la chaîne des disques (247, puis les 248 dans l'ordre de la liste
@@ -570,7 +578,7 @@ func hostOf(c module.Card) (int, sysfs.SCSIHost, error) {
 // tâches).
 func (m *Module) collectConfig(r *module.Result, d reader, key string, h sysfs.SCSIHost, count aacraid.ContainerCount, containers, connectors bool, caps aacraid.DiskCaps) (cs []aacraid.Container, containersRead bool, abort error) {
 	exchange := func(what string, err error) error {
-		if errors.Is(err, aacraid.ErrExchange) {
+		if stopsCard(err) {
 			return fmt.Errorf("%s: %w", what, err)
 		}
 		return nil
@@ -877,7 +885,7 @@ func readInventory(d reader, nums []uint32) ([]aacraid.DiskInfo, error) {
 	var refused error
 	for _, n := range nums {
 		raw, err := d.ReadPaged(aacraid.ReadDiskInfo, n, 0, func([]byte) int { return aacraid.DiskInventoryNeed })
-		if errors.Is(err, aacraid.ErrExchange) {
+		if stopsCard(err) {
 			return out, err
 		}
 		if err != nil {
@@ -919,7 +927,7 @@ func (m *Module) readContainers(d reader, count aacraid.ContainerCount) (retaine
 		return aacraid.ContainerListNeed(b)
 	}
 	raw, err := d.ReadPaged(aacraid.ReadContainerList, 0, count.ListSize(), need)
-	if errors.Is(err, aacraid.ErrExchange) {
+	if stopsCard(err) {
 		return nil, false, err
 	}
 	if announced > maxContainers {
@@ -939,7 +947,7 @@ func (m *Module) readContainers(d reader, count aacraid.ContainerCount) (retaine
 	var refused error
 	for _, n := range nums {
 		raw, err := d.ReadPaged(aacraid.ReadContainerInfo, n, 0, func([]byte) int { return aacraid.ContainerInfoNeed })
-		if errors.Is(err, aacraid.ErrExchange) {
+		if stopsCard(err) {
 			return nil, true, err
 		}
 		var info aacraid.ContainerInfo
@@ -979,7 +987,7 @@ func readMembers(d reader, cs []aacraid.Container) error {
 	for i := range cs {
 		size := aacraid.MemberListSize(cs[i].Info.Members)
 		raw, err := d.ReadPaged(aacraid.ReadMemberList, cs[i].Info.UID, size, func([]byte) int { return int(size) })
-		if errors.Is(err, aacraid.ErrExchange) {
+		if stopsCard(err) {
 			return err
 		}
 		if err == nil {

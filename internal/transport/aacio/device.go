@@ -401,15 +401,18 @@ func (d *Device) stop(window context.Context, r aacraid.PagedRead, head aacraid.
 func (d *Device) stopWith(window context.Context, r aacraid.PagedRead, head aacraid.PagedResponse, req []byte, count bool) (rejected bool, err error) {
 	rsp, err := d.fib(window, append([]byte(nil), req...))
 	if err != nil {
-		return false, fmt.Errorf("read %d: stop: %w", r, err)
+		return false, fmt.Errorf("read %d: stop: %w", r, unsettledUnlessExchange(err))
 	}
 	s, err := aacraid.DecodePagedResponse(req, rsp)
 	if err != nil {
-		return false, fmt.Errorf("read %d: stop: %w", r, err)
+		if errors.Is(err, aacraid.ErrExchange) {
+			return false, fmt.Errorf("read %d: stop: %w", r, err)
+		}
+		return false, fmt.Errorf("read %d: stop: %w: %w", r, err, aacraid.ErrTransferUnsettled)
 	}
 	switch {
 	case s.Xfer != head.Xfer || (s.Mark != 0xc6 && s.Mark != aacraid.MarkClosedOther):
-		return false, fmt.Errorf("read %d: stop not confirmed (mark %#x, transfer %#x)", r, s.Mark, s.Xfer)
+		return false, fmt.Errorf("read %d: stop not confirmed (mark %#x, transfer %#x): %w", r, s.Mark, s.Xfer, aacraid.ErrTransferUnsettled)
 	case s.Mark == aacraid.MarkClosedOther:
 		if count {
 			d.closeOther++
@@ -479,6 +482,17 @@ var stopGrace = 2 * time.Second
 // (stopGrace écoulé depuis l'arrêt) pendant un transfert hors du couple
 // validé ; abandon sans clôture.
 var errGraceExceeded = errors.New("stop grace exceeded during the transfer: abandoned without stop")
+
+// unsettledUnlessExchange marque d'aacraid.ErrTransferUnsettled une
+// commande non partie (fenêtre d'arrêt dépassée, refus de la liste blanche
+// ou d'admission) dans un transfert ouvert : sa fin n'est pas établie. Un
+// échec d'échange garde son seul motif.
+func unsettledUnlessExchange(err error) error {
+	if err == nil || errors.Is(err, aacraid.ErrExchange) || errors.Is(err, aacraid.ErrTransferUnsettled) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", err, aacraid.ErrTransferUnsettled)
+}
 
 // errRejected marque, dans un transfert ouvert, une réponse de morceau ou
 // des données rejetées par un contrôle propre à l'exporter, statut et écho
@@ -562,11 +576,15 @@ func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size 
 	// ctx (comptée depuis l'arrêt lui-même : installée avant l'ouverture).
 	// Chaque morceau et la clôture y sont admis sur le thread dédié, juste
 	// avant l'ioctl ; une fenêtre close abandonne le transfert sans clôture.
+	// Parcours 0xc8 (readInline), sur toute carte : même fenêtre, installée
+	// avant l'ouverture, pour qu'un arrêt pendant l'ouverture soit daté de
+	// son premier constat (rappel d'annulation, exact à l'ordonnancement
+	// près ; échéance : instant exact) et non de la fin de l'ouverture.
+	w := &stopWindow{stop: ctx, grace: stopGrace}
+	release := context.AfterFunc(ctx, w.mark)
+	defer release()
 	var window context.Context
 	if !d.validated {
-		w := &stopWindow{stop: ctx, grace: stopGrace}
-		release := context.AfterFunc(ctx, w.mark)
-		defer release()
 		window = w
 	}
 	rsp, err := d.fib(ctx, append([]byte(nil), open...))
@@ -575,8 +593,16 @@ func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size 
 	}
 	head, err := aacraid.DecodePagedResponse(open, rsp)
 	if err != nil {
-		// Statut d'échec ou écho incorrect : aucun transfert établi.
-		return nil, false, err
+		if errors.Is(err, aacraid.ErrExchange) {
+			// Statut d'échec ou écho incorrect : aucun transfert établi.
+			return nil, false, err
+		}
+		// Statut et écho conformes, en-tête refusé (commande, Size) : un
+		// transfert a pu être ouvert sans que l'exporter puisse le clore ;
+		// la réponse n'étant pas fiable, son mot 5 non plus (une réponse
+		// courte laisse dans le tampon le 0xffffffff de la requête) : même
+		// une sentinelle lue ne prouve pas l'absence de transfert.
+		return nil, false, fmt.Errorf("%w: %w", err, aacraid.ErrTransferUnsettled)
 	}
 	if head.StopAfterOpen() {
 		// Code 0xe2, total nul ou code autre que CT_OK : clôture sans
@@ -589,7 +615,7 @@ func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size 
 		return nil, false, fmt.Errorf("read %d: open not nominal (mark %#x, code %#x, size %d); transfer %#x stopped", r, head.Mark, head.Code, head.Total, head.Xfer)
 	}
 	if head.Mark == aacraid.MarkChunk && head.Code == aacraid.CodeOK && head.Xfer != aacraid.XferNone && head.Total != 0 && head.Total <= maxPagedTotal {
-		return d.readInline(ctx, r, open, head, need)
+		return d.readInline(ctx, w, r, open, head, need)
 	}
 	if head.Xfer == aacraid.XferNone || head.Mark != 0xc9 || head.Code != aacraid.CodeOK || head.Total == 0 || head.Total > maxPagedTotal || head.Size != head.Total {
 		// Autre ouverture hors du parcours nominal (sans transfert, marque
@@ -597,7 +623,12 @@ func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size 
 		// taille différente du total) : aucune commande n'est envoyée pour
 		// ce transfert. L'effet sur la carte d'un transfert laissé ouvert
 		// n'est pas établi ; l'erreur le signale.
-		return nil, false, fmt.Errorf("read %d: open refused (mark %#x, code %#x, size %d); transfer %#x not stopped", r, head.Mark, head.Code, head.Total, head.Xfer)
+		err := fmt.Errorf("read %d: open refused (mark %#x, code %#x, size %d); transfer %#x not stopped", r, head.Mark, head.Code, head.Total, head.Xfer)
+		if head.Xfer != aacraid.XferNone {
+			// Un identifiant de transfert a été reçu : fin non établie.
+			err = fmt.Errorf("%w: %w", err, aacraid.ErrTransferUnsettled)
+		}
+		return nil, false, err
 	}
 	var data []byte
 	last := uint32(0)
@@ -677,7 +708,7 @@ func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size 
 		// Échec d'échange (ioctl, statut ou écho), commande refusée, ou
 		// fenêtre d'arrêt dépassée : abandon sans clôture, comme l'outil
 		// sur une exception de morceau.
-		return nil, false, fmt.Errorf("%w; transfer %#x abandoned without stop", readErr, head.Xfer)
+		return nil, false, fmt.Errorf("%w; transfer %#x abandoned without stop", unsettledUnlessExchange(readErr), head.Xfer)
 	}
 	// Données suffisantes, ou arrêt demandé après un morceau conforme
 	// (ErrStopped : le morceau suivant n'est pas parti) : clôture. Hors
@@ -686,7 +717,7 @@ func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size 
 	rejected, stopErr := d.stop(window, r, head, last)
 	if errors.Is(stopErr, errGraceExceeded) {
 		// Clôture refusée à l'admission (non partie) : abandon sans clôture.
-		return nil, false, fmt.Errorf("%w; transfer %#x abandoned without stop", stopErr, head.Xfer)
+		return nil, false, fmt.Errorf("%w; transfer %#x abandoned without stop", unsettledUnlessExchange(stopErr), head.Xfer)
 	}
 	if err := errors.Join(readErr, stopErr); err != nil {
 		return nil, false, err
@@ -715,14 +746,11 @@ func (d *Device) readOnce(ctx context.Context, r aacraid.PagedRead, param, size 
 // et CT_OK (les mots que la demande suivante reprend), sinon abandon. Les
 // morceaux restants passent par la fenêtre d'arrêt, sur toute carte : sans
 // clôture, arrêter en route laisserait le transfert à mi-chemin.
-func (d *Device) readInline(ctx context.Context, r aacraid.PagedRead, open []byte, head aacraid.PagedResponse, need func([]byte) int) ([]byte, bool, error) {
+func (d *Device) readInline(ctx context.Context, w *stopWindow, r aacraid.PagedRead, open []byte, head aacraid.PagedResponse, need func([]byte) int) ([]byte, bool, error) {
 	step, ok := head.InlineStep()
 	if !ok {
-		return nil, false, fmt.Errorf("read %d: open with inline data refused (step %d, at most %d); transfer %#x not continued", r, step, aacraid.ChunkData, head.Xfer)
+		return nil, false, fmt.Errorf("read %d: open with inline data refused (step %d, at most %d); transfer %#x not continued: %w", r, step, aacraid.ChunkData, head.Xfer, aacraid.ErrTransferUnsettled)
 	}
-	w := &stopWindow{stop: ctx, grace: stopGrace}
-	release := context.AfterFunc(ctx, w.mark)
-	defer release()
 	requested := aacraid.RequestedSize(open)
 	take := func(b []byte, left uint32) []byte { return b[:min(step, left)] }
 	data := append([]byte(nil), take(head.Data, head.Total)...)
@@ -731,14 +759,18 @@ func (d *Device) readInline(ctx context.Context, r aacraid.PagedRead, open []byt
 		req := aacraid.InlineChunkRequest(head.Total, head.Xfer, n, requested)
 		rsp, err := d.fib(w, append([]byte(nil), req...))
 		if err != nil {
-			return nil, false, fmt.Errorf("read %d: %w; transfer %#x abandoned", r, err, head.Xfer)
+			return nil, false, fmt.Errorf("read %d: %w; transfer %#x abandoned", r, unsettledUnlessExchange(err), head.Xfer)
 		}
 		c, err := aacraid.DecodePagedResponse(req, rsp)
 		if err != nil {
-			return nil, false, fmt.Errorf("read %d: %w; transfer %#x abandoned", r, err, head.Xfer)
+			if errors.Is(err, aacraid.ErrExchange) {
+				return nil, false, fmt.Errorf("read %d: %w; transfer %#x abandoned", r, err, head.Xfer)
+			}
+			return nil, false, fmt.Errorf("read %d: %w; transfer %#x abandoned: %w", r, err, head.Xfer, aacraid.ErrTransferUnsettled)
 		}
 		if c.Mark != aacraid.MarkChunk || c.Xfer != head.Xfer || c.Chunk != n || c.Total != head.Total || c.Code != aacraid.CodeOK {
-			return nil, false, fmt.Errorf("read %d: inconsistent inline chunk %d (mark %#x, transfer %#x, chunk %d, total %d, code %#x); transfer %#x abandoned", r, n, c.Mark, c.Xfer, c.Chunk, c.Total, c.Code, head.Xfer)
+			// Parcours sans clôture interrompu avant son dernier morceau.
+			return nil, false, fmt.Errorf("read %d: inconsistent inline chunk %d (mark %#x, transfer %#x, chunk %d, total %d, code %#x); transfer %#x abandoned: %w", r, n, c.Mark, c.Xfer, c.Chunk, c.Total, c.Code, head.Xfer, aacraid.ErrTransferUnsettled)
 		}
 		data = append(data, take(c.Data, head.Total-uint32(len(data)))...)
 	}

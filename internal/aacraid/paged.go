@@ -309,6 +309,18 @@ func checkPagedRequest(b []byte) bool {
 // code refusé ou un contrôle propre à l'exporter n'en est pas un.
 var ErrExchange = errors.New("card exchange failed (ioctl, status or echo)")
 
+// ErrTransferUnsettled marque une lecture paginée après laquelle la fin du
+// transfert n'est pas établie : ouverture refusée par un contrôle propre à
+// l'exporter alors qu'un transfert a pu être ouvert, parcours 0xc8 interrompu
+// avant son dernier morceau, ou clôture dont la réponse ne confirme pas la
+// fermeture (marque autre que 0xc6 et 0xc5, autre identifiant, en-tête
+// invalide), ou commande refusée avant son envoi dans un transfert ouvert.
+// L'outil de référence ne fait pas ces contrôles et va au bout du
+// transfert ; rien n'établit qu'une commande suivante soit sans effet sur un
+// transfert resté ouvert. Comme un échec d'échange, il arrête la
+// carte pour le cycle : aucune commande ne suit (CDC, section 6.11, règle 2).
+var ErrTransferUnsettled = errors.New("paged transfer end not established")
+
 // PagedResponse est l'en-tête de réponse d'une étape de transfert.
 // CodeOK : mot 4 de la réponse d'ouverture d'un transfert (CT_OK, Linux
 // aacraid.h).
