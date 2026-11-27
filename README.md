@@ -2,11 +2,11 @@
 
 Prometheus exporter for hardware RAID controllers. It talks directly to the Linux drivers and needs no vendor tool (ARCCONF, StorCLI, ssacli) at runtime.
 
-> **Status: v0.4.0.** One driver module so far: `aacraid`. The only qualified model is the Adaptec 6805 (any firmware; validated with 5.3-0[19204]); other `aacraid` cards can be read with `-allow-unqualified` (all of them, or one card by serial number), at the operator's risk. What is validated on hardware and what is only tested is detailed [below](#what-it-monitors).
+> **Status: v0.5.0.** One driver module so far: `aacraid`. The only qualified model is the Adaptec 6805 (any firmware; validated with 5.3-0[19204]); other `aacraid` cards can be read with `-allow-unqualified` (all of them, or one card by serial number), at the operator's risk. What is validated on hardware and what is only tested is detailed [below](#what-it-monitors).
 
 ## Why another exporter
 
-The goal is that an administrator can answer four questions from Prometheus: which array has lost its redundancy, which member is involved, is the rebuild progressing, and is the controller cache protected by a working module? v0.4.0 reports lost redundancy and the cache protection state. It names the member involved when the controller reports its disk failed or missing, and publishes the rebuilding state, from the volume configuration, and the progress of background tasks, rebuild included, when their reports are read (only the first task listed by each container; one failed task read removes every progress of the card for that cycle; progress reports not yet observed on hardware).
+The goal is that an administrator can answer four questions from Prometheus: which array has lost its redundancy, which member is involved, is the rebuild progressing, and is the controller cache protected by a working module? v0.5.0 reports lost redundancy and the cache protection state. It names the member involved when the controller reports its disk failed or missing, and publishes the rebuilding state, from the volume configuration, and the progress of background tasks, rebuild included, when their reports are read (only the first task listed by each container; one failed task read removes every progress of the card for that cycle; progress reports not yet observed on hardware).
 
 ### Existing approaches
 
@@ -131,7 +131,7 @@ No component is needed on the host. Reference Compose profile, validated on the 
 ```yaml
 services:
   hwraid-exporter:
-    image: ghcr.io/disaster/hwraid_exporter:v0.4.0
+    image: ghcr.io/disaster/hwraid_exporter:v0.5.0
     read_only: true
     cap_drop: [ALL]
     cap_add: [MKNOD, CHOWN, SETUID, SETGID, SETPCAP, SYS_RAWIO]
