@@ -370,7 +370,7 @@ func TestCacheProtectionSequence(t *testing.T) {
 			default:
 				le.PutUint16(buf[8:], aacraid.FIBHeaderSize+76)
 				d[20] = 1
-				le.PutUint32(d[48:], 0x40000009)
+				le.PutUint32(d[48:], 0x4000008b) // module sain observé : « ZMM Optimal »
 			}
 			return nil
 		})

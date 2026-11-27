@@ -571,8 +571,9 @@ func TestCollectCacheProtection(t *testing.T) {
 	}{
 		{"optimal", cpAnswer{described: true, st: aacraid.ZMMStatus{State: aacraid.CacheProtectionOptimal}}, &module.CacheProtection{Present: true, Type: "flash_supercap", Vendor: "zmm", State: "optimal"}, ptr(true), false},
 		{"non installé", cpAnswer{described: true, st: aacraid.ZMMStatus{State: aacraid.CacheProtectionNotInstalled}}, &module.CacheProtection{Type: "flash_supercap", Vendor: "zmm"}, ptr(true), false},
-		{"état inconnu, installé", cpAnswer{described: true, st: aacraid.ZMMStatus{Word: 0x40000019, State: aacraid.CacheProtectionUnknown}}, &module.CacheProtection{Present: true, Type: "flash_supercap", Vendor: "zmm", State: "unknown"}, ptr(true), false},
-		{"état inconnu, présence non établie", cpAnswer{described: true, st: aacraid.ZMMStatus{Word: 0x40000008, State: aacraid.CacheProtectionUnknown}}, &module.CacheProtection{PresenceUnknown: true, Type: "flash_supercap", Vendor: "zmm", State: "unknown"}, ptr(true), false},
+		{"en panne", cpAnswer{described: true, st: aacraid.ZMMStatus{Word: 0x40000081, State: aacraid.CacheProtectionFailed}}, &module.CacheProtection{Present: true, Type: "flash_supercap", Vendor: "zmm", State: "failed"}, ptr(true), false},
+		{"non installé, autres bits", cpAnswer{described: true, st: aacraid.ZMMStatus{Word: 0x40000008, State: aacraid.CacheProtectionNotInstalled}}, &module.CacheProtection{Type: "flash_supercap", Vendor: "zmm"}, ptr(true), false},
+		{"en charge", cpAnswer{described: true, st: aacraid.ZMMStatus{Word: 0x40000089, State: aacraid.CacheProtectionCharging}}, &module.CacheProtection{Present: true, Type: "flash_supercap", Vendor: "zmm", State: "charging"}, ptr(true), false},
 		{"batterie optimale", cpAnswer{bat: aacraid.Battery{PresenceKnown: true, Present: true, State: aacraid.CacheProtectionOptimal}}, &module.CacheProtection{Present: true, Type: "battery", Vendor: "bbu", State: "optimal"}, ptr(true), false},
 		{"batterie en maintenance", cpAnswer{bat: aacraid.Battery{PresenceKnown: true, Present: true, State: aacraid.CacheProtectionMaintenance}}, &module.CacheProtection{Present: true, Type: "battery", Vendor: "bbu", State: "maintenance"}, ptr(true), false},
 		{"batterie absente", cpAnswer{bat: aacraid.Battery{PresenceKnown: true}}, &module.CacheProtection{Type: "battery", Vendor: "bbu"}, ptr(true), false},

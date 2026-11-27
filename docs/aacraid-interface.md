@@ -312,19 +312,17 @@ Deux lectures `ContainerCommand` dont les données suivent `struct aac_vmioctl` 
 
 Chaque réponse est vérifiée avant décodage : statut (mot 0) nul, écho de `ObjType`, `MethId` et `IoctlCmd`, taille couvrant les champs lus.
 
-Règle appliquée à R, dans cet ordre :
+Règle appliquée à R, celle de l'outil de référence (`ArcAdapter::refreshBatteryState`, ARCCONF 2.05 0x647caa..0x647df5, 3.07 0x64fcd1..0x64fcf5), dans son ordre :
 
-| Condition | État |
-|---|---|
-| `R & 0xF0000000` différent de `0x40000000` | autre type de module : non décodé |
-| aucun bit d'état (`R & 0x0FFFFFFF` nul) | module non installé |
-| bit `0x1` absent, d'autres bits présents | indéterminé (`unknown`) ; la présence du module n'est pas publiée |
-| bit `0x8` absent | **en panne** (même si le bit `0x4` est présent) |
-| un bit autre que `0x1`, `0x4` et `0x8` présent | indéterminé (`unknown`) |
-| bit `0x4` présent | en charge |
-| sinon | optimal |
+| Condition | État | Affichage de l'outil |
+|---|---|---|
+| `R & 0xF0000000` différent de `0x40000000` | autre type de module : non décodé | — |
+| bit `0x1` absent | module non installé | ZMM not installed |
+| bit `0x8` absent | **en panne** (même si `0x4` est présent) | ZMM Failed |
+| bit `0x4` présent, ou bit `0x2` absent | en charge (`charging`) | ZMM Charging / Not Ready |
+| sinon (`0x1`, `0x8` et `0x2` présents, `0x4` absent) | optimal | ZMM Optimal |
 
-Cette règle est celle de l'outil de référence (état de la batterie construit à partir de R, masques `0x1`, `0x4` et `0x8`). Sur l'hôte de référence : R = `0x40000081`, module en panne, conforme à l'affichage de l'outil témoin. Les états « en charge » et « optimal » restent à observer sur matériel. Les conditions sont appliquées dans l'ordre du tableau : un module sans le bit `0x8` est en panne quels que soient ses autres bits (c'est le cas de `0x40000081`) ; un module prêt (`0x8`) portant un bit autre que `0x1`, `0x4` et `0x8`, comme `0x80`, est indéterminé plutôt qu'optimal ou en charge.
+Les autres bits n'entrent pas dans l'état : le bit `0x80`, que l'outil lit pour d'autres indicateurs, est présent sur le module en panne comme sur le module sain de l'hôte de référence. Observé sur l'hôte de référence, conforme à l'affichage de l'outil au même instant : R = `0x40000081` (module en panne, 2026-11-23), R = `0x4000008b` (module neuf chargé, 2026-11-27) ; pendant la charge de ce module, l'outil affichait « ZMM Charging / Not Ready », mot non capturé. L'état `charging` traduit ce libellé combiné : le code de l'outil n'établit pas que le module reçoit du courant dans tous ces cas (bit `0x2` absent notamment).
 
 **Batterie classique** (réponse de présence sans le bit `0x2000`) : la lecture d'état n'est pas envoyée ; l'état est décodé de la réponse de présence, comme le fait l'outil de référence. Le mot de 16 bits à l'octet 42 dit quels octets d'état sont présents : octet 20 (présence, indicateur `0x1`), 21 (batterie utilisable, `0x2`), 22 (mode maintenance, `0x4`). Un octet n'est lu que si son indicateur est présent.
 

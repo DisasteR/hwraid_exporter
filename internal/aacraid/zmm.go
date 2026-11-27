@@ -123,25 +123,15 @@ const (
 	stateTypeZMM  = 0x40000000
 	stateTypeMask = 0xF0000000
 	stateInstall  = 0x1
+	stateComplete = 0x2 // absent : « Charging / Not Ready » chez l'outil
 	stateCharging = 0x4
 	stateReady    = 0x8
-	// stateObserved0x80 : bit présent sur le module en panne de l'hôte de
-	// référence (R = 0x40000081), sens non établi.
-	stateObserved0x80 = 0x80
-	stateKnownBits    = stateInstall | stateCharging | stateReady | stateObserved0x80
 )
 
 // ZMMStatus est le résultat décodé de la lecture d'état.
 type ZMMStatus struct {
 	Word  uint32 // mot d'état brut (journalisation et tests)
 	State CacheProtectionState
-}
-
-// InstallKnown indique si le mot d'état établit la présence du module : bit
-// d'installation positionné, ou mot sans aucun bit d'état (module absent).
-func (s ZMMStatus) InstallKnown() bool {
-	low := s.Word &^ stateTypeMask
-	return low == 0 || low&stateInstall != 0
 }
 
 // DecodeCacheProtectionState décode la lecture d'état. Un bloc marqué non
@@ -158,27 +148,24 @@ func DecodeCacheProtectionState(b []byte) (ZMMStatus, error) {
 	return ZMMStatus{Word: r, State: zmmState(r)}, nil
 }
 
-// zmmState applique la règle de docs/aacraid-interface.md (section 6).
-//
-// La règle n'annonce jamais à tort un module sain ou absent : optimal et
-// charging exigent installé et prêt sans aucun bit non reconnu (0x80, non
-// qualifié sur un module sain, compris) ; not_installed exige qu'aucun bit
-// d'état ne soit positionné. Un module installé mais pas prêt est en panne,
-// quels que soient les autres bits. Toute autre combinaison est unknown.
+// zmmState reproduit l'état que l'outil de référence affiche à partir de R
+// (ArcAdapter::refreshBatteryState, ARCCONF 2.05 0x647caa..0x647df5, 3.07
+// 0x64fcd1..0x64fcf5 ; docs/aacraid-interface.md, section 6), dans son
+// ordre : bit 0x1 absent, « ZMM not installed » ; bit 0x8 absent, « ZMM
+// Failed » ; bit 0x4 présent ou bit 0x2 absent, « ZMM Charging / Not Ready » ;
+// sinon « ZMM Optimal ». Les autres bits (0x80 notamment, présent sur un
+// module en panne comme sur un module sain) n'entrent pas dans cet état.
+// Observé sur l'hôte de référence : 0x40000081 (Failed), 0x4000008b
+// (Optimal).
 func zmmState(r uint32) CacheProtectionState {
-	low := r &^ stateTypeMask
 	switch {
 	case r&stateTypeMask != stateTypeZMM:
 		return CacheProtectionOtherType
-	case low == 0:
+	case r&stateInstall == 0:
 		return CacheProtectionNotInstalled
-	case low&stateInstall == 0:
-		return CacheProtectionUnknown
-	case low&stateReady == 0:
+	case r&stateReady == 0:
 		return CacheProtectionFailed
-	case low&^(stateInstall|stateCharging|stateReady) != 0:
-		return CacheProtectionUnknown
-	case low&stateCharging != 0:
+	case r&stateCharging != 0 || r&stateComplete == 0:
 		return CacheProtectionCharging
 	default:
 		return CacheProtectionOptimal

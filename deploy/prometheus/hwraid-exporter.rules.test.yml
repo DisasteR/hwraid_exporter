@@ -669,8 +669,8 @@ tests:
         exp_alerts:
           - exp_labels: {severity: warning, controller: "serial:B", state: charging}
             exp_annotations:
-              summary: "Protection du cache en charge depuis plus de 2 h (serial:B)"
-              description: "Un module sain se charge en quelques minutes : une charge qui n'aboutit pas annonce une panne du module."
+              summary: "Protection du cache en charge ou non prête depuis plus de 2 h (serial:B)"
+              description: "Un module sain se charge en quelques minutes : un état « en charge ou non prêt » (ARCCONF : « ZMM Charging / Not Ready ») qui dure annonce une panne du module."
       - eval_time: 141m
         alertname: HwraidCacheProtectionNotReady
         exp_alerts: []
@@ -809,11 +809,11 @@ tests:
           - exp_labels: {severity: critical, controller: "serial:A", volume: m1}
             exp_annotations:
               summary: "Cache d'écriture actif sans protection, volume m1 (serial:A)"
-              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou non prêt, ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
           - exp_labels: {severity: critical, controller: "serial:A", volume: v0}
             exp_annotations:
               summary: "Cache d'écriture actif sans protection, volume v0 (serial:A)"
-              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou non prêt, ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
       - eval_time: 16m
         alertname: HwraidVolumeWriteCacheAlwaysOn
         exp_alerts:
@@ -831,11 +831,11 @@ tests:
           - exp_labels: {severity: critical, controller: "serial:A", volume: m1}
             exp_annotations:
               summary: "Cache d'écriture actif sans protection, volume m1 (serial:A)"
-              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou non prêt, ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
           - exp_labels: {severity: critical, controller: "serial:A", volume: v0}
             exp_annotations:
               summary: "Cache d'écriture actif sans protection, volume v0 (serial:A)"
-              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou non prêt, ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
       - eval_time: 32m
         alertname: HwraidVolumeWriteCacheUnprotected
         exp_alerts: []
@@ -869,7 +869,7 @@ tests:
           - exp_labels: {severity: critical, controller: "serial:A", volume: m1}
             exp_annotations:
               summary: "Cache d'écriture actif sans protection, volume m1 (serial:A)"
-              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou non prêt, ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
 
   # Lecture de la protection en échec de 6 à 20 min : l'alerte déjà
   # déclenchée reste active 10 min (A). Module absent (B) : alerte ; en
@@ -917,26 +917,26 @@ tests:
           - exp_labels: {severity: critical, controller: "serial:A", volume: v0}
             exp_annotations:
               summary: "Cache d'écriture actif sans protection, volume v0 (serial:A)"
-              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou non prêt, ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
           - exp_labels: {severity: critical, controller: "serial:B", volume: v0}
             exp_annotations:
               summary: "Cache d'écriture actif sans protection, volume v0 (serial:B)"
-              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou non prêt, ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
           - exp_labels: {severity: critical, controller: "serial:C", volume: v0}
             exp_annotations:
               summary: "Cache d'écriture actif sans protection, volume v0 (serial:C)"
-              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou non prêt, ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
       - eval_time: 19m
         alertname: HwraidVolumeWriteCacheUnprotected
         exp_alerts:
           - exp_labels: {severity: critical, controller: "serial:B", volume: v0}
             exp_annotations:
               summary: "Cache d'écriture actif sans protection, volume v0 (serial:B)"
-              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou non prêt, ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
           - exp_labels: {severity: critical, controller: "serial:C", volume: v0}
             exp_annotations:
               summary: "Cache d'écriture actif sans protection, volume v0 (serial:C)"
-              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou non prêt, ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
 
   # Lecture des volumes en échec de 8 à 11 min : l'alerte critique déjà
   # déclenchée reste active. L'alerte de réglage forcé, pas encore
@@ -964,7 +964,7 @@ tests:
           - exp_labels: {severity: critical, controller: "serial:A", volume: v0}
             exp_annotations:
               summary: "Cache d'écriture actif sans protection, volume v0 (serial:A)"
-              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou non prêt, ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
       - eval_time: 16m
         alertname: HwraidVolumeWriteCacheAlwaysOn
         exp_alerts: []
@@ -1269,4 +1269,4 @@ tests:
           - exp_labels: {severity: critical, controller: "serial:C", volume: v1}
             exp_annotations:
               summary: "Cache d'écriture actif sans protection, volume v1 (serial:C)"
-              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."
+              description: "Le cache d'écriture du volume est actif alors que son module de protection est absent, en panne, en charge ou non prêt, ou en maintenance (batterie) : une coupure de courant, ou un redémarrage sans vidage du cache, perd les écritures en attente. Régler le cache en mode « seulement si protégé » (Adaptec : ARCCONF SETCACHE … wbb) ou le désactiver, puis vérifier sur chaque volume concerné, dans ARCCONF relu après le changement, « Write-cache status: Off » (un relevé de l'exporter peut dater d'avant le changement). Avant tout redémarrage, suivre le guide de déploiement (limite du pilote aacraid)."

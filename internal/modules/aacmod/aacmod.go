@@ -1117,10 +1117,6 @@ func collectCacheProtection(r *module.Result, d reader) {
 	case st.State == aacraid.CacheProtectionNotInstalled:
 		r.Collected[CacheProtectionCollector] = true
 		r.CacheProtection = &module.CacheProtection{Type: "flash_supercap", Vendor: "zmm"}
-	case !st.InstallKnown():
-		// Bits d'état sans le bit d'installation : présence non établie.
-		r.Collected[CacheProtectionCollector] = true
-		r.CacheProtection = &module.CacheProtection{PresenceUnknown: true, Type: "flash_supercap", Vendor: "zmm", State: string(st.State)}
 	default:
 		r.Collected[CacheProtectionCollector] = true
 		r.CacheProtection = &module.CacheProtection{Present: true, Type: "flash_supercap", Vendor: "zmm", State: string(st.State)}

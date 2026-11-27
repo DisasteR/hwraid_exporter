@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- aacraid: the ZMM state now follows the vendor tool's rule exactly (`docs/aacraid-interface.md`, section 6): bit `0x1` absent, `not_installed`; bit `0x8` absent, `failed`; bit `0x4` present or bit `0x2` absent, `charging` (the tool's "Charging / Not Ready"); otherwise `optimal`; other bits are ignored, as by the tool. Before, a ready module with any bit outside `0x1`, `0x4` and `0x8` gave `unknown`, so a healthy, charged replacement module (`0x4000008b`, "ZMM Optimal" in the tool) was published `unknown`, and a ready module without bit `0x2` ("Charging / Not Ready" in the tool, never observed) would have been published `optimal`. A word without bit `0x1` but with other bits is now `not_installed` (presence 0) instead of `unknown` with no presence. Checked on the reference host: `failed` (`0x40000081`) and `optimal` (`0x4000008b`).
 - Documentation: rule reload after an upgrade (`docs/deploiement.md`, Prometheus); conditions of the connector map read and of the location's return; `oneshot` exit code 0 does not prove a card was read; the close sent after a non-nominal opening is an attempt, under conditions, its answer not observed; what stops the card before the cache protection read, here and in the vendor tool (`docs/aacraid-interface.md`); progress published only from a usable report of the first task listed by a container (README).
 
 ## v0.4.0 — 2026-11-27

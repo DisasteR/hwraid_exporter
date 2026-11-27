@@ -24,6 +24,9 @@ const (
 	capStateReqData = "03000000090000000300000000000000000070000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 	capStateRspHdr  = "00000000f40101006c000002"
 	capStateRspData = "00000000090000000300000000000000000070004100020000000000000000000000000000000000000000000000000081000040000000000000000000000000000000000000000000000000"
+	// Module neuf chargé (2026-11-27 12:13, séquence 483) : seul l'octet 48
+	// change ; l'outil affiche « ZMM Optimal ».
+	capStateOptimalRspData = "0000000009000000030000000000000000007000410002000000000000000000000000000000000000000000000000008b000040000000000000000000000000000000000000000000000000"
 )
 
 // recordedFIB reconstitue une FIB de 512 octets : en-tête enregistré,
@@ -73,24 +76,35 @@ func TestDecodeZMMRecorded(t *testing.T) {
 	if st.Word != 0x40000081 || st.State != CacheProtectionFailed {
 		t.Fatalf("%+v", st)
 	}
+	st, err = DecodeCacheProtectionState(recordedFIB(t, capStateRspHdr, capStateOptimalRspData))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Affichage de l'outil de référence au même instant : « ZMM Optimal ».
+	if st.Word != 0x4000008b || st.State != CacheProtectionOptimal {
+		t.Fatalf("%+v", st)
+	}
 }
 
-// Règle complète, y compris les états non encore observés sur matériel.
+// Règle de l'outil de référence (refreshBatteryState), y compris les mots
+// non encore observés sur matériel.
 func TestZMMStateRule(t *testing.T) {
 	cases := map[uint32]CacheProtectionState{
-		0x40000081: CacheProtectionFailed,       // référence : installé, pas prêt
+		0x40000081: CacheProtectionFailed,       // observé : installé, pas prêt (« ZMM Failed »)
+		0x4000008B: CacheProtectionOptimal,      // observé : installé, prêt, 0x2 (« ZMM Optimal »)
+		0x4000000B: CacheProtectionOptimal,      // idem sans 0x80 : 0x80 n'entre pas dans l'état
+		0x4010000B: CacheProtectionOptimal,      // bit hors du quartet bas : ignoré, comme l'outil
 		0x40000001: CacheProtectionFailed,       // installé, pas prêt
-		0x40100001: CacheProtectionFailed,       // installé, pas prêt, bit inconnu : en panne quand même
+		0x40000007: CacheProtectionFailed,       // en charge et 0x2, mais pas prêt : en panne d'abord
+		0x40000005: CacheProtectionFailed,       // en charge mais pas prêt
+		0x40000009: CacheProtectionCharging,     // prêt sans 0x2 : « Charging / Not Ready »
+		0x40000089: CacheProtectionCharging,     // idem avec 0x80
+		0x4000000D: CacheProtectionCharging,     // prêt et en charge
+		0x4000000F: CacheProtectionCharging,     // en charge avec 0x2 : 0x4 l'emporte
+		0x4000008F: CacheProtectionCharging,     // idem avec 0x80
 		0x40000000: CacheProtectionNotInstalled, // aucun bit d'état
-		0x40000008: CacheProtectionUnknown,      // prêt sans être installé : ambigu, pas « absent »
-		0x40000080: CacheProtectionUnknown,      // bit 0x80 seul : ambigu, pas « absent »
-		0x40000009: CacheProtectionOptimal,
-		0x4000000D: CacheProtectionCharging, // prêt et en charge
-		0x40000005: CacheProtectionFailed,   // en charge mais pas prêt : en panne d'abord
-		0x40000089: CacheProtectionUnknown,  // prêt avec 0x80 : 0x80 non qualifié sur un module sain
-		0x4000008D: CacheProtectionUnknown,  // en charge avec 0x80
-		0x40000019: CacheProtectionUnknown,  // prêt avec un bit inconnu : jamais « optimal »
-		0x4100000D: CacheProtectionUnknown,  // en charge avec un bit inconnu
+		0x4000000A: CacheProtectionNotInstalled, // 0x1 absent : « ZMM not installed », quels que soient les autres bits
+		0x40000080: CacheProtectionNotInstalled, // 0x80 seul
 		0x30000009: CacheProtectionOtherType,
 		0x00000009: CacheProtectionOtherType,
 	}
