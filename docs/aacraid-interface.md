@@ -552,3 +552,13 @@ L'exporter n'envoie que des commandes de l'outil de référence (versions 2.05 e
 | Transferts en blocs de 2 048 octets (bit 15 de `SupportedOptions`) | gérés | non implémentés : collecteurs non pris en charge, rien n'est envoyé | idem |
 | Bit de poids fort (bit 13 de `FeatureBits`) | `0x80000000` au mot 7 des ouvertures et du comptage | idem (section 4) | idem |
 | Ouverture portant déjà des données (marque `0xc8`, code `0xda`) | morceaux suivants, sans clôture ; pas nul : octet par octet | morceaux suivants, tous, sans clôture ; pas nul ou supérieur à 432 octets : aucune commande, lecture en échec | idem |
+
+**Raisons des écarts.** Les écarts E1 à E4 et leur raison sont tenus dans le cahier des charges (section 6.11). Les autres différences du tableau sont des commandes que l'exporter n'envoie pas, pour les raisons suivantes :
+
+- **Réponses gardées** (701, 703, 706, comptage, 708) : elles décrivent le firmware et le matériel, qui ne changent pas d'un cycle à l'autre ; elles sont relues quand l'identité de la carte ou son nœud change, et la 708 quand l'ensemble des disques change.
+- **803 une fois par cycle** : l'exporter publie une seule température par cycle ; l'outil l'envoie trois fois pour son propre affichage.
+- **Conversion d'identifiant (165)** : l'identifiant du conteneur est déjà lu dans la 234 (octets 16 à 19).
+- **Tâches d'un disque (102)** : elles portent sur un disque physique et sont lancées par l'exploitant (initialisation, effacement ou vérification d'un disque, d'après les commandes de l'outil ; jamais capturées) ; ce ne sont pas des signaux de panne. La reconstruction et l'initialisation d'un volume sont des tâches de conteneur, lues par la 101. Non publiées (`docs/metrics.md`).
+- **Complément de batterie (`0xa0000`)** : le champ qu'il porte ne sert pas à l'état.
+- **Protection du cache non renvoyée** : après un ioctl en échec, l'état du bloc de commande n'est pas connu ([défaut du pilote](aacraid-defaut-pilote.md)) ; l'exporter ne relance aucun ioctl dans le cycle et relit au cycle suivant (au plus un cycle de retard). La relecture de E2 suit au contraire un échange complet, où tous les ioctl ont réussi.
+- **Suite de l'ouverture** (dont 905, 707 `RequestSupplementAdapterInfoExt`, `0x40`, lecture des informations du bus) : leurs données ne servent pas à l'exporter. Conséquence : l'exporter ne voit pas leur échec, sur lequel l'outil abandonne l'ouverture, et poursuit ses lectures là où l'outil se serait arrêté. Chaque commande envoyée reste une commande de l'outil, mais la suite peut différer sur une carte où l'une d'elles échouerait ; jamais le cas sur la carte de référence. Reste documenté (cahier des charges, section 7.7, point 20).

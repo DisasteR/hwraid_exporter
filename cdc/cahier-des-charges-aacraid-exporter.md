@@ -383,12 +383,12 @@ Les lectures directes de SMART par disque, les fonctions d’administration RAID
 
 Les mesures qui ne concernent pas la carte (nœuds dédiés, abandon des privilèges, sérialisation, une lecture en vol par carte) valent pour toutes les cartes.
 
-| Écart | Effet sur les envois | Portée | Statut |
-|---|---|---|---|
-| E1. Arrêt anticipé | clôture dès que les données suffisent, avant le dernier morceau | couple validé seulement | validé sur 5.3-0[19204] |
-| E2. Relecture après une clôture `0xc5` | une nouvelle ouverture, au plus une fois par lecture, que l’outil ne fait pas | couple validé seulement | comportement actuel sur la carte de référence |
-| E3. Borne de taille | total supérieur à 4 100 octets hors code `0xe2` : abandon (aucune commande) au lieu de la lecture des morceaux | toutes les cartes | comportement actuel ; une clôture immédiate ne remplacera l’abandon que lorsque sa forme sera établie (requête de clôture construite sur un total hors borne : aucune preuve) |
-| E4. Annulation (échéance du cycle, arrêt du service) | suite définie par phase (tableau des événements) | toutes les cartes | l’outil n’a pas d’échéance |
+| Écart | Effet sur les envois | Portée | Statut | Raison |
+|---|---|---|---|---|
+| E1. Arrêt anticipé | clôture dès que les données suffisent, avant le dernier morceau | couple validé seulement | validé sur 5.3-0[19204] | moins de commandes par lecture, donc moins de temps de carte occupée (les commandes de tous les outils passent une par une) ; accepté par ce firmware |
+| E2. Relecture après une clôture `0xc5` | une nouvelle ouverture, au plus une fois par lecture, que l’outil ne fait pas | couple validé seulement | comportement actuel sur la carte de référence | seule exception à « jamais plus que l’outil » : `0xc5` arrive après un échange complet (ioctl réussis, morceaux conformes), observée deux fois sur environ 1 400 transferts pendant que maxView interrogeait la carte ; sans relecture, la fonction serait en échec pour tout le cycle ; aucun risque connu pour le pilote, à la différence d’une relance après un ioctl en échec |
+| E3. Borne de taille | total supérieur à 4 100 octets hors code `0xe2` : abandon (aucune commande) au lieu de la lecture des morceaux | toutes les cartes | comportement actuel ; une clôture immédiate ne remplacera l’abandon que lorsque sa forme sera établie (requête de clôture construite sur un total hors borne : aucune preuve) | les morceaux envoyés restent dans les tailles observées ; aucune forme établie pour clore un tel transfert |
+| E4. Annulation (échéance du cycle, arrêt du service) | suite définie par phase (tableau des événements) | toutes les cartes | l’outil n’a pas d’échéance | l’arrêt du service ne doit ni interrompre un ioctl (bloc de commande perdu, défaut du pilote) ni laisser un transfert ouvert sans nécessité |
 
 Aucune option ne permet d’appliquer E1 ou E2 à une autre carte : pour en bénéficier, on qualifie le couple modèle–firmware (capture, comparaison à l’outil, ajout à la liste).
 
